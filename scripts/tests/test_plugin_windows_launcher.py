@@ -26,18 +26,25 @@ class PluginWindowsLauncherTests(unittest.TestCase):
         cls.base = Path(cls.directory.name)
         cls.plugin = package_fixture(cls.base)
         cls.fake_wsl = cls.base / "fake-wsl"
+        cls.fake_wsl_control = cls.base / "fake-wsl-control.json"
         cls.fake_wsl.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
+with open(__CONTROL__) as stream:
+    control = json.load(stream)
 args = sys.argv[1:]
-if os.environ.get('FAKE_WSL_ARGV_LOG'):
-    with open(os.environ['FAKE_WSL_ARGV_LOG'], 'a') as stream:
+if control.get('FAKE_WSL_ARGV_LOG'):
+    with open(control['FAKE_WSL_ARGV_LOG'], 'a') as stream:
         stream.write(json.dumps(args) + '\\n')
+if control.get('FAKE_WSL_ENV_LOG'):
+    with open(control['FAKE_WSL_ENV_LOG'], 'a') as stream:
+        stream.write(json.dumps({name: os.environ.get(name) for name in (
+            'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_KB_PASSWORD', 'OPENUBMC_KB_CLIENT_SECRET')}) + '\\n')
 if args == ['--list', '--quiet']:
-    print(os.environ.get('FAKE_WSL_DISTROS', ''))
+    print(control.get('FAKE_WSL_DISTROS', ''))
     raise SystemExit(0)
 if 'wslpath' in args:
-    print(os.environ['FAKE_WSL_PLUGIN_ROOT'])
+    print(control['FAKE_WSL_PLUGIN_ROOT'])
     raise SystemExit(0)
 if '-c' in args:
     raise SystemExit(0)
@@ -47,9 +54,15 @@ if 'repair-overrides' in args or 'migrate' in args:
     print(json.dumps({'ok': True, 'would_change': True, 'changed': '--preview' not in args, 'transaction': 'a' * 32, 'changes': changes}))
     raise SystemExit(0)
 if 'prepare' in args:
-    raise SystemExit(int(os.environ.get('FAKE_WSL_PREPARE_STATUS', '42')))
+    if control.get('FAKE_WSL_PREPARE_ERROR'):
+        print(control['FAKE_WSL_PREPARE_ERROR'], file=sys.stderr)
+    raise SystemExit(int(control.get('FAKE_WSL_PREPARE_STATUS', '42')))
+if 'doctor' in args:
+    if control.get('FAKE_WSL_DOCTOR_REPORT'):
+        print(control['FAKE_WSL_DOCTOR_REPORT'])
+    raise SystemExit(int(control.get('FAKE_WSL_DOCTOR_STATUS', '2')))
 raise SystemExit(43)
-"""
+""".replace("__CONTROL__", repr(str(cls.fake_wsl_control)))
         )
         cls.fake_wsl.chmod(0o755)
         cls.fake_python = cls.base / "fake-python3"
@@ -60,7 +73,17 @@ args = sys.argv[1:]
 if '-c' in args or 'prepare' in args or 'cleanup-retired' in args:
     raise SystemExit(0)
 if 'doctor' in args:
-    raise SystemExit(int(os.environ.get('FAKE_PYTHON_DOCTOR_STATUS', '0')))
+    status = int(os.environ.get('FAKE_PYTHON_DOCTOR_STATUS', '0'))
+    ready = status == 0
+    print(json.dumps({'ok': ready, 'version': '2.1.0', 'source_commit': 'a' * 40,
+        'package_integrity': True,
+        'capabilities': {'runtime': {'dependencies_ready': ready, 'startup_ready': ready},
+                         'kb': {'dependencies_ready': ready, 'startup_ready': ready}},
+        'mcp_health': {'runtime': {'ok': ready}, 'kb': {'ok': ready}},
+        'local_configuration': {},
+        'knowledge_authentication': 'not_checked', 'remote_target_authentication': 'not_checked',
+        'codex_configuration': {'ready': ready, 'changes': {'mcp_servers': [], 'skills': []}}}))
+    raise SystemExit(status)
 if 'configure' in args:
     print('http://127.0.0.1:43123/#fixture-token', flush=True)
     import time
@@ -93,7 +116,9 @@ for line in sys.stdin:
             OPENUBMC_PLUGIN_HOST_PLATFORM="win32",
             OPENUBMC_PLUGIN_WSL_EXE=str(self.base / "missing-wsl.exe"),
         )
-        env.update(environment)
+        control = {key: value for key, value in environment.items() if key.startswith("FAKE_WSL_")}
+        self.fake_wsl_control.write_text(json.dumps(control))
+        env.update({key: value for key, value in environment.items() if not key.startswith("FAKE_WSL_")})
         payload = "".join(json.dumps(message) + "\n" for message in messages)
         return subprocess.run(
             ["node", str(self.plugin / "scripts/openubmc-mcp-bootstrap.js"), capability],
@@ -106,11 +131,18 @@ for line in sys.stdin:
 
     def test_packaged_windows_launcher_initializes_when_wsl_is_unavailable(self) -> None:
         config = json.loads((self.plugin / ".mcp.json").read_text())
+        secret_environment = {
+            "OPENUBMC_CREDENTIALS_FILE",
+            "OPENUBMC_KB_USERNAME",
+            "OPENUBMC_KB_PASSWORD",
+            "OPENUBMC_KB_CLIENT_SECRET",
+        }
         for capability, name in (("runtime", "openubmc-target-runtime"), ("kb", "openubmc-kb")):
             with self.subTest(capability=capability):
                 server = config["mcpServers"][name]
                 self.assertEqual(server["command"], "node")
                 self.assertEqual(server["args"], ["./scripts/openubmc-mcp-bootstrap.js", capability])
+                self.assertTrue(secret_environment.isdisjoint(server["env_vars"]))
                 result = self.invoke(
                     capability,
                     [
@@ -153,6 +185,10 @@ for line in sys.stdin:
         self.assertEqual(payload["status"], "setup_required")
         self.assertEqual(payload["host"], "windows")
         self.assertEqual(payload["reason"], "wsl_unavailable")
+        lock = json.loads((self.plugin / "plugin-lock.json").read_text())
+        self.assertEqual(payload["plugin"]["version"], "2.1.0")
+        self.assertEqual(payload["plugin"]["source_commit"], lock["source_commit"])
+        self.assertTrue(payload["plugin"]["integrity"])
         self.assertNotIn(str(self.base), json.dumps(payload))
 
     def test_multiple_wsl_distributions_require_and_persist_an_explicit_selection(self) -> None:
@@ -211,6 +247,7 @@ for line in sys.stdin:
 
     def test_windows_wsl_receives_only_non_secret_task_identity(self) -> None:
         log = self.base / "wsl-argv.jsonl"
+        environment_log = self.base / "wsl-environment.jsonl"
         result = self.invoke(
             "runtime",
             [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}}],
@@ -218,16 +255,101 @@ for line in sys.stdin:
             FAKE_WSL_DISTROS="Ubuntu-24.04",
             FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
             FAKE_WSL_ARGV_LOG=str(log),
+            FAKE_WSL_ENV_LOG=str(environment_log),
             LOCALAPPDATA=str(self.base / "identity-local-app-data"),
             OPENUBMC_MCP_TASK_ID="task-fixture",
             OPENUBMC_MCP_SESSION_ID="session-fixture",
             OPENUBMC_CREDENTIALS_FILE="private-password-fixture",
+            OPENUBMC_KB_PASSWORD="kb-password-fixture",
+            OPENUBMC_KB_CLIENT_SECRET="kb-client-secret-fixture",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = log.read_text()
         self.assertIn("OPENUBMC_MCP_TASK_ID=task-fixture", arguments)
         self.assertIn("OPENUBMC_MCP_SESSION_ID=session-fixture", arguments)
         self.assertNotIn("private-password-fixture", arguments)
+        child_environments = environment_log.read_text()
+        self.assertNotIn("private-password-fixture", child_environments)
+        self.assertNotIn("kb-password-fixture", child_environments)
+        self.assertNotIn("kb-client-secret-fixture", child_environments)
+
+    def test_dependency_preparation_failures_have_stable_recovery_reasons(self) -> None:
+        cases = (
+            ('{"stage":"pip","status":"failed","error":"No module named pip"}', "pip_unavailable"),
+            ('{"stage":"npm","status":"failed","error":"spawn npm ENOENT"}', "npm_unavailable"),
+            ('{"stage":"pip","status":"failed","error":"Could not resolve registry host"}', "registry_unavailable"),
+            ('{"stage":"npm","status":"failed","error":"ProxyError connection refused"}', "proxy_failure"),
+            ('{"stage":"pip","status":"timeout"}', "dependency_prepare_timeout"),
+            ('{"stage":"pip","status":"interrupted"}', "dependency_prepare_interrupted"),
+        )
+        for index, (detail, reason) in enumerate(cases):
+            with self.subTest(reason=reason):
+                result = self.invoke(
+                    "runtime",
+                    [
+                        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
+                        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_prepare", "arguments": {}}},
+                    ],
+                    OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
+                    FAKE_WSL_DISTROS="Ubuntu-24.04",
+                    FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
+                    FAKE_WSL_PREPARE_STATUS="130" if reason == "dependency_prepare_interrupted" else "42",
+                    FAKE_WSL_PREPARE_ERROR=detail,
+                    LOCALAPPDATA=str(self.base / f"prepare-failure-{index}"),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                response = json.loads([json.loads(line) for line in result.stdout.splitlines()][1]["result"]["content"][0]["text"])
+                self.assertEqual(response["reason"], reason)
+                self.assertIsInstance(response["recovery_action"], str)
+                self.assertTrue(response["recovery_action"])
+                self.assertNotIn(detail, json.dumps(response))
+
+    def test_setup_status_reports_each_local_readiness_fact(self) -> None:
+        report = {
+            "ok": False,
+            "version": "2.1.0",
+            "source_commit": "a" * 40,
+            "package_integrity": True,
+            "capabilities": {
+                "runtime": {"dependencies_ready": True, "startup_ready": True},
+                "kb": {"dependencies_ready": False, "startup_ready": False},
+            },
+            "mcp_health": {"runtime": {"ok": True}, "kb": {"ok": False}},
+            "local_configuration": {
+                "targets": {"configured": True, "active_revision": "b" * 32},
+                "kb": {"configured": False, "active_revision": None},
+                "conan": {"configured": False, "active_revision": None},
+            },
+            "knowledge_authentication": "not_checked",
+            "remote_target_authentication": "not_checked",
+            "codex_configuration": {
+                "ready": False,
+                "changes": {"mcp_servers": ["openubmc-kb"], "skills": ["/legacy/SKILL.md"]},
+            },
+        }
+        result = self.invoke(
+            "kb",
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_status", "arguments": {}}},
+            ],
+            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
+            FAKE_WSL_DISTROS="Ubuntu-24.04",
+            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
+            FAKE_WSL_DOCTOR_REPORT=json.dumps(report),
+            LOCALAPPDATA=str(self.base / "unified-status"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads([json.loads(line) for line in result.stdout.splitlines()][1]["result"]["content"][0]["text"])
+        self.assertEqual(payload["plugin"], {"version": "2.1.0", "source_commit": "a" * 40, "integrity": True})
+        self.assertEqual(payload["backend"]["selected_wsl"], "Ubuntu-24.04")
+        self.assertTrue(payload["dependencies"]["runtime"]["ready"])
+        self.assertFalse(payload["dependencies"]["kb"]["ready"])
+        self.assertEqual(payload["configuration"]["mcp_servers"], ["openubmc-kb"])
+        self.assertEqual(payload["local_configuration"]["targets"]["active_revision"], "b" * 32)
+        self.assertEqual(payload["knowledge_authentication"], "not_checked")
+        self.assertEqual(payload["remote_target_authentication"], "not_checked")
+        self.assertTrue(payload["protocol_health"]["runtime"]["ok"])
 
     def test_linux_launcher_prepares_then_proxies_the_existing_backend(self) -> None:
         result = self.invoke(

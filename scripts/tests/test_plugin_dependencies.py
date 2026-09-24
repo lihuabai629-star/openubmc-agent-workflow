@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import signal
 import subprocess
 import sys
@@ -14,6 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DependencyPreparationTests(unittest.TestCase):
+    def test_dependency_failure_codes_are_stable_without_returning_raw_output(self):
+        module = runpy.run_path(str(ROOT/'plugin/openubmc/scripts/pluginctl.py'))
+        classify = module['_dependency_failure_code']
+        cases = {
+            ('pip', b'/usr/bin/python: No module named pip'): 'pip_unavailable',
+            ('npm', b'npm: not found'): 'npm_unavailable',
+            ('pip', b'Could not resolve registry.example.test'): 'registry_unavailable',
+            ('npm', b'ProxyError tunnel connection failed'): 'proxy_failure',
+            ('pip', b'THESE PACKAGES DO NOT MATCH THE HASHES'): 'dependency_hash_mismatch',
+            ('npm', b'unclassified secret-bearing-package-output'): 'dependency_prepare_failed',
+        }
+        for (stage, output), expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(classify(stage, output), expected)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

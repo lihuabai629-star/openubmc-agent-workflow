@@ -10,6 +10,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "validate.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 PYTHON_LOCK = REPO_ROOT / "requirements-ci.lock"
 NODE_PACKAGE = REPO_ROOT / "openubmc-kb-mcp" / "package.json"
 NODE_LOCK = REPO_ROOT / "openubmc-kb-mcp" / "package-lock.json"
@@ -140,6 +141,20 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
             self.assertNotIn("secrets.", str(step))
             self.assertNotIn("BMC_", str(step))
             self.assertNotIn("TARGET_", str(step))
+
+    def test_windows_ci_and_release_use_one_qualification_entrypoint(self) -> None:
+        release = yaml.load(RELEASE_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        validate_windows = self.workflow["jobs"]["windows-plugin"]
+        release_windows = release["jobs"]["windows-plugin-gate"]
+        for job in (validate_windows, release_windows):
+            commands = "\n".join(str(step.get("run", "")) for step in job["steps"])
+            self.assertIn("scripts/qualify_windows_plugin.ps1", commands)
+        public_checkout = next(
+            step for step in release_windows["steps"]
+            if step.get("name") == "Check out public marketplace release"
+        )
+        self.assertEqual(public_checkout["with"]["repository"], "lihuabai629-star/openubmc-codex-plugins")
+        self.assertEqual(public_checkout["with"]["ref"], "${{ needs.release-gate.outputs.release_tag }}")
 
 
 if __name__ == "__main__":

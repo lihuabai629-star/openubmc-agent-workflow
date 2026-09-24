@@ -27,6 +27,11 @@ MCP and CLI remain transport Adapters at the same seam. The temporary compatibil
 been retired under ADR-0005; raw Evidence, Replay, lifecycle, Runtime status, and Session Outcome
 governance remain in a disjoint Operator / CI Plane.
 
+ADR-0008 adds a Local Setup Plane for the earlier condition where a packaged backend cannot start.
+Its temporary setup tools can select an execution host, prepare dependencies, inspect readiness and
+repair local registrations. They cannot invoke target operations or write Runtime domain state, so
+the initialized Runtime Agent Interface remains exactly `observe` and `execute`.
+
 The product is an openUBMC safety and execution substrate. It is not a general-purpose agent graph,
 BPMN engine, or universal DAG platform.
 

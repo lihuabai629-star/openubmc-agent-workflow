@@ -157,6 +157,27 @@ class DisableMigrationTests(unittest.TestCase):
         self.cli('restore-legacy', '--transaction', applied['transaction'])
         self.assertEqual(self.config.read_text(), original)
 
+    def test_exact_name_detection_uses_skill_metadata_instead_of_directory_name(self):
+        self.link.unlink()
+        self.state.write_text('{}')
+        renamed = self.home/'.codex/skills/legacy-testing-directory'
+        renamed.mkdir()
+        renamed_skill = renamed/'SKILL.md'
+        renamed_skill.write_text('---\nname: openubmc-dt-testing\ndescription: loose fixture\n---\n')
+        misleading = self.home/'.codex/skills/openubmc-debug'
+        misleading.mkdir()
+        misleading_skill = misleading/'SKILL.md'
+        misleading_skill.write_text('---\nname: another-skill\ndescription: keep fixture\n---\n')
+        self.config.write_text('[plugins."openubmc@openubmc-public"]\nenabled = true\n')
+
+        preview = self.cli('migrate', '--disable-only', '--preview')
+        self.assertEqual(preview['changes']['skills'], [str(renamed_skill)])
+        applied = self.cli('migrate', '--disable-only')
+        document = self.config.read_text()
+        self.assertIn(str(renamed_skill), document)
+        self.assertNotIn(str(misleading_skill), document)
+        self.cli('restore-legacy', '--transaction', applied['transaction'])
+
     def test_version_pinned_overrides_are_removed_with_backup_and_native_config_recovery(self):
         old = self.home/'.codex/plugins/cache/openubmc-public/openubmc/2.0.12/scripts/pluginctl.py'
         original = '[plugins."openubmc@openubmc-public"]\nenabled = true\n'
