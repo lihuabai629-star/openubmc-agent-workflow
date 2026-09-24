@@ -92,6 +92,13 @@ class ForeignEffectRecoveryMode(str, Enum):
     RECONCILE = "reconcile"
 
 
+class ForeignMutationRecoveryDisposition(str, Enum):
+    TERMINAL = "terminal"
+    RECOVER = "recover"
+    NEW = "new"
+    INVALID = "invalid"
+
+
 class Backend:
     @staticmethod
     def open_task(task_id: str) -> Task:
@@ -783,6 +790,56 @@ class DomainPackConformanceTests(unittest.TestCase):
             ),
             EffectRecoveryMode.RECONCILE,
         )
+
+    def test_mutation_recovery_route_accepts_equivalent_enum_from_adapter_boundary(
+        self,
+    ) -> None:
+        for stage, raw, expected in (
+            (
+                "verified",
+                ForeignMutationRecoveryDisposition.TERMINAL,
+                MutationRecoveryDisposition.TERMINAL,
+            ),
+            (
+                "applying",
+                ForeignMutationRecoveryDisposition.RECOVER,
+                MutationRecoveryDisposition.RECOVER,
+            ),
+            (
+                "replan_required",
+                ForeignMutationRecoveryDisposition.NEW,
+                MutationRecoveryDisposition.NEW,
+            ),
+        ):
+            with self.subTest(stage=stage):
+                journal = SimpleNamespace(
+                    operation_id="cross-module-effect",
+                    action="live_patch",
+                    stage=stage,
+                    recovery_disposition=raw,
+                )
+                route = mutation_recovery_route(
+                    EffectRecoveryMode.RECONCILE,
+                    lambda: (journal,),
+                    operation_id="cross-module-effect",
+                    action="live_patch",
+                    label="Live Patch",
+                    matches=lambda _journal: True,
+                )
+                self.assertIs(route.disposition, expected)
+
+        for invalid in ("terminal", ForeignMutationRecoveryDisposition.INVALID):
+            with self.subTest(invalid=invalid):
+                journal.recovery_disposition = invalid
+                with self.assertRaisesRegex(ValueError, "valid recovery disposition"):
+                    mutation_recovery_route(
+                        EffectRecoveryMode.RECONCILE,
+                        lambda: (journal,),
+                        operation_id="cross-module-effect",
+                        action="live_patch",
+                        label="Live Patch",
+                        matches=lambda _journal: True,
+                    )
 
     def test_mutation_verifier_authenticates_failed_receipts_without_claiming_success(self) -> None:
         pack_descriptor = descriptor("live_patch_run")

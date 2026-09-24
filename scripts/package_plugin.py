@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGED_PROMPT_BUDGET_BYTES = 128 * 1024
 
 
 def canonical(value: object) -> bytes:
@@ -72,6 +73,21 @@ def protect_python_entrypoints(payload: dict[str, bytes]) -> None:
         payload[name] = (''.join(lines[:header]) + guard + ''.join(lines[header:])).encode()
 
 
+def enforce_prompt_budget(payload: dict[str, bytes]) -> None:
+    prompt_files = {
+        name: content
+        for name, content in payload.items()
+        if name.startswith('skills/')
+        and (name.endswith('/SKILL.md') or name.endswith('/agents/openai.yaml'))
+    }
+    prompt_bytes = sum(len(content) for content in prompt_files.values())
+    if prompt_bytes > PACKAGED_PROMPT_BUDGET_BYTES:
+        raise ValueError(
+            'packaged prompt budget exceeded: '
+            f'{prompt_bytes} > {PACKAGED_PROMPT_BUDGET_BYTES} bytes'
+        )
+
+
 def assemble(source: Path, ref: str) -> dict[str, bytes]:
     commit, source_content = source_files(source, ref)
     workflow = json.loads(source_content['workflow.json'])
@@ -106,6 +122,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
     # The support directory retains the canonical sibling layout required by
     # existing public Skill helpers. Its descriptor is generated from the recipe.
     payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']
+    enforce_prompt_budget(payload)
     manifest = json.loads(payload['.codex-plugin/plugin.json'])
     manifest['version'] = workflow['version']
     payload['.codex-plugin/plugin.json'] = canonical(manifest)

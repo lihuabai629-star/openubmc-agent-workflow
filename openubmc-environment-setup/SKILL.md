@@ -79,8 +79,9 @@ This profile links only `openubmc-environment-setup`, `openubmc-debug`,
 `openubmc-upgrade`, and `openubmc-live-patch`. It deploys and registers the
 Target Runtime MCP, but leaves `openubmc-dt-testing` and openubmc-kb
 configuration untouched. The default `full` profile installs those seven plus
-`openubmc-dt-testing`, `openubmc-publish`, `openubmc-lua-component`, and
-`openubmc-qemu-testing`, for 11 Skills in total. The selected profile is persisted; check, repair, update,
+`openubmc-bingo-build`, `openubmc-bingo-development`, `openubmc-dt-testing`,
+`openubmc-publish`, `openubmc-lua-component`, and `openubmc-qemu-testing`, for
+13 Skills in total. The selected profile is persisted; check, repair, update,
 refresh, reinstall, and uninstall use the recorded profile automatically.
 
 When switching the Environment Setup or Runtime source, preserve a Skill that
