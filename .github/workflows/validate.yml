@@ -126,3 +126,37 @@ jobs:
           name: codex-plugin-qualification
           path: ${{ runner.temp }}/plugin-qualification.json
           if-no-files-found: error
+
+  windows-plugin:
+    name: Windows marketplace bootstrap
+    needs: ci-contract
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+
+      - name: Install locked Codex plugin host
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
+
+      - name: Qualify the Windows marketplace package
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "openubmc-plugin.tar.gz"
+          python scripts/package_plugin.py build --source . --source-ref HEAD --output $archive
+          $codex = Resolve-Path "plugin/host/node_modules/.bin/codex.cmd"
+          ./scripts/qualify_windows_plugin.ps1 -Archive $archive -Codex $codex `
+            -WorkRoot (Join-Path $env:RUNNER_TEMP "openubmc-windows-qualification")

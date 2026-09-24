@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import signal
 import subprocess
 import sys
@@ -14,6 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DependencyPreparationTests(unittest.TestCase):
+    def test_dependency_failure_codes_are_stable_without_returning_raw_output(self):
+        module = runpy.run_path(str(ROOT/'plugin/openubmc/scripts/pluginctl.py'))
+        classify = module['_dependency_failure_code']
+        cases = {
+            ('pip', b'/usr/bin/python: No module named pip'): 'pip_unavailable',
+            ('npm', b'npm: not found'): 'npm_unavailable',
+            ('pip', b'Could not resolve registry.example.test'): 'registry_unavailable',
+            ('npm', b'ProxyError tunnel connection failed'): 'proxy_failure',
+            ('pip', b'THESE PACKAGES DO NOT MATCH THE HASHES'): 'dependency_hash_mismatch',
+            ('npm', b'unclassified secret-bearing-package-output'): 'dependency_prepare_failed',
+        }
+        for (stage, output), expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(classify(stage, output), expected)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -23,6 +39,7 @@ class DependencyPreparationTests(unittest.TestCase):
                  'requirements.lock': b'',
                  'openubmc-kb-mcp/package.json': b'{"name":"fixture","version":"0.0.0"}',
                  'openubmc-kb-mcp/package-lock.json': b'{}',
+                 'workflow.json': b'{"skills": []}',
                  'scripts/launch_runtime.py': b'import os,sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":None if os.environ.get("FIXTURE_NULL_SERVER") else {"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
                  'openubmc-kb-mcp/src/server.js': b'console.log("MCP_FIXTURE_READY")\n',
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),

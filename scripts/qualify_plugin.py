@@ -64,6 +64,31 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+def select_runtime_lifecycle(
+    records: list[dict[str, object]],
+    *,
+    session_id: str,
+    source_commit: str,
+) -> dict[str, object]:
+    """Select the Runtime created for one Codex-owned bootstrap invocation."""
+
+    matched = [
+        record
+        for record in records
+        if record.get("component") == "target-runtime"
+        and record.get("client") == "codex"
+        and record.get("task_id") == "plugin-qualification"
+        and record.get("session_id") == session_id
+        and record.get("source_commit") == source_commit
+        and record.get("formal_run") is True
+    ]
+    if len(matched) != 1:
+        raise ValueError(
+            "native Codex invocation did not own exactly one supervised Runtime process"
+        )
+    return matched[0]
+
+
 def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180, persistent: bool = False) -> dict:
     machine = platform.machine().lower()
     arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
@@ -95,6 +120,12 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
     try:
         for _ in range(1 if persistent else 2):
             start = len(server.requests)
+            lifecycle_root = root / "lifecycle"
+            existing_records = (
+                {path.resolve() for path in lifecycle_root.glob("*.json")}
+                if lifecycle_root.is_dir()
+                else set()
+            )
             process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
@@ -135,18 +166,26 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 result = outputs.get(name, {})
                 if not result.get('isError') or not isinstance(result.get('structuredContent'), dict):
                     raise ValueError('native Codex did not receive Runtime validation for '+name+': '+str(result)[:1000])
-            records = [json.loads(path.read_bytes()) for path in (root/'lifecycle').glob('*.json')]
-            matched = [item for item in records if item.get('parent_pid') == process.pid and item.get('session_id') == session]
-            if len(matched) != 1:
-                raise ValueError('native Codex did not directly own exactly one Runtime process')
-            lifecycle = matched[0]
+            records = [
+                json.loads(path.read_bytes())
+                for path in lifecycle_root.glob("*.json")
+                if path.resolve() not in existing_records
+            ]
+            lifecycle = select_runtime_lifecycle(
+                records, session_id=session, source_commit=source_commit
+            )
             if lifecycle.get('source_commit') != source_commit or lifecycle.get('client') != 'codex' or not lifecycle.get('formal_run') or lifecycle.get('active_requests') != 0 or lifecycle.get('lifecycle_state') != 'stopped' or lifecycle.get('exit_reason') != 'client-terminated' or not lifecycle.get('parent_identity_verified'):
                 raise ValueError('native Runtime lifecycle failed to close: '+str({key:lifecycle.get(key) for key in ('source_commit','client','formal_run','active_requests','lifecycle_state','exit_reason','parent_identity_verified')}))
             if Path('/proc').joinpath(str(lifecycle['process_id'])).exists():
                 raise ValueError('Runtime process survived its Codex parent')
+            supervisor_pid = int(lifecycle['parent_pid'])
+            if supervisor_pid != process.pid and Path('/proc').joinpath(str(supervisor_pid)).exists():
+                raise ValueError('Runtime bootstrap supervisor survived its Codex parent')
             events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
             thread_id = next(event['thread_id'] for event in events if event.get('type') == 'thread.started')
             runs.append({'thread_id': thread_id, 'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
+                         'supervisor_pid':supervisor_pid,
+                         'ownership_model':'direct' if supervisor_pid == process.pid else 'bootstrap-supervised',
                          'source_commit':source_commit, 'session_id':session, 'exit_reason':lifecycle['exit_reason'],
                          'active_requests':0, 'tool_names':names, 'validated_calls':['observe','execute'],
                          'skills_visible_outside_source': list(expected_skills)})
@@ -211,8 +250,8 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-BASELINE_VERSION = '2.0.16'
-BASELINE_SHA256 = 'b4eeed3a3d106ca22e0d4d1f19a368fef178f3e8bf1a0a9a3d69e285e02ba092'
+BASELINE_VERSION = '2.0.17'
+BASELINE_SHA256 = 'a273ec9cd09ac2fc36380d27ee421dff3ac386c8e953b86e1c0f516170e14642'
 
 
 def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:

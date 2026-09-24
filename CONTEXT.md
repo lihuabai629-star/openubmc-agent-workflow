@@ -25,6 +25,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Runtime Core** | The single durable authority for observation provenance, Run state, external Effect safety, and terminal Outcome formation. |
 | **Agent Interface** | The model-facing `observe` and `execute` operations, including their budgets, invariants, and error semantics. |
 | **Operator / CI Plane** | The non-Agent governance interface for raw Evidence, Replay, lifecycle, Runtime status, and Session Outcome review. |
+| **Local Setup Plane** | A pre-Runtime host bootstrap used only to select the Linux/WSL backend, prepare locked dependencies, inspect local readiness, open private configuration, and repair recognized Codex registrations. It cannot create or advance Runs, Gates, Effects, Evidence, or Outcomes. |
 | **Adapter** | A transport or domain-specific implementation at a seam. MCP and CLI are transport Adapters; SSH, Redfish, build, patch, and upgrade integrations are Domain Adapters. |
 | **ObservationQuery** | A typed, bounded request for exact read-only facts about an immutable target scope. |
 | **ObservationResult** | The Runtime-owned result of an ObservationQuery before Agent projection. |
@@ -71,7 +72,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Historical product validation** | A verified reconstruction of original product evidence that predates the current Runtime identity. It remains non-promotable as a fresh Runtime closeout. |
 | **Fresh Runtime product closeout** | A Product Closeout Qualification bound to a fresh Run, terminal Outcome, exact source and ArtifactRef identity, an independently identified Recovery Artifact, successful upgrade, freshness, and required Hardware Coverage. |
 | **Maintenance checkpoint** | A repository-level qualification decision covering Runtime correctness, supported clients, evaluation isolation, and MCP lifecycle closeout. It does not imply a Fresh Runtime product closeout. |
-| **Formal Codex run** | A Codex-owned qualification or release run whose task, session, direct parent process, immutable source, model/Codex identity, Runtime state root, and lifecycle root are explicit and auditable. Its MCP lifecycle evidence is promotable only after task closeout proves no active request or owned process remains live. |
+| **Formal Codex run** | A Codex-owned qualification or release run whose task, session, verified MCP supervisor chain, immutable source, model/Codex identity, Runtime state root, and lifecycle root are explicit and auditable. A platform bootstrap may directly supervise the Runtime when it is the registered MCP process. Its lifecycle evidence is promotable only after task closeout proves no active request, Runtime process, or bootstrap supervisor remains live. |
 | **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
 | **Observed absent** | An evaluable MDB object-read fact bound to its query and object identity after complete, successful transport reports explicit absence. It remains an AVAILABLE diagnostic result; transport failures and uncollected facts never imply absence. |
 | **ComparisonReceipt** | Runtime-owned derived Evidence binding compared target identities and source digests to the requested scope, freshness window, differences, and reasons for incomparability. Missing or partial source facts yield an inconclusive comparison. |
@@ -96,6 +97,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Final Agent projection and soft display-budget compaction | `AgentGateway` |
 | Product-closeout evidence verification and maintenance checkpoint aggregation | Operator / CI Plane |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
+| Host selection, dependency preparation, and local plugin configuration recovery | Local Setup Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |
 
 No second Module may independently write the same fact. Historical readers may translate old
@@ -104,6 +106,8 @@ records into current projections, but they cannot accept old commands or create 
 ## Domain invariants
 
 - The default Agent Interface remains `observe` and `execute`.
+- Setup tools appear only when a Runtime or KB backend cannot initialize. They report and repair
+  local installation state through the Local Setup Plane and never become Runtime commands.
 - The Runtime exposes one developer-friendly default behavior. Assurance selection is automatic
   and is not an Agent input.
 - `observe` is read-only and never doubles as Run-status polling.
@@ -134,6 +138,7 @@ records into current projections, but they cannot accept old commands or create 
 - [ADR-0003: Turn, Gate, Artifact, and distribution boundaries](docs/adr/0003-turn-gate-artifact-and-distribution-boundaries.md)
 - [ADR-0004: Developer-friendly default execution and Gate submissions](docs/adr/0004-developer-default-and-gate-submissions.md)
 - [ADR-0007: Soft Agent projection budget](docs/adr/0007-soft-agent-projection-budget.md)
+- [ADR-0008: Local setup plane and cross-platform bootstrap](docs/adr/0008-local-setup-plane-and-cross-platform-bootstrap.md)
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)

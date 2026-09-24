@@ -22,6 +22,7 @@ from openubmc_target_runtime import (  # noqa: E402
     McpProcessLifecycle,
     StdioMcpServer,
     cleanup_confirmed_orphaned_mcp_processes,
+    cleanup_retired_orphaned_mcp_processes,
     inspect_mcp_process_records,
 )
 
@@ -486,6 +487,44 @@ class McpProcessLifecycleTests(unittest.TestCase):
         )
         self.assertIsNone(cleaned_status["exit_reason"])
         self.assertEqual(cleaned_status["lifecycle_state"], "orphaned")
+
+    def test_upgrade_cleanup_retires_only_identity_bound_orphans_from_an_old_source(self) -> None:
+        clock = FakeClock()
+        alive = {1200, 1201, 1301, 1401}
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(raw, clock, process_alive=lambda pid: pid in alive)
+            current = {
+                **lifecycle.status(),
+                "process_id": 1301,
+                "process_identity": "process-1301-start",
+                "source_commit": "b" * 40,
+            }
+            unrelated = {
+                **lifecycle.status(),
+                "process_id": 1401,
+                "process_identity": "process-1401-start",
+                "source_commit": "unknown-source-commit",
+            }
+            (lifecycle.lifecycle_root / "current.json").write_text(json.dumps(current))
+            (lifecycle.lifecycle_root / "unrelated.json").write_text(json.dumps(unrelated))
+            alive.remove(1200)
+            handles = iter((17,))
+            with (
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", side_effect=lambda *_: next(handles)) as open_pidfd,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal") as send_signal,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.select.poll", return_value=ExitedPidfdPoll()),
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close"),
+            ):
+                cleaned = cleanup_retired_orphaned_mcp_processes(
+                    lifecycle.lifecycle_root,
+                    current_source_commit="b" * 40,
+                    process_alive=lambda pid: pid in alive,
+                    process_identity=lambda pid: f"process-{pid}-start",
+                )
+
+        self.assertEqual(cleaned, [1201])
+        open_pidfd.assert_called_once_with(1201, 0)
+        send_signal.assert_called_once_with(17, signal.SIGTERM)
 
     def test_cleanup_preserves_orphan_without_verified_ownership_binding(self) -> None:
         clock = FakeClock()

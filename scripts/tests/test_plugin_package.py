@@ -113,10 +113,11 @@ class PluginPackageTests(unittest.TestCase):
             for name in ('openubmc-target-runtime', 'openubmc-kb'):
                 server = servers[name]
                 transport = server['transport']
-                launch_arg = next(value for value in transport['args'] if value.endswith('.py'))
+                self.assertEqual(transport['command'], 'node')
+                launch_arg = next(value for value in transport['args'] if value.endswith('.js'))
                 launch = Path(transport['cwd'])/launch_arg
                 self.assertTrue(launch.is_file(), str(launch))
-                check = subprocess.run([transport['command'], '-I', str(launch), 'verify'], capture_output=True, text=True)
+                check = subprocess.run([sys.executable, '-I', str(launch.parent/'pluginctl.py'), 'verify'], capture_output=True, text=True)
                 self.assertEqual(check.returncode, 0, check.stderr)
             result = subprocess.run(['codex', 'plugin', 'remove', 'openubmc@runtime-test'], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
