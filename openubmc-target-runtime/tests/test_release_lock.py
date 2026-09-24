@@ -39,7 +39,7 @@ class ReleaseLockTests(unittest.TestCase):
         self.assertEqual(first["schema"], RELEASE_LOCK_SCHEMA)
         self.assertEqual(first["source_commit_policy"], RELEASE_COMMIT_POLICY)
         self.assertEqual(list(first["compatibility"]["clients"]), ["codex"])
-        self.assertEqual(len(first["skills"]), 11)
+        self.assertEqual(len(first["skills"]), 13)
         self.assertEqual(
             len({item["name"] for item in first["skills"]}),
             len(first["skills"]),
@@ -85,12 +85,12 @@ class ReleaseLockTests(unittest.TestCase):
             lock["evaluation_harnesses"],
         )
 
-    def test_workflow_declares_the_v2_1_0_candidate_version(self) -> None:
+    def test_workflow_declares_the_v2_1_2_candidate_version(self) -> None:
         workflow = json.loads(
             (REPO_ROOT / "workflow.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual(workflow["version"], "2.1.0")
+        self.assertEqual(workflow["version"], "2.1.2")
 
     def test_lock_verification_reports_the_immutable_release_identity(self) -> None:
         lock = build_release_lock(REPO_ROOT, source_commit=self.commit)
@@ -107,7 +107,7 @@ class ReleaseLockTests(unittest.TestCase):
             lock["runtime"]["content_digest"],
         )
         self.assertEqual(identity["workflow_digest"], lock["workflow_digest"])
-        self.assertEqual(len(identity["skill_digests"]), 11)
+        self.assertEqual(len(identity["skill_digests"]), 13)
 
     def test_incompatible_or_tampered_lock_fails_before_install(self) -> None:
         lock = build_release_lock(REPO_ROOT, source_commit=self.commit)

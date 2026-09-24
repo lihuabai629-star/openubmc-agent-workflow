@@ -23,7 +23,7 @@ missing ref, a branch such as `main`, or a name that does not resolve as an exac
 Private GitHub access uses `GH_TOKEN` or `GITHUB_TOKEN` only for authenticated downloads and Git
 fetches; the installer does not write the token to the checkout remote, installer state, or logs.
 
-The default `full` profile installs 11 Skills, the Target Runtime, and the standalone
+The default `full` profile installs 13 Skills, the Target Runtime, and the standalone
 `openubmc-kb` stdio MCP. The smaller runtime profile keeps the seven runtime-path Skills:
 
 ```bash
@@ -42,7 +42,7 @@ unrelated client configuration.
 
 ## Codex plugin distribution
 
-The Codex plugin packages the eleven Skills and both MCP launchers under one verified release
+The Codex plugin packages the thirteen Skills and both MCP launchers under one verified release
 identity. See [plugin installation and lifecycle](docs/codex-plugin.md) for archive verification,
 migration, health checks, update, rollback, and audit commands.
 
