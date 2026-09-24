@@ -186,7 +186,7 @@ for line in sys.stdin:
         self.assertEqual(payload["host"], "windows")
         self.assertEqual(payload["reason"], "wsl_unavailable")
         lock = json.loads((self.plugin / "plugin-lock.json").read_text())
-        self.assertEqual(payload["plugin"]["version"], "2.1.0")
+        self.assertEqual(payload["plugin"]["version"], lock["version"])
         self.assertEqual(payload["plugin"]["source_commit"], lock["source_commit"])
         self.assertTrue(payload["plugin"]["integrity"])
         self.assertNotIn(str(self.base), json.dumps(payload))
