@@ -46,6 +46,7 @@ from .semantic_runtime import (
     is_sha256_digest,
 )
 from .observation import observation_consistency
+from .tracing import RunTracer, TraceSettings
 
 
 AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
@@ -1724,9 +1725,11 @@ class AgentGateway:
         runtime: SemanticRuntimePort,
         *,
         projector: ResultProjector | None = None,
+        tracing: RunTracer | None = None,
     ) -> None:
         self.runtime = runtime
         self.projector = projector or ResultProjector()
+        self.tracing = tracing or RunTracer(TraceSettings())
         self._presented_diagnostic_receipts: dict[tuple[str, str], str] = {}
         self._projection_lock = threading.Lock()
 
@@ -1800,21 +1803,22 @@ class AgentGateway:
         task_id: str,
         operation_id: str,
     ) -> dict[str, object]:
-        observation_query = ObservationQuery.from_query(query)
-        result = self.runtime.observe(
-            observation_query,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-        source = dict(result.source)
-        if not source and result.observation_ref is not None:
-            source = result.observation_ref.to_source_dict()
-        return self.projector.observation(
-            result.raw,
-            result.query,
-            assurance=result.assurance,
-            source=source or None,
-        )
+        with self.tracing.span("agent.observe", task_id=task_id):
+            observation_query = ObservationQuery.from_query(query)
+            result = self.runtime.observe(
+                observation_query,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            source = dict(result.source)
+            if not source and result.observation_ref is not None:
+                source = result.observation_ref.to_source_dict()
+            return self.projector.observation(
+                result.raw,
+                result.query,
+                assurance=result.assurance,
+                source=source or None,
+            )
 
     def execute(
         self,
@@ -1823,21 +1827,25 @@ class AgentGateway:
         task_id: str,
         operation_id: str,
     ) -> dict[str, object]:
-        command = decode_run_command(action, operation_id=operation_id)
-        turn = self.runtime.execute(
-            command,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-        projected = self._project_repeated_diagnostic_receipt(
-            self.projector.turn(turn),
-            task_id=task_id,
-            previous_turn_acknowledged=isinstance(
+        raw_run_id = action.get("run_id")
+        run_id = raw_run_id if isinstance(raw_run_id, str) else ""
+        with self.tracing.span("agent.execute", task_id=task_id, run_id=run_id) as span:
+            command = decode_run_command(action, operation_id=operation_id)
+            turn = self.runtime.execute(
                 command,
-                (SubmitGate, CancelRun, CancelIncident),
-            ),
-        )
-        return _finalize_turn_projection(projected)
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            span.bind_run(turn.run_id)
+            projected = self._project_repeated_diagnostic_receipt(
+                self.projector.turn(turn),
+                task_id=task_id,
+                previous_turn_acknowledged=isinstance(
+                    command,
+                    (SubmitGate, CancelRun, CancelIncident),
+                ),
+            )
+            return _finalize_turn_projection(projected)
 
     @staticmethod
     def error(

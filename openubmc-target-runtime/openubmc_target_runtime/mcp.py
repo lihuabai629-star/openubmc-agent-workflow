@@ -63,6 +63,7 @@ from .compatibility import (
     CompatibilityTelemetryRepository,
 )
 from .composition import RuntimeCompositionOptions, compose_runtime
+from .tracing import RunTracer
 from .domain_runtime import (
     canonicalize_tool_arguments,
     validate_boolean_argument_types,
@@ -2170,6 +2171,7 @@ class RuntimeMcpService:
         artifact_store: LocalArtifactStore | None = None,
         credential_memory=None,
         host_continuity=None,
+        tracing: RunTracer | None = None,
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
@@ -2179,6 +2181,7 @@ class RuntimeMcpService:
         self._agent_input = AgentInputAdapter()
         self.credential_memory = credential_memory
         self.host_continuity = host_continuity
+        self.tracing = tracing or RunTracer()
         self.context_mode = selected_context_mode
         self.registry: TaskRunRegistry[TaskT] = TaskRunRegistry(
             factory=backend.open_task,
@@ -2224,6 +2227,7 @@ class RuntimeMcpService:
                     artifact_store
                     or getattr(backend, "artifact_store", None)
                 ),
+                tracing=self.tracing,
             ),
         )
         bind_artifact_store = getattr(backend, "bind_artifact_store", None)
@@ -3105,26 +3109,36 @@ class RuntimeMcpService:
             require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             if name == "observe":
-                return self._runtime.agent.observe(
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
+                with self.tracing.span("mcp.observe", task_id=task_id):
+                    return self._runtime.agent.observe(
+                        arguments,
+                        task_id=task_id,
+                        operation_id=operation_id,
+                    )
             if name == "execute":
-                result = self._runtime.agent.execute(
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
+                raw_run_id = arguments.get("run_id")
+                run_id = raw_run_id if isinstance(raw_run_id, str) else ""
+                with self.tracing.span("mcp.execute", task_id=task_id, run_id=run_id) as span:
+                    result = self._runtime.agent.execute(
+                        arguments,
+                        task_id=task_id,
+                        operation_id=operation_id,
+                    )
+                    if isinstance(result.get("run_id"), str):
+                        span.bind_run(result["run_id"])
                 self._agent_input.remember(task_id, result)
                 if self.host_continuity is not None:
                     from .host_continuity import HostAnnotatedResult, SCHEMA
 
                     try:
-                        metadata = self.host_continuity.capture(
-                            task_id, result,
-                            read_run=self._runtime.operator.read_case_projection,
-                        )
+                        with self.tracing.span(
+                            "host.capture", task_id=task_id,
+                            run_id=result.get("run_id", ""),
+                        ):
+                            metadata = self.host_continuity.capture(
+                                task_id, result,
+                                read_run=self._runtime.operator.read_case_projection,
+                            )
                     except Exception as exc:
                         # Host persistence cannot invalidate an already-executed Effect.
                         # Do not leak the exception's arguments or encourage a new start.
@@ -3518,6 +3532,7 @@ class RuntimeMcpService:
         self._agent_input.clear()
         self._runtime.lifecycle.close()
         self.registry.close()
+        self.tracing.close()
 
 
 class JsonRpcMcpEndpoint:
