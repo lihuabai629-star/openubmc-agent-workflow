@@ -158,6 +158,14 @@ class LocalCredentialSource:
         if not isinstance(target, dict) or not isinstance(defaults.get(purpose, {}), dict) or not isinstance(target.get(purpose, {}), dict):
             raise CredentialConfigurationError('credentials_invalid', 'Credential purposes must contain transport references')
         reference = target.get(purpose, {}).get(transport, defaults.get(purpose, {}).get(transport))
+        if reference is None and config.get('legacy_environment_fallback') is True:
+            # An automatically created IP-only store must not disable existing
+            # process-environment access to other IPs or protocols. A configured
+            # reference (even incomplete) still wins and is never field-merged.
+            record = self._legacy_record('', purpose=purpose, transport=transport)
+            if any(record.values()):
+                self._validate_record(record, purpose=purpose, transport=transport)
+                return record
         if reference is None and not required:
             return None
         if not isinstance(reference, str) or not reference or reference not in records:

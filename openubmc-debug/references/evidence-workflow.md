@@ -76,6 +76,54 @@ The bundled helpers currently implement object access over SSH and log/file acce
 
 Search stable error text, EventName/EventCode, object path, property, interface, or stack symbols. With `.codegraph/`, use CodeGraph for caller/callee, dependency, and impact; use `rg` for exact strings and files. Without `.codegraph/`, use `rg` and direct source inspection.
 
+For a workspace containing both community and internal repositories, bounded
+search now attaches per-hit repository, commit, branch, inspected-file digest and
+modification status. Declare the product/component mapping once in the optional
+`<source-root>/.openubmc/source-catalog.json`. Missing or invalid mapping never
+blocks search; results remain unclassified/reference evidence. A community copy,
+wrong-product checkout or wrong pinned commit cannot become a product owner just
+because the symbol or directory name matches.
+
+```json
+{
+  "schema_version": 1,
+  "product": "board-a",
+  "repositories": [
+    {
+      "path": "community/network_adapter",
+      "origin": "community",
+      "component": "network_adapter",
+      "products": ["board-a"],
+      "role": "reference"
+    },
+    {
+      "path": "internal/network_adapter",
+      "origin": "internal",
+      "component": "network_adapter",
+      "products": ["board-a"],
+      "role": "implementation"
+    }
+  ]
+}
+```
+
+Paths stay under the source root. `origin` is `community`, `internal`, `third_party`
+or `unknown`; `role` is `reference` or `implementation`. Optional `commit` pins a
+full immutable Git hash. Product/ownership labels are local declarations, not
+externally verified facts. A matching implementation is a `product_source_candidate`,
+not proof of deployed firmware or runtime execution. Another product, a pinned
+revision mismatch, or a reference-only tree cannot contribute product implementation
+alignment. Two selected implementations of one component remain ambiguous; neither
+silently wins. Unmapped repositories stay `unknown` rather than guessing ownership
+from their names or remote visibility.
+
+Metadata lookup supports linked worktrees and is bounded to 32 repositories,
+2 seconds and the remaining search budget. File identity reads at most 1 MiB per
+matched file, without Git clean filters/hooks; `modified` covers that file only.
+Metadata failure yields warnings, never a search failure. Compact Evidence pools
+retain the annotations. This is local attribution, not a remote index upload or
+an implementation of LightRAG fusion/semantic ranking.
+
 Distinguish these evidence levels:
 
 - definition: constant, event dictionary, schema, or interface declaration
@@ -200,3 +248,11 @@ human-readable report rather than inventing a transport envelope. Use this order
 
 If the user requests machine-readable output for a direct runtime task, preserve these same
 sections in a task-local JSON object, but do not label it as the canonical Developer result.
+
+## Optional source-search failure
+
+`source_search_failed` means the auxiliary local source lookup failed, not that
+the device observations failed. Retain collected alarm/log lanes, finish normal
+freshness checks, and report the missing source correlation. After fixing the
+catalog/index, retry only the missing local lookup when the evidence is still
+valid; do not repeat a device operation merely to reconstruct a source result.

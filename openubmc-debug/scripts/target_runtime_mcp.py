@@ -1418,6 +1418,8 @@ def create_service():
     )
     return runtime.RuntimeMcpService(
         orchestrated_backend,
+        credential_memory=runtime.VerifiedCredentialMemory(),
+        host_continuity=runtime.HostContinuity(state_dir / "host-continuity"),
         interface_profile=os.environ.get(
             "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE", "agent"
         ),

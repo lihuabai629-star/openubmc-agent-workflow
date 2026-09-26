@@ -28,7 +28,9 @@ class SanitizedReplayTests(unittest.TestCase):
         result = evaluate_case(case)
         self.assertEqual(result["observed_status"], "failed")
         self.assertEqual(result["dimensions"]["execution_host"]["observed_behavior"]["host"],
-                         "windows-native")
+                         "wsl")
+        self.assertEqual(result["dimensions"]["execution_host"]["observed_behavior"]["route"],
+                         "shell-fallback")
 
     def test_final_presence_is_taken_from_the_live_delivery_gate(self):
         path = ROOT / "evaluation" / "sanitized-replays" / "final-answer-negative.json"

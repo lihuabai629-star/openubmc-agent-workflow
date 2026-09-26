@@ -137,8 +137,10 @@ def _validate_targets(config: object) -> None:
     for name in ('credentials', 'defaults', 'targets'):
         if not isinstance(config.get(name, {}), dict):
             raise ConfigurationError('Credential records and target defaults must be objects')
-    if set(config) - {'schema_version', 'credentials', 'defaults', 'targets', 'devices'}:
+    if set(config) - {'schema_version', 'credentials', 'defaults', 'targets', 'devices', 'legacy_environment_fallback'}:
         raise ConfigurationError('Unknown target configuration field')
+    if 'legacy_environment_fallback' in config and type(config['legacy_environment_fallback']) is not bool:
+        raise ConfigurationError('Legacy environment fallback must be a boolean')
     device_associations(config)
     for record in config.get('credentials', {}).values():
         if not isinstance(record, dict) or set(record) - {'user', 'password', 'identity_file'} or any(not isinstance(value, str) or '\0' in value for value in record.values()):
@@ -218,7 +220,7 @@ class LocalConfigurationStore:
         {'targets': _validate_targets, 'kb': _validate_kb, 'conan': _validate_conan}[self.kind](config)
 
     @contextmanager
-    def _locked(self):
+    def _locked(self, *, blocking: bool = True):
         self.source.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = self.source.with_name('.' + self.source.name + '.lock')
         descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -226,7 +228,7 @@ class LocalConfigurationStore:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
                 raise ConfigurationError('Configuration lock must be a private current-user file')
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             yield
         finally:
             os.close(descriptor)
@@ -283,7 +285,8 @@ class LocalConfigurationStore:
 
     def save_and_activate(self, config: dict, *, expected_revision: str | None,
                           expected_active_revision: str | None,
-                          expected_source_text: str | None) -> dict[str, object]:
+                          expected_source_text: str | None,
+                          blocking: bool = True) -> dict[str, object]:
         """Commit a verified local edit without an intervening writer or pending draft."""
         self._validate(config)
         try:
@@ -292,7 +295,7 @@ class LocalConfigurationStore:
             raise ConfigurationError('Configuration must be JSON data') from None
         if len(content) > 1024 * 1024:
             raise ConfigurationError('Configuration exceeds the supported byte limit')
-        with self._locked():
+        with self._locked(blocking=blocking):
             saved = _revision(self.source, 'saved')
             active = _revision(self.source, 'active')
             if saved != expected_revision or active != expected_active_revision or saved != active:

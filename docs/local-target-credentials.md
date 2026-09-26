@@ -72,6 +72,35 @@ records return `credentials_missing`, conflicting sources return
 not authorize new operations; the existing observation and mutation boundaries
 continue to decide what may execute.
 
+## Automatic remembering in the production Runtime
+
+The packaged MCP/Runtime CLI composition enables best-effort remembering, with
+no separate consent prompt and no additional authentication probe. A successful
+BMC SSH authentication, or a Redfish transport that actually authenticates while
+opening its session (currently log-bundle collection), saves an exact IP override.
+Subsequent tasks reuse it through the existing resolver. The private setup page
+already applies the same connect-then-save behavior for BMC/OS SSH and Redfish.
+
+Saving is not a prerequisite for the current operation: a storage error, pending
+draft, or configuration changed during authentication leaves the connection usable.
+Lane status reports `credential_persistence.remembered` and a bounded reason code.
+The existing account/defaults and other IPs/purposes/transports are preserved. An
+unchanged account is not saved again; the original legacy file is never rewritten.
+
+An automatically created store sets `legacy_environment_fallback: true`: when
+there is no configured reference for an IP/purpose/transport, existing canonical
+environment credentials remain usable. Explicit references still win as complete
+records, and ordinary existing JSON files retain their previous no-fallback rule.
+This avoids breaking a second protocol or device when only the first was saved.
+
+The existing JSON format cannot represent port-qualified targets or hostnames;
+these remain in-memory/legacy rather than silently changing another endpoint's
+account. Legacy files are not automatically migrated, preserving their field-wise
+environment precedence and Telnet/OS-port settings. A Redfish Basic-auth client constructor is not evidence
+of authentication and does not trigger saving. These are persistence limitations,
+not new workflow gates. Standalone library users can inject
+`VerifiedCredentialMemory` into `RuntimeMcpService`; it is not a global side effect.
+
 If a credential may have entered a task transcript, process, Runtime record, or
 log, follow [Credential exposure response](credential-exposure-response.md). The
 response rotates the identity at its owning authority and activates a new private

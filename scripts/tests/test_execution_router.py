@@ -17,16 +17,35 @@ from scripts.execution_router import (  # noqa: E402
 
 
 class ExecutionRouterTests(unittest.TestCase):
-    def test_healthy_windows_protocol_uses_structured_path(self) -> None:
+    def test_windows_client_uses_healthy_wsl_runtime(self) -> None:
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
             "diagnose",
-            probe=probe_protocol("diagnose", host="windows-native", list_tools=lambda: ["observe", "execute"]),
+            probe=probe_protocol("diagnose", host="wsl", list_tools=lambda: ["observe", "execute"]),
             requested_scope="BMC 192.0.2.10",
             evidence_boundary="fresh request",
         )
         self.assertEqual(receipt["path"], "structured-runtime-mcp")
+        self.assertEqual(receipt["client_environment"], "windows")
+        self.assertEqual(receipt["execution_host"], "wsl")
+        self.assertEqual(router.metrics()["host_mismatches"], 0)
         self.assertEqual(router.metrics()["structured_calls"], 1)
+
+    def test_windows_fallback_remains_on_wsl_when_protocol_is_unavailable(self) -> None:
+        receipt = ExecutionRouter(environment="windows").choose(
+            "diagnose", requested_scope="BMC 192.0.2.10", evidence_boundary="fresh request",
+        )
+        self.assertEqual(receipt["path"], "shell-fallback")
+        self.assertEqual(receipt["execution_host"], "wsl")
+        self.assertEqual(receipt["fallback"]["reason_code"], "probe_missing")
+
+    def test_windows_native_probe_does_not_impersonate_wsl_backend(self) -> None:
+        receipt = ExecutionRouter(environment="windows").choose(
+            "diagnose", probe=ProtocolProbe(True, "windows-native"),
+            requested_scope="BMC 192.0.2.10", evidence_boundary="fresh request",
+        )
+        self.assertEqual(receipt["path"], "shell-fallback")
+        self.assertEqual(receipt["fallback"]["reason_code"], "protocol_host_mismatch")
 
     def test_unhealthy_wsl_protocol_requires_bounded_shell_receipt(self) -> None:
         router = ExecutionRouter(environment="wsl")
@@ -57,7 +76,7 @@ class ExecutionRouterTests(unittest.TestCase):
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
             "upgrade",
-            probe=ProtocolProbe(False, "wsl", "mcp_unavailable"),
+            probe=ProtocolProbe(False, "linux", "mcp_unavailable"),
             requested_scope="BMC 192.0.2.10",
             evidence_boundary="upload response",
         )

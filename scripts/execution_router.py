@@ -96,7 +96,9 @@ class ExecutionRouter:
 
     @property
     def expected_host(self) -> str:
-        return "windows-native" if self.environment == "windows" else self.environment
+        # Windows is the client platform; the packaged Runtime executes in WSL.
+        # Keep host identity tied to the selected execution backend, not the UI.
+        return "wsl" if self.environment == "windows" else self.environment
 
     def choose(
         self,
@@ -122,6 +124,7 @@ class ExecutionRouter:
                 "schema": SCHEMA,
                 "path": "structured-runtime-mcp",
                 "operation": operation,
+                "client_environment": self.environment,
                 "execution_host": probe.host,
                 "requested_scope": requested_scope,
                 "evidence_boundary": evidence_boundary,
@@ -143,6 +146,7 @@ class ExecutionRouter:
                 "schema": SCHEMA,
                 "path": "shell-fallback",
                 "operation": operation,
+                "client_environment": self.environment,
                 "execution_host": self.expected_host,
                 "requested_scope": requested_scope,
                 "evidence_boundary": evidence_boundary,

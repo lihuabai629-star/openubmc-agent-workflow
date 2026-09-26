@@ -456,9 +456,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 )
 
             with (
-                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open") as open_pidfd,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True) as open_pidfd,
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch(
                     "openubmc_target_runtime.mcp_lifecycle.select.poll",
@@ -510,8 +510,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             alive.remove(1200)
             handles = iter((17,))
             with (
-                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", side_effect=lambda *_: next(handles)) as open_pidfd,
-                mock.patch("openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal") as send_signal,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", side_effect=lambda *_: next(handles), create=True) as open_pidfd,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True) as send_signal,
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.select.poll", return_value=ExitedPidfdPoll()),
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close"),
             ):
@@ -536,10 +536,10 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
             with (
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open"
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True
                 ) as open_pidfd,
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
@@ -576,11 +576,11 @@ class McpProcessLifecycleTests(unittest.TestCase):
             alive.remove(1200)
             with (
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open",
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True,
                     return_value=17,
                 ) as open_pidfd,
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch(
                     "openubmc_target_runtime.mcp_lifecycle.select.poll",
@@ -611,9 +611,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
             alive.remove(1200)
             with (
-                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open") as open_pidfd,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True) as open_pidfd,
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch(
                     "openubmc_target_runtime.mcp_lifecycle.select.poll",
@@ -650,11 +650,11 @@ class McpProcessLifecycleTests(unittest.TestCase):
             pending_poll.poll.return_value = []
             with (
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open",
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True,
                     return_value=29,
                 ),
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch(
                     "openubmc_target_runtime.mcp_lifecycle.select.poll",
@@ -691,9 +691,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
             alive.remove(1200)
             with (
-                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open") as open_pidfd,
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True) as open_pidfd,
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close") as close_pidfd,
             ):
@@ -730,11 +730,11 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open",
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open", create=True,
                     side_effect=open_and_mark_active,
                 ),
                 mock.patch(
-                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal", create=True
                 ) as send_signal,
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close") as close_pidfd,
             ):

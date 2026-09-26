@@ -20,6 +20,7 @@ from typing import Protocol, TypeVar
 import uuid
 
 from .configuration import configuration_request
+from .credential_memory import credential_memory_request
 from .contracts import (
     RUNTIME_API_VERSION,
     CredentialSelector,
@@ -2166,12 +2167,16 @@ class RuntimeMcpService:
         ]
         | None = None,
         artifact_store: LocalArtifactStore | None = None,
+        credential_memory=None,
+        host_continuity=None,
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
         if selected_context_mode not in {"authoritative", "shadow"}:
             raise ValueError("context_mode must be authoritative or shadow")
         self.backend = backend
+        self.credential_memory = credential_memory
+        self.host_continuity = host_continuity
         self.context_mode = selected_context_mode
         self.registry: TaskRunRegistry[TaskT] = TaskRunRegistry(
             factory=backend.open_task,
@@ -3075,6 +3080,7 @@ class RuntimeMcpService:
 
     @configuration_request()
     @secret_redaction_request()
+    @credential_memory_request
     def call_exposed_tool(
         self,
         name: str,
@@ -3098,11 +3104,29 @@ class RuntimeMcpService:
                     operation_id=operation_id,
                 )
             if name == "execute":
-                return self._runtime.agent.execute(
+                result = self._runtime.agent.execute(
                     arguments,
                     task_id=task_id,
                     operation_id=operation_id,
                 )
+                if self.host_continuity is not None:
+                    from .host_continuity import HostAnnotatedResult, SCHEMA
+
+                    try:
+                        metadata = self.host_continuity.capture(
+                            task_id, result,
+                            read_run=self._runtime.operator.read_case_projection,
+                        )
+                    except Exception as exc:
+                        # Host persistence cannot invalidate an already-executed Effect.
+                        # Do not leak the exception's arguments or encourage a new start.
+                        metadata = {"schema": SCHEMA, "status": "unavailable",
+                                    "error_type": type(exc).__name__,
+                                    "run_id": result.get("run_id", ""),
+                                    "next": "Preserve this Run identity; repair host storage. "
+                                            "Do not repeat the device operation."}
+                    return HostAnnotatedResult(result, metadata)
+                return result
             raise ValueError(f"unknown Agent operation: {name}")
         self.interface_catalog.validate_arguments(name, arguments)
         return self.call_tool(
@@ -3206,6 +3230,7 @@ class RuntimeMcpService:
 
     @configuration_request()
     @secret_redaction_request()
+    @credential_memory_request
     def call_tool(
         self,
         name: str,
@@ -3496,7 +3521,10 @@ class JsonRpcMcpEndpoint:
             return self.session_task_id
         metadata = params.get("_meta")
         if isinstance(metadata, Mapping):
-            for key in ("codex/taskId", "taskId", "task_id"):
+            # Native Codex 0.153.4 sends threadId on each tools/call. It does
+            # not export CODEX_THREAD_ID to its stdio MCP child. Bind the same
+            # identity used by SessionStart/Stop hooks; keep legacy aliases.
+            for key in ("codex/taskId", "taskId", "task_id", "threadId"):
                 value = metadata.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
@@ -3840,6 +3868,10 @@ class JsonRpcMcpEndpoint:
                 result["structuredContent"] = value.envelope
         elif isinstance(value, dict):
             result["structuredContent"] = value
+        from .host_continuity import HostAnnotatedResult, META_KEY
+
+        if isinstance(value, HostAnnotatedResult):
+            result["_meta"] = {META_KEY: value.host_metadata}
         return result
 
     def handle(self, message: Mapping[str, object]) -> dict[str, object] | None:

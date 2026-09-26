@@ -333,7 +333,7 @@ def qualify_terminal_answer(
         if not record.text.strip():
             failures.append("final_answer_empty")
         if (not record.delivered_at or not record.host_event_id
-                or record.delivery_source != "codex-rollout-v1"):
+                or record.delivery_source not in {"codex-rollout-v1", "codex-stop-v1"}):
             failures.append("final_answer_unconfirmed")
     return {
         "schema": f"{SCHEMA}/qualification",

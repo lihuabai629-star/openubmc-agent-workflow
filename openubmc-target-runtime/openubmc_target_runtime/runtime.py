@@ -43,6 +43,7 @@ from .mutation import (
     mutation_journal_operation_status,
 )
 from .orchestration import TaskIntent, TaskOrchestrationContext
+from .credential_memory import AuthenticationMemory
 
 
 T = TypeVar("T")
@@ -776,6 +777,7 @@ class SshLane(Generic[MasterT, ChannelResultT]):
         self._credentials = credentials
         self._transport = transport
         self._metric_recorder = metric_recorder
+        self._authentication_memory = AuthenticationMemory()
         self._master: MasterT | None = None
         self._master_epoch: int | None = None
         self._master_opens = 0
@@ -847,6 +849,9 @@ class SshLane(Generic[MasterT, ChannelResultT]):
         self._master_epoch = self._coordinator.lane_state("ssh").epoch
         self._master_opens += 1
         self._record("authentications", "ssh_authentications")
+        self._authentication_memory.authenticated(
+            host=self._coordinator.target.host, transport="ssh", credentials=self._credentials,
+        )
         if reconnecting:
             self._record("reconnects", "ssh_reconnects")
         return master
@@ -1109,6 +1114,7 @@ class SshLane(Generic[MasterT, ChannelResultT]):
                 "connected": self._master is not None,
                 "ssh_epoch": self._coordinator.lane_state("ssh").epoch,
                 "cached_state": list(sorted(self._cache)),
+                "credential_persistence": dict(self._authentication_memory.status),
                 "metrics": dict(self._metrics),
             }
 
@@ -1398,6 +1404,7 @@ class RedfishLane(Generic[RedfishSessionT, RedfishResultT]):
         self._credentials = credentials
         self._transport = transport
         self._metric_recorder = metric_recorder
+        self._authentication_memory = AuthenticationMemory()
         self._session: RedfishSessionT | None = None
         self._session_epoch: int | None = None
         self._session_opens = 0
@@ -1469,6 +1476,12 @@ class RedfishLane(Generic[RedfishSessionT, RedfishResultT]):
         self._session_epoch = self._coordinator.lane_state("redfish").epoch
         self._session_opens += 1
         self._record("sessions", "redfish_sessions")
+        # Some adapters only construct a local Basic-auth client here. They
+        # must not report authentication until a protected exchange occurs.
+        if getattr(self._transport, "authenticates_on_open", False) is True:
+            self._authentication_memory.authenticated(
+                host=self._coordinator.target.host, transport="redfish", credentials=self._credentials,
+            )
         if reconnecting:
             self._record("reconnects", "redfish_reconnects")
         return session
@@ -1560,6 +1573,7 @@ class RedfishLane(Generic[RedfishSessionT, RedfishResultT]):
                 "lease_name": self.lease_name,
                 "connected": self._session is not None,
                 "redfish_epoch": self._coordinator.lane_state("redfish").epoch,
+                "credential_persistence": dict(self._authentication_memory.status),
                 "metrics": dict(self._metrics),
             }
 

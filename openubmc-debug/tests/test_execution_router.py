@@ -30,7 +30,7 @@ class ExecutionRouterTests(unittest.TestCase):
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
             "diagnose",
-            probe=probe_protocol("diagnose", host="windows-native", list_tools=lambda: ["observe", "execute"]),
+            probe=probe_protocol("diagnose", host="wsl", list_tools=lambda: ["observe", "execute"]),
             requested_scope="BMC 192.0.2.10",
             evidence_boundary="fresh request",
         )
@@ -66,7 +66,7 @@ class ExecutionRouterTests(unittest.TestCase):
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
             "upgrade",
-            probe=ProtocolProbe(False, "wsl", "mcp_unavailable"),
+            probe=ProtocolProbe(False, "linux", "mcp_unavailable"),
             requested_scope="BMC 192.0.2.10",
             evidence_boundary="upload response",
         )
@@ -83,7 +83,7 @@ class ExecutionRouterTests(unittest.TestCase):
     def test_healthy_protocol_on_wrong_host_cannot_select_structured_path(self) -> None:
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
-            "diagnose", probe=ProtocolProbe(True, "wsl", structured_tools=("observe", "execute")),
+            "diagnose", probe=ProtocolProbe(True, "windows-native", structured_tools=("observe", "execute")),
             requested_scope="BMC fixture.invalid", evidence_boundary="fresh observation",
         )
         self.assertEqual(receipt["path"], "shell-fallback")
@@ -92,7 +92,7 @@ class ExecutionRouterTests(unittest.TestCase):
     def test_unsupported_operation_has_explicit_bounded_fallback(self) -> None:
         router = ExecutionRouter(environment="windows")
         receipt = router.choose(
-            "custom-read", probe=ProtocolProbe(True, "windows-native", structured_tools=("observe", "execute")),
+            "custom-read", probe=ProtocolProbe(True, "wsl", structured_tools=("observe", "execute")),
             requested_scope="BMC fixture.invalid", evidence_boundary="command output only",
         )
         self.assertEqual(receipt["path"], "shell-fallback")

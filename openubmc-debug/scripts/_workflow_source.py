@@ -12,6 +12,7 @@ import stat
 import subprocess
 import threading
 import time
+from _source_catalog import SourceCatalog
 
 
 _SOURCE_LINE_LIMIT = 2000
@@ -495,6 +496,8 @@ def search_source_terms(
     if errors:
         overflow.update({term: True for term in unique_terms})
     matches = _merge_source_matches(unique_terms, per_term_matches)
+    provenance = SourceCatalog(root, timeout=max(0.0, min(float(timeout), 60.0) -
+                                                (time.monotonic() - started))).annotate(matches)
     per_term = {
         term: {
             "quota": quotas[term],
@@ -522,6 +525,7 @@ def search_source_terms(
         "rg_available": bool(rg),
         "codegraph_available": has_codegraph,
         "matches": matches,
+        "provenance": provenance,
         "hits": rendered_hits,
         "per_term": per_term,
         "requested_limit": max_matches,

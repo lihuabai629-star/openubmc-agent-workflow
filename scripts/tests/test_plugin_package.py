@@ -19,7 +19,7 @@ class PluginPackageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source_directory = tempfile.TemporaryDirectory()
         cls.source = Path(cls.source_directory.name)
-        files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
+        files = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=ROOT).decode().split('\0')
         for name in files:
             if name and (ROOT/name).is_file():
                 target = cls.source/name
@@ -48,6 +48,9 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(check.returncode, 0, check.stderr)
             report = json.loads(check.stdout)
             self.assertTrue(report['ok'])
+            self.assertTrue((plugin/'hooks/hooks.json').is_file())
+            self.assertTrue((plugin/'scripts/openubmc-continuity-hook.js').is_file())
+            self.assertTrue((plugin/'skills/openubmc-debug/scripts/host_continuity.py').is_file())
             self.assertEqual(len(report['skills']), 13)
             for skill in ('openubmc-bingo-build', 'openubmc-bingo-development'):
                 self.assertIn(skill, report['skills'])
@@ -179,7 +182,7 @@ class PluginPackageTests(unittest.TestCase):
             result = subprocess.run([*cli, 'restore-legacy', '--home', str(home), '--transaction', report['transaction']], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(config.read_text(), original)
-            self.assertEqual(link.resolve(), source)
+            self.assertEqual(link.resolve(), source.resolve())
 
     def test_install_rejects_archive_digest_before_configuration_changes(self):
         with tempfile.TemporaryDirectory() as temporary:

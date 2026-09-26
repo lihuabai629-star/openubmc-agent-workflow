@@ -306,6 +306,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
     targets = set(state.get('codex_skill_center', {}).get('targets', []))
     if source:
         targets.update(str(Path(source)/name) for name in skill_paths)
+    # Filesystem identity can differ from the spelling saved in old config
+    # (for example macOS /var versus /private/var). Keep raw spellings for
+    # configuration removal, but compare links against canonical targets.
+    resolved_targets = {str(Path(target).resolve()) for target in targets}
     links = []
     exact_skill_files = set(actionable_loose_skill_overlaps(
         home, skill_paths, codex_root, skill_names=skill_names))
@@ -320,10 +324,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
             # Exact-name loose Skills compete with the marketplace Skill even
             # when an older installer left no usable ownership record.  A
             # config-only disable is reversible and does not claim the files.
-            if path.is_symlink() and str(path.resolve()) in targets:
+            if path.is_symlink() and str(path.resolve()) in resolved_targets:
                 links.append({'path': str(path), 'target': os.readlink(path)})
             elif mode == 'disable-only' and not exact_overlap and str(path) in state.get('links', {}):
-                if str(path.resolve()) not in targets:
+                if str(path.resolve()) not in resolved_targets:
                     raise ValueError('Skill installation ownership conflicts at: ' + str(path))
     changes = {'skills': [], 'mcp_servers': sorted(owned_servers), 'plugins': []}
     if mode == 'disable-only':

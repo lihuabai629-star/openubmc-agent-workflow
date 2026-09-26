@@ -225,6 +225,11 @@ def _implementation_alignment(
     path_dimensions: dict[str, set[str]] = {}
     path_refs: dict[str, list[int]] = {}
     for match in matches:
+        source = match.get("source", {})
+        if isinstance(source, dict) and source.get("origin_basis") == "catalog" and source.get("applicability") != "product_source_candidate":
+            # Keep these hits as references, but do not turn a community copy
+            # or another product's implementation into this product's owner.
+            continue
         path = str(match.get("path", "")).strip()
         if not path:
             continue
@@ -293,22 +298,29 @@ def build_correlation(
     source_terms = list(alarm_terms)
     if workflow_keyword and workflow_keyword not in source_terms:
         source_terms.append(workflow_keyword)
-    source_search = (
-        search_source_terms(source_root, source_terms, max_matches, timeout)
-        if enabled
-        else {
-            "ok": False,
-            "code": "skipped",
-            "method": "none",
-            "rg_available": source_search_tool_available(),
-            "matches": [],
-            "hits": [],
-            "per_term": {},
-            "truncated": False,
-            "timed_out": False,
-            "error": "Source correlation disabled",
-        }
-    )
+    source_search = {
+        "ok": False,
+        "code": "skipped",
+        "method": "none",
+        "rg_available": source_search_tool_available(),
+        "matches": [],
+        "hits": [],
+        "per_term": {},
+        "truncated": False,
+        "timed_out": False,
+        "error": "Source correlation disabled",
+    }
+    if enabled:
+        try:
+            source_search = search_source_terms(source_root, source_terms, max_matches, timeout)
+        except Exception as exc:
+            # Source indexing is auxiliary to already-collected device evidence.
+            # Preserve those lanes and continue freshness collection. Never retry
+            # target operations because a local catalog/index failed.
+            source_search.update(
+                code="source_search_failed", error="Source search unavailable; " + type(exc).__name__,
+                recovery="repair_source_then_search", independent_evidence_preserved=True,
+            )
     source_matches = source_search.get("matches")
     source_pool = source_matches if isinstance(source_matches, list) else []
     since_boot = _since_boot_status(alarm_logs_result)

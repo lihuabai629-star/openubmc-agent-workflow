@@ -83,7 +83,7 @@ def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
         router = ExecutionRouter(environment=environment)
         route = router.choose(
             operation,
-            probe=probe_protocol(operation, host=router.expected_host,
+            probe=probe_protocol(operation, host=str(probe.get("host", router.expected_host)),
                                  list_tools=lambda: raw_tools),
             requested_scope="sanitized fixture", evidence_boundary="router receipt",
         )

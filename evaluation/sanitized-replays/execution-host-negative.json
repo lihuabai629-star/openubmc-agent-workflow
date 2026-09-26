@@ -1,6 +1,6 @@
 {
   "case_id": "execution-host-negative",
-  "probe": {"kind": "execution-route", "environment": "windows", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "windows-native", "route": "structured-runtime"}},
+  "probe": {"kind": "execution-route", "environment": "windows", "host": "windows-native", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "wsl", "route": "shell-fallback"}},
   "evidence_boundary": {
     "completion_calibration": {
       "bounded": true,
