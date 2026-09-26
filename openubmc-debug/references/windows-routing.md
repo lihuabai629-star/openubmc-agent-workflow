@@ -1,21 +1,34 @@
 # Windows/WSL execution routing
 
-Check that the Runtime MCP responds to its protocol and exposes `observe` and
-`execute`, then use the corresponding structured operation. A configured server
-name or live process alone does not establish health.
+For diagnosis, build, upgrade, evidence, and rollback requests, first probe the
+selected WSL Runtime MCP with bounded `initialize` and `tools/list` requests.
+Require the same backend to answer both and advertise `observe` and `execute`.
+Then continue with the typed Runtime `observe` or `execute` operation. A live
+process, relay, port, or remembered tool list does not prove protocol health.
 
-`environment="windows"` identifies the client, not the Runtime host. The packaged
-execution host is `wsl`; a healthy WSL probe selects structured execution. Receipts
-keep `client_environment` and `execution_host` separate. A `windows-native` or
-unrelated Linux probe cannot impersonate that selected backend. Distribution
-selection remains owned by the existing Local Setup Plane.
+`environment="windows"` identifies the client. The packaged structured
+execution host is `wsl`; a native Windows probe cannot impersonate that
+backend. WSL distribution selection belongs to the Local Setup Plane. This
+route does not claim broad native Windows Runtime support.
 
-When the protocol is unavailable or an operation is unsupported, record the
-fallback with `scripts/execution_router.py` (`ExecutionRouter.choose`) before
-using a shell. Retain `reason_code`, actual execution host, target scope,
-evidence boundary, and a call budget of at most 32. Admit each shell command
-through `ExecutionRouter.admit_shell`; stop on repetition or exhausted budget.
-Count PowerShell→WSL→SSH transitions and name the host that observed each fact.
+When MCP is unavailable, unhealthy, on the wrong host, or the requested
+operation is unsupported, call `ExecutionRouter.choose` in
+`scripts/execution_router.py` and retain its receipt. Set `shell_host` to the
+actual command origin (`windows-native` for PowerShell, `wsl` for a shell
+already running in WSL). The receipt records `reason_code`, requested scope,
+evidence boundary, and a total call budget of at most 32. A Windows fallback
+without `shell_host` is rejected.
 
-Shell output cannot close a mutation, deployment, runtime-verification, or
-rollback Gate; those conclusions require Runtime evidence.
+Pass each argument vector through `ExecutionRouter.admit_shell` with the
+adapter-observed `observed_host` before running it. A host mismatch is rejected.
+Preserve the returned receipt, including command digest and host path.
+PowerShell → WSL → SSH counts as two transitions; the final SSH target remains
+bound to the requested scope. Stop when a repeated equivalent command or an
+exhausted budget returns `convergence_blocker`. Split command chains into
+separately budgeted actions. Do not place passwords or tokens on command lines.
+
+Shell output is observational only. It cannot close any typed Gate, including
+mutation, deployment, runtime verification, or rollback. A fallback stays
+unresolved in metrics until a Runtime-facing adapter verifies an actual Runtime
+evidence reference. The Runtime alone owns Run, Gate, Effect, Outcome,
+verification, and rollback decisions.

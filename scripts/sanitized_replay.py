@@ -15,7 +15,7 @@ import tempfile
 SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
-from execution_router import ExecutionRouter, probe_protocol
+from execution_router import ExecutionRouter, SUPPORTED_OPERATIONS, probe_protocol
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "openubmc-target-runtime"
 if str(RUNTIME_ROOT) not in sys.path:
@@ -81,16 +81,34 @@ def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
             raise ReplayError("execution-route probe tools must be a list")
         router = ExecutionRouter(environment=environment)
+        health = probe_protocol(
+            operation, host=str(probe.get("host", router.expected_host)),
+            initialize=lambda: ({"protocolVersion": "2025-03-26"}
+                                if probe.get("initialized", True) else {}),
+            list_tools=lambda: {"tools": [{"name": name} for name in raw_tools]},
+        )
+        fallback_host = (str(probe.get("shell_host", router.expected_host))
+                         if (not health.ready or health.host != router.expected_host
+                             or operation not in SUPPORTED_OPERATIONS) else None)
         route = router.choose(
             operation,
-            probe=probe_protocol(operation, host=str(probe.get("host", router.expected_host)),
-                                 list_tools=lambda: raw_tools),
+            probe=health,
             requested_scope="sanitized fixture", evidence_boundary="router receipt",
+            shell_host=fallback_host,
         )
-        observed["execution_host"] = {
+        route_observation = {
             "host": route["execution_host"],
             "route": "structured-runtime" if route["path"] == "structured-runtime-mcp" else "shell-fallback",
         }
+        if route["path"] == "shell-fallback":
+            fallback = route["fallback"]
+            route_observation.update({
+                "reason_code": fallback["reason_code"],
+                "requested_scope": route["requested_scope"],
+                "evidence_boundary": route["evidence_boundary"],
+                "call_budget": fallback["budget"],
+            })
+        observed["execution_host"] = route_observation
     elif probe.get("kind") == "terminal-answer":
         task_id = str(case.get("case_id", ""))
         outcome = {"status": "completed", "summary": "fixture"}

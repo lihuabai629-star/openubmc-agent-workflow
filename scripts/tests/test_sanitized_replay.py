@@ -32,6 +32,19 @@ class SanitizedReplayTests(unittest.TestCase):
         self.assertEqual(result["dimensions"]["execution_host"]["observed_behavior"]["route"],
                          "shell-fallback")
 
+    def test_live_fallback_exposes_required_receipt_fields(self):
+        path = ROOT / "evaluation" / "sanitized-replays" / "execution-host-negative.json"
+        case = json.loads(path.read_text(encoding="utf-8"))
+        case["probe"]["host"] = "wsl"
+        case["probe"]["initialized"] = False
+        result = evaluate_case(case)
+        observed = result["dimensions"]["execution_host"]["observed_behavior"]
+        self.assertEqual(observed["reason_code"], "initialize_invalid")
+        self.assertEqual(observed["host"], "wsl")
+        self.assertEqual(observed["requested_scope"], "sanitized fixture")
+        self.assertEqual(observed["evidence_boundary"], "router receipt")
+        self.assertEqual(observed["call_budget"], 8)
+
     def test_final_presence_is_taken_from_the_live_delivery_gate(self):
         path = ROOT / "evaluation" / "sanitized-replays" / "final-answer-negative.json"
         case = json.loads(path.read_text(encoding="utf-8"))
