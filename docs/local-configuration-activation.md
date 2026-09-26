@@ -13,6 +13,11 @@ has been recorded by this configuration store; saving or activation never establ
 an account works.
 
 Target configuration uses the schema in [local target credentials](local-target-credentials.md).
+Its version 1 `target_ports` references and `legacy_source_overlay` flag are
+additive. An overlay snapshot selects verified exact endpoints while the
+unchanged original private legacy file supplies unmatched SSH, Redfish, OS,
+Telnet and port values through the previous environment precedence. A verified
+autosave compares both the active revision and original source before commit.
 KB configuration accepts account, OAuth and LightRAG endpoints, client configuration, scopes,
 request timeout and token-cache path. Incomplete account records may be saved; connection
 attempts report missing credentials. HTTPS is required for configured remote KB endpoints;
@@ -29,3 +34,6 @@ Snapshots live in `.<source-name>.revisions/`; the `.<source-name>.saved.json` a
 `.<source-name>.active.json` sidecars contain revision pointers only. Source and snapshot files
 must stay local. Snapshot files are mode 0600 and their directory is mode 0700 on Linux/WSL.
 The writer requires POSIX locking; native Windows activation is not qualified.
+The verified save-and-activate path stages private marker backups under that
+lock. If a write fails, it restores the prior saved/active pointers and removes
+the new snapshot before reporting a storage failure to the caller.

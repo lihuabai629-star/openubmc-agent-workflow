@@ -11,6 +11,27 @@ from openubmc_target_runtime import CredentialResolver
 
 
 class LocalCredentialTests(unittest.TestCase):
+    def test_port_qualified_references_validate_and_do_not_change_schema_version(self):
+        from openubmc_target_runtime.configuration import LocalConfigurationStore, ConfigurationError
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            store = LocalConfigurationStore(path, kind='targets')
+            config = {'schema_version': 1,
+                      'credentials': {'custom': {'user': 'fixture', 'password': 'private-secret'}},
+                      'target_ports': {'192.0.2.10': {'bmc': {'ssh': {'2222': 'custom'}}}}}
+            saved = store.save(config, expected_revision=None)
+            store.activate(saved['revision'], expected_active_revision=None)
+            chosen = CredentialResolver(config_path=path, environ={}).resolve_local(
+                task_id='fresh', host='192.0.2.10', transport='ssh', port=2222)
+            self.assertEqual((chosen.credentials.password, chosen.credentials.port),
+                             ('private-secret', 2222))
+            for invalid in ('0', '02222', '22', '65536'):
+                with self.subTest(port=invalid):
+                    broken = {**config, 'target_ports': {
+                        '192.0.2.10': {'bmc': {'ssh': {invalid: 'custom'}}}}}
+                    with self.assertRaises(ConfigurationError):
+                        store.save(broken, expected_revision=saved['revision'])
+
     def test_associated_os_uses_the_activated_task_snapshot_without_returning_secrets(self):
         from openubmc_target_runtime.configuration import LocalConfigurationStore, ConfigurationError
         with tempfile.TemporaryDirectory() as raw:
