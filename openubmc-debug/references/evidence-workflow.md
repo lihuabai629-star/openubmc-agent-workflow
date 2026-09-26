@@ -121,8 +121,38 @@ Metadata lookup supports linked worktrees and is bounded to 32 repositories,
 2 seconds and the remaining search budget. File identity reads at most 1 MiB per
 matched file, without Git clean filters/hooks; `modified` covers that file only.
 Metadata failure yields warnings, never a search failure. Compact Evidence pools
-retain the annotations. This is local attribution, not a remote index upload or
-an implementation of LightRAG fusion/semantic ranking.
+retain the annotations. This is local attribution, not a remote index upload.
+
+For a bounded offline lookup across Lua, C/C++ and model/configuration files,
+use the packaged Debug helper's query mode:
+
+```bash
+python <debug-skill>/scripts/source_trace.py --source-root <mixed-source-root> --query '0xE001' --timeout 8
+```
+
+The disposable SQLite index defaults to a private file under the user's cache
+directory; `--index-path` selects another cache file. It hashes each supported
+source file and rebuilds token/line entries only when content changes. Search
+results resolve catalog selection, repository root, commit, branch and file
+modification state at query time. `index.updated_files`, `unchanged_files` and
+`removed_files` describe that pass. `source.dirty` covers the matched file, not
+the whole checkout. Exact identifiers and paths rank first; query text without
+indexable identifiers uses the existing bounded source search. An unreadable or
+unavailable index also falls back to that search with `status=partial`. A
+language service is not required; syntax resolution remains the separate Lua
+trace below or a corroborated CodeGraph result.
+
+For a natural-language question, optionally save the already obtained
+`openubmc_kb_query` JSON MCP receipt and pass `--kb-result-file <receipt.json>`.
+The helper reads at most 64 KiB, accepts only bounded `reference_id` and
+`file_path` labels, and does not call the KB itself. Returned KB rows are
+`knowledge_candidate` entries with `applicability=unverified`; they never
+inherit a local source product or commit. A KB outage yields `status=partial`
+while retaining local hits. `evidence_ref` and `freshness` bind each local
+result to inspected bytes and query time. The index can cover at most 4,096
+files and 64 MiB per pass by default; partial coverage, truncation and missing
+provenance remain visible. Neither a local hit nor a KB candidate proves the
+source was deployed or that the path executed on a target.
 
 Distinguish these evidence levels:
 
