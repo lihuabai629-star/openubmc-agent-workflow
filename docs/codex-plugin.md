@@ -132,3 +132,31 @@ locked native Codex executable, and a local Responses fixture. It checks package
 MCP discovery, `observe`/`execute` request validation, two independent Codex processes and their
 Runtime shutdown records, uninstall, reinstall, and preservation of external configuration.
 Published archives additionally pass the repository's immutable release gate.
+
+For a local, qualified archive, write the package, qualification report and provenance manifest
+outside the source checkout:
+
+```bash
+python3 scripts/qualify_plugin.py --source . --source-ref HEAD \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --output /tmp/plugin-qualification.json
+python3 scripts/plugin_provenance.py create --source . \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --qualification /tmp/plugin-qualification.json \
+  --manifest /tmp/plugin-provenance.json
+python3 scripts/plugin_provenance.py verify --source . \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --qualification /tmp/plugin-qualification.json \
+  --manifest /tmp/plugin-provenance.json
+```
+
+The manifest records the clean Git commit and tree, exact archive digest, plugin-lock content
+digest, the SHA-256 inventory of the packaged Python and knowledge MCP dependency locks, and
+the exact qualification report digest. Verification checks the package's existing file inventory,
+rebuilds the archive from the clean commit, and checks the passing qualification report against
+that archive. Modified or missing evidence and a dirty checkout fail. The inventory covers the two
+lockfiles, not a full transitive SBOM. The manifest stores no local paths or credentials.
+
+This is local, unsigned linkage evidence with the explicit `local-unpublished` claim. It does not
+verify a hosted CI run or publish a release. Managed release identity and eligibility continue to
+come from the existing `release-lock.json` verification and Release Gate.
