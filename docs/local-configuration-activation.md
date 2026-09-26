@@ -35,5 +35,7 @@ Snapshots live in `.<source-name>.revisions/`; the `.<source-name>.saved.json` a
 must stay local. Snapshot files are mode 0600 and their directory is mode 0700 on Linux/WSL.
 The writer requires POSIX locking; native Windows activation is not qualified.
 The verified save-and-activate path stages private marker backups under that
-lock. If a write fails, it restores the prior saved/active pointers and removes
-the new snapshot before reporting a storage failure to the caller.
+lock. On a recoverable write failure, it restores the prior saved/active
+pointers and removes the new snapshot before reporting a storage failure.
+If the filesystem also prevents rollback, inspect the private revision state
+before another save.
