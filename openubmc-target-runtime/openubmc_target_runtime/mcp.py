@@ -34,6 +34,7 @@ from .agent_gateway import (
     agent_operation_descriptors,
     render_execute_turn_text,
 )
+from .agent_input import AgentInputAdapter
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
     AssuranceUnavailable,
@@ -2175,6 +2176,7 @@ class RuntimeMcpService:
         if selected_context_mode not in {"authoritative", "shadow"}:
             raise ValueError("context_mode must be authoritative or shadow")
         self.backend = backend
+        self._agent_input = AgentInputAdapter()
         self.credential_memory = credential_memory
         self.host_continuity = host_continuity
         self.context_mode = selected_context_mode
@@ -3096,6 +3098,11 @@ class RuntimeMcpService:
         require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             bounded_request(arguments)
+            arguments = self._agent_input.normalize(
+                name, arguments, task_id=task_id
+            )
+            bounded_request(arguments)
+            require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             if name == "observe":
                 return self._runtime.agent.observe(
@@ -3109,6 +3116,7 @@ class RuntimeMcpService:
                     task_id=task_id,
                     operation_id=operation_id,
                 )
+                self._agent_input.remember(task_id, result)
                 if self.host_continuity is not None:
                     from .host_continuity import HostAnnotatedResult, SCHEMA
 
@@ -3471,6 +3479,7 @@ class RuntimeMcpService:
         return self.registry.cancel_operation(task_id, operation_id)
 
     def complete_task(self, task_id: str) -> bool:
+        self._agent_input.forget(task_id)
         completed = self.registry.complete(task_id)
         if not completed:
             self._runtime.operator.unbind_task(task_id)
@@ -3486,6 +3495,12 @@ class RuntimeMcpService:
         operation_id: str,
     ) -> Mapping[str, object]:
         if name in {"observe", "execute"}:
+            try:
+                arguments = self._agent_input.normalize(
+                    name, arguments, task_id=task_id
+                )
+            except (TypeError, ValueError):
+                pass
             return self._runtime.agent.error(
                 name,
                 exc,
@@ -3500,6 +3515,7 @@ class RuntimeMcpService:
         )
 
     def close(self) -> None:
+        self._agent_input.clear()
         self._runtime.lifecycle.close()
         self.registry.close()
 
