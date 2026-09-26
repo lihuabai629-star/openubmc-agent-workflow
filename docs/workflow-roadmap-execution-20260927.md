@@ -133,3 +133,37 @@ were skipped. This is an account-side blocker, not CI success. The isolated
 installer also exposes a historical-release-object requirement for superseded
 lock commit `7dc350c`; #283 owns repair without weakening published-release
 verification.
+
+## Second integration update (2026-09-27)
+
+- #279 input normalization, #280 bounded Debug evidence batching, #283 release
+  provenance and #282 optional tracing have been integrated on the coordinator
+  branch. The #282 trace-enabled checks passed with the optional OTel SDK, and
+  the default-off path leaves Runtime responses and persisted events unchanged.
+  Synthetic Host shell-hook checks do not prove a production shell budget hook.
+- #285's 20-scenario manifest, 60-slot pinned trial plan and evidence scorer are
+  integrated. Its deterministic offline fixtures scored 20/20 as expected, and
+  the integrated plan was rebound at `69f3223` to source `ba78cf4`. Actual
+  Agent trials remain **0/60**; no compatible fake-Runtime Host adapter or
+  baseline rerun has been accepted. This is an evaluation harness, not item 19
+  live acceptance.
+- #284's fail-closed platform evidence collector is integrated at `c860890`.
+  On macOS the relevant 18 tests and quick metadata check passed. The release
+  matrix remains blocked: native Linux x86_64, Windows bootstrap, selected WSL
+  Runtime, separate Desktop same-Run proof, and exact-source hosted CI have no
+  passing evidence. A skipped GitHub job or emulated container cannot fill a
+  native row. The prior GitHub Actions run belongs to an older commit and did
+  not execute because of the account-side billing/spending limit.
+- The MCP compatibility review is recorded in
+  [mcp-compatibility-20260927.md](mcp-compatibility-20260927.md). The current
+  Codex CLI 0.153.4 uses the legacy MCP path; its 2026 feature flag is off.
+  The 36 legacy MCP contract tests pass. Modern `server/discover` and the Tasks
+  extension are **not** advertised, adopted or claimed compatible.
+- #243 credential containment remains in review on its isolated branch.
+  Until its synthetic-secret tests and integrated regression pass, do not run
+  actual model trials with credential-bearing work or claim production safety.
+
+These updates do not replace a clean final-source stability run, real 20 × 3
+Agent trials, native platform acceptance, GitHub CI or the separate Desktop
+installer test. No source from this coordinator branch has been published as a
+new release.
