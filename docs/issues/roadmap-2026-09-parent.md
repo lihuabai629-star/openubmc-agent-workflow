@@ -36,8 +36,8 @@ authority and the Agent interface as `observe`/`execute`.
 - [ ] 18 Desktop contract and same-Run acceptance (separate active project)
 - [ ] 19 20 scenarios × 3 stateful Agent trials and independent scoring
 - [ ] 20 Linux/WSL, Windows and hosted CI platform matrix
-- [ ] 21 bounded OpenTelemetry/tracing with behavior-neutral disable path
-- [ ] 22 artifact identity, SBOM and qualification/provenance binding
+- [ ] 21 bounded OpenTelemetry/tracing with behavior-neutral disable path: #282
+- [ ] 22 artifact identity, SBOM and qualification/provenance binding: #283
 - [ ] 23 documentation, issue reconciliation and targeted module cleanup
 - [ ] 24 conditional Agent SDK/persistent execution framework comparison
 
