@@ -151,12 +151,13 @@ def recognized_override_servers(document: dict, codex_root: Path, target_plugin:
         if not path.is_absolute() and isinstance(cwd, str):
             path = Path(cwd)/path
         try:
-            relative = path.relative_to(cache)
+            relative = path.resolve().relative_to(cache.resolve())
         except ValueError:
             raise ValueError('MCP override is outside the selected plugin cache: ' + name) from None
         if len(relative.parts) != 3 or relative.parts[1:] != ('scripts', 'pluginctl.py') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', relative.parts[0]):
             raise ValueError('MCP override has an unrecognized version path: ' + name)
-        if cwd is not None and (not isinstance(cwd, str) or Path(cwd) != path.parent.parent):
+        if cwd is not None and (not isinstance(cwd, str)
+                                or Path(cwd).resolve() != path.parent.parent.resolve()):
             raise ValueError('MCP override has a custom working directory: ' + name)
         index = args.index(paths[0])
         flags = args[:index]
@@ -355,6 +356,7 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
 def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
          mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public',
          skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
+    home = home.resolve()
     return _plan(home, skill_paths, codex_home, mode=mode, target_plugin=target_plugin,
                  skill_names=skill_names)
 
@@ -363,6 +365,7 @@ def activation_plan(home: Path, skill_paths: list[str], codex_home: Path | None 
                     target_plugin: str = 'openubmc@openubmc-public',
                     skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
     """Compose legacy migration with recognized native-cache override repair."""
+    home = home.resolve()
     codex_root = (codex_home or home/'.codex').resolve()
     snapshot = load_plan_snapshot(home, codex_root)
     probe_document = copy.deepcopy(snapshot.document)

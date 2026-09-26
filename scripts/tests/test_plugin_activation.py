@@ -18,6 +18,27 @@ spec.loader.exec_module(migration)
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_native_config_verifier_allows_only_marketplace_timestamp(self):
+        home = Path('/private/tmp/synthetic-openubmc-home')
+        before = b'model="before"\n'
+        entry = ('[marketplaces.personal]\n'
+                 'source_type = "local"\n'
+                 f'source = {json.dumps(str(home))}\n'
+                 'last_updated = "2026-09-26T19:47:19Z"\n'
+                 '[plugins."openubmc@personal"]\n'
+                 'enabled = true\n')
+        after = ('model="before"\n' + entry).encode()
+        installer.verify_staged_config(before, after, home, 'personal')
+        installer.verify_staged_config(after, after.replace(b'19:47:19Z', b'19:48:19Z'), home, 'personal')
+        for changed in (
+            after.replace(b'19:47:19Z', b'99:47:19Z'),
+            after.replace(b'model="before"', b'model="changed"'),
+            after.replace(b'source_type = "local"', b'source_type = "remote"'),
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaises(ValueError):
+                    installer.verify_staged_config(before, changed, home, 'personal')
+
     def test_compensation_preserves_concurrent_config_and_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -76,7 +97,7 @@ class ActivationTests(unittest.TestCase):
         import tarfile
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.home = self.root/'home'
         self.codex = self.root/'custom-codex'
         self.codex.mkdir()
