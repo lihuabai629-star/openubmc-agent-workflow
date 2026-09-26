@@ -86,6 +86,10 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
                 self.assertIn(code, rows[case_id]["issues"])
         for case_id in ("diagnosis-complete", "diagnosis-resume", "gate-replay-idempotent"):
             self.assertEqual(rows[case_id]["issues"], [])
+        self.assertEqual(rows["diagnosis-resume"]["recovery"], {
+            "caller_deadline_interrupted": True, "same_run": True,
+            "backend_invocations": 1, "host_cancellation_verified": False,
+        })
 
     def test_offline_report_is_deterministic_bounded_and_secret_free(self) -> None:
         repeat = evaluation.offline_report(self.manifest, self.plan)

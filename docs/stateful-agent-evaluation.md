@@ -22,7 +22,10 @@ The three positive diagnosis and replay scenarios also require a completed
 Runtime Outcome; a failed final answer cannot satisfy their task expectation.
 
 The checked-in offline suite uses the existing Runtime fake backend for a
-diagnosis, resume, Gate replay, source Gate, and missing-credential path. Its
+diagnosis, a deadline-interrupted caller followed by resume of the same Run,
+Gate replay, source Gate, and missing-credential path. The interrupted caller
+probe checks that the fake backend is invoked once; only a real Host trial can
+verify cancellation and completion events. Its
 other negative cases deliberately mutate *copies* of Runtime facts to test the
 scorer. The degraded-service, shell-fallback, build/upgrade, and unknown-Effect
 prompts are represented in the manifest, but the offline proxy does not execute

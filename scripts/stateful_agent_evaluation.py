@@ -21,6 +21,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import quote
 
@@ -468,6 +469,22 @@ def _offline_run(case: Mapping[str, object], *, identity: Mapping[str, object]) 
                 )
 
         backend = MissingCredentialBackend()
+    elif case["fixture"] == "resume":
+        class InterruptedBackend(FakeDebugBackend):
+            def __init__(self):
+                super().__init__()
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.invocations = 0
+
+            def debug_run(self, task, arguments, context):
+                self.invocations += 1
+                self.started.set()
+                if not self.release.wait(timeout=2):
+                    raise RuntimeError("synthetic worker was not released")
+                return super().debug_run(task, arguments, context)
+
+        backend = InterruptedBackend()
     else:
         backend = FakeDebugBackend()
     service = RuntimeMcpService(backend)
@@ -477,17 +494,27 @@ def _offline_run(case: Mapping[str, object], *, identity: Mapping[str, object]) 
              "intent": "diagnose-and-fix" if case["fixture"] == "fix_gate" else "diagnosis-only"}
     if case["fixture"] == "fix_gate":
         start["delivery_strategy"] = "source-only"
+    if case["fixture"] == "resume":
+        start["deadline"] = 0.02
     try:
         turn = service.call_exposed_tool("execute", start, task_id=task_id, operation_id="fixture-start")
         run_id = str(turn["run_id"])
         if case["fixture"] == "resume":
-            resumed = service.call_exposed_tool(
-                "execute", {"kind": "resume", "run_id": run_id},
-                task_id=task_id, operation_id="fixture-resume",
+            if turn["state"] != "running" or not backend.started.wait(timeout=1):
+                raise ValueError("interrupted caller did not leave a running Run")
+            interrupted = service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": run_id, "deadline": 0.02},
+                task_id=task_id, operation_id="fixture-interrupted-resume",
             )
-            if resumed["run_id"] != run_id:
+            if interrupted["run_id"] != run_id or backend.invocations != 1:
                 raise ValueError("resume changed the Run identity")
-            turn = resumed
+            backend.release.set()
+            turn = service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": run_id, "deadline": 2},
+                task_id=task_id, operation_id="fixture-complete-resume",
+            )
+            if turn["run_id"] != run_id or backend.invocations != 1:
+                raise ValueError("resume repeated the backend action")
         if case["fixture"] in {"complete", "resume", "gate_replay", "fix_gate"}:
             gate = _object(turn["gate"])
             evidence = _object(turn.get("diagnostic_receipt")).get("evidence", [])
@@ -554,13 +581,22 @@ def _offline_run(case: Mapping[str, object], *, identity: Mapping[str, object]) 
                        "output_tokens": 0, "tool_calls": 0, "usage_source": "synthetic"}
             if fault == "cost_overrun":
                 metrics["input_tokens"] = TOKEN_BUDGET + 1
-            return score_case(
+            scored = score_case(
                 case=case, repository=repo, run_id=run_id, task_id=task_id,
                 final=final, rollout=rollout if outcome else None,
                 identity=actual_identity, expected_identity=identity,
                 metrics=metrics, offline_fault=fault,
             )
+            if case["fixture"] == "resume":
+                scored["recovery"] = {
+                    "caller_deadline_interrupted": True, "same_run": True,
+                    "backend_invocations": backend.invocations,
+                    "host_cancellation_verified": False,
+                }
+            return scored
     finally:
+        if case["fixture"] == "resume":
+            backend.release.set()
         service.close()
 
 
