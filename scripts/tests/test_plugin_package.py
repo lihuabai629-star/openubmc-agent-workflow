@@ -1,5 +1,6 @@
 """Behavioral tests for the Codex plugin distribution boundary."""
 import hashlib
+from datetime import datetime, timedelta
 import os
 import shutil
 import json
@@ -146,6 +147,128 @@ class PluginPackageTests(unittest.TestCase):
                 self.assertEqual(check.returncode, 0, check.stderr)
             result = subprocess.run(['codex', 'plugin', 'remove', 'openubmc@runtime-test'], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which('codex') and shutil.which('node'), 'Codex and Node are required')
+    def test_installed_hook_reads_terminal_run_and_rollout_audit_confirms_delivery(self):
+        # Only the disposable package has an empty dependency lock. Codex is
+        # installed into a disposable CODEX_HOME; no global hook trust is edited.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base/'source'
+            subprocess.run(['git', 'clone', '-q', str(self.source), str(source)], check=True)
+            (source/'requirements-ci.lock').write_bytes(b'')
+            subprocess.run(['git', '-C', str(source), 'add', 'requirements-ci.lock'], check=True)
+            subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture',
+                            '-c', 'user.email=fixture@example.test', 'commit', '-qm',
+                            'Offline hook qualification fixture'], check=True)
+            archive = base/'bundle.tar.gz'
+            built = subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(source),
+                                    '--output', str(archive)], capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            marketplace = base/'marketplace'
+            (marketplace/'plugins').mkdir(parents=True)
+            with tarfile.open(archive) as contents:
+                contents.extractall(marketplace/'plugins', filter='data')
+            listing = marketplace/'.agents/plugins/marketplace.json'
+            listing.parent.mkdir(parents=True)
+            listing.write_text(json.dumps({'name': 'continuity-test', 'plugins': [{
+                'name': 'openubmc', 'source': {'source': 'local', 'path': './plugins/openubmc'},
+                'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'},
+                'category': 'Productivity',
+            }]}))
+            codex_home = base/'codex'; codex_home.mkdir()
+            state = base/'state'
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(('CODEX_', 'OPENUBMC_', 'PYTHON', 'XDG_'))}
+            env.update(CODEX_HOME=str(codex_home), XDG_CACHE_HOME=str(base/'cache'),
+                       OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(state),
+                       OPENUBMC_PLUGIN_PYTHON=sys.executable, PIP_NO_INDEX='1')
+            for command in (['plugin', 'marketplace', 'add', str(marketplace)],
+                            ['plugin', 'add', 'openubmc@continuity-test', '--json']):
+                installed = subprocess.run(['codex', *command], env=env, capture_output=True,
+                                           text=True, timeout=30)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+            listed = subprocess.run(['codex', 'mcp', 'list', '--json'], env=env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            server = next(item for item in json.loads(listed.stdout)
+                          if item['name'] == 'openubmc-target-runtime')
+            plugin = Path(server['transport']['cwd'])
+            hook_file = plugin/'hooks/hooks.json'
+            hook = plugin/'scripts/openubmc-continuity-hook.js'
+            self.assertTrue(hook_file.is_file())
+            self.assertIn('openubmc-continuity-hook.js', hook_file.read_text())
+            self.assertTrue(hook.is_file())
+            prepared = subprocess.run([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'),
+                                       'prepare', '--capability', 'runtime', '--offline'], env=env,
+                                      capture_output=True, text=True, timeout=60)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+
+            runtime_paths = [str(ROOT/'openubmc-target-runtime'),
+                             str(ROOT/'openubmc-target-runtime/tests')]
+            sys.path[:0] = runtime_paths
+            self.addCleanup(lambda: [sys.path.remove(path) for path in runtime_paths
+                                     if path in sys.path])
+            from openubmc_target_runtime import JsonRpcMcpEndpoint, RuntimeMcpService, SQLiteRuntimeRepository
+            from openubmc_target_runtime.host_continuity import HostContinuity, read_runtime_projection
+            from test_mcp_contracts import FakeDebugBackend
+            backend = FakeDebugBackend()
+            store = HostContinuity(state/'host-continuity')
+            service = RuntimeMcpService(backend,
+                                        context_repository=SQLiteRuntimeRepository(state/'context-runtime.sqlite3'),
+                                        host_continuity=store)
+            try:
+                endpoint = JsonRpcMcpEndpoint(service, session_task_id='fixture-task')
+                def call(action):
+                    response = endpoint.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                                'params': {'name': 'execute', 'arguments': action}})
+                    self.assertFalse(response['result']['isError'], response)
+                    return response['result']['structuredContent']
+                started = call({'kind': 'start', 'target': '192.0.2.1', 'intent': 'diagnosis-only'})
+                gate = started['gate']
+                call({'kind': 'control', 'run_id': started['run_id'], 'command': 'cancel',
+                      **{key: gate[key] for key in ('gate_id', 'gate_version', 'schema_digest')}})
+            finally:
+                service.close()
+            read = lambda rid: read_runtime_projection(state/'context-runtime.sqlite3', rid)
+            answer = store.handoff('fixture-task', read_run=read)['runs'][0]['terminal_answer']
+            def invoke_hook(event):
+                result = subprocess.run(['node', str(hook)], env=env, input=json.dumps(event),
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+            context = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'SessionStart'})
+            self.assertIn('cancelled', context['hookSpecificOutput']['additionalContext'])
+            pending = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'Stop',
+                                   'last_assistant_message': None, 'stop_hook_active': False})
+            self.assertEqual(pending['decision'], 'block')
+            self.assertIn(answer['text'], pending['reason'])
+            candidate = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'Stop',
+                                     'last_assistant_message': answer['text'], 'stop_hook_active': True})
+            self.assertEqual(candidate, {})
+            self.assertFalse(store.handoff('fixture-task', read_run=read)['runs'][0]['terminal_answer']['delivery_confirmed'])
+            observed_at = (datetime.fromisoformat(answer['prepared_at']) + timedelta(seconds=1)).isoformat()
+            rollout = base/'rollout.jsonl'
+            rollout.write_text('\n'.join(json.dumps(event) for event in (
+                {'type': 'session_meta', 'payload': {'id': 'fixture-task'}},
+                {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'final-turn'}},
+                {'type': 'response_item', 'timestamp': observed_at, 'payload': {
+                    'type': 'message', 'id': 'final-id', 'role': 'assistant', 'phase': 'final_answer',
+                    'content': [{'type': 'output_text', 'text': answer['text']}]}},
+                {'type': 'event_msg', 'timestamp': observed_at,
+                 'payload': {'type': 'task_complete', 'turn_id': 'final-turn'}},
+            )) + '\n')
+            audited = subprocess.run([sys.executable, str(plugin/'skills/openubmc-debug/scripts/host_continuity.py'),
+                                      'audit', '--task-id', 'fixture-task', '--run-id', started['run_id'],
+                                      '--rollout', str(rollout)], env=env,
+                                     capture_output=True, text=True, timeout=20)
+            self.assertEqual(audited.returncode, 0, audited.stderr)
+            self.assertEqual(json.loads(audited.stdout)['delivery_source'], 'codex-rollout-v1')
+            self.assertTrue(store.handoff('fixture-task', read_run=read)['runs'][0]['terminal_answer']['delivery_confirmed'])
+            self.assertEqual(sum(task.calls.count('debug_run') for task in backend.created), 1)
+            verified = subprocess.run([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), 'verify'],
+                                      env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
 
     def test_legacy_migration_is_reversible_and_preserves_unrelated_configuration(self):
         with tempfile.TemporaryDirectory() as temporary:

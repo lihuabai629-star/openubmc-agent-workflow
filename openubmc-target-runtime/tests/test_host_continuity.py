@@ -96,17 +96,20 @@ class HostContinuityTests(unittest.TestCase):
         timestamp = (datetime.fromisoformat(answer["prepared_at"]) + timedelta(seconds=1)).isoformat()
         events = [
             {"type": "session_meta", "payload": {"id": "task"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
             {"type": "response_item", "timestamp": timestamp, "payload": {
                 "type": "message", "role": "assistant", "phase": "commentary", "id": "final",
                 "content": [{"type": "output_text", "text": answer["text"]}],
             }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "turn"}},
         ]
         def write():
             rollout.write_text("\n".join(json.dumps(e) for e in events) + "\n")
         write()
         with self.assertRaises(ValueError):
             self.store.acknowledge_rollout("task", "run", rollout, read_run=self.read)
-        events[1]["payload"]["phase"] = "final_answer"
+        events[2]["payload"]["phase"] = "final_answer"
         write()
         self.store.acknowledge_rollout("task", "run", rollout, read_run=self.read)
         self.assertTrue(self.capture()["terminal_answer"]["delivery_confirmed"])
@@ -188,6 +191,20 @@ class HostContinuityTests(unittest.TestCase):
         answer = recovered.handoff("native-thread", read_run=read)["runs"][0]["terminal_answer"]
         recovered.handle_hook({"hook_event_name": "Stop", "session_id": "native-thread",
                                "turn_id": "native-turn", "last_assistant_message": answer["text"]}, read_run=read)
+        self.assertFalse(recovered.handoff("native-thread", read_run=read)["runs"][0]["terminal_answer"]["delivery_confirmed"])
+        rollout = self.root / "native-rollout.jsonl"
+        timestamp = (datetime.fromisoformat(answer["prepared_at"]) + timedelta(seconds=1)).isoformat()
+        rollout.write_text("\n".join(json.dumps(item) for item in (
+            {"type": "session_meta", "payload": {"id": "native-thread"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "native-turn"}},
+            {"type": "response_item", "timestamp": timestamp, "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                "content": [{"type": "output_text", "text": answer["text"]}],
+            }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "native-turn"}},
+        )) + "\n", encoding="utf-8")
+        recovered.acknowledge_rollout("native-thread", turn["run_id"], rollout, read_run=read)
         self.assertTrue(recovered.handoff("native-thread", read_run=read)["runs"][0]["terminal_answer"]["delivery_confirmed"])
         self.assertEqual(sum(task.calls.count("debug_run") for task in backend.created), 1)
         self.assertEqual(recovered.handoff("different-thread", read_run=read)["runs"], [])
@@ -207,7 +224,7 @@ class HostContinuityTests(unittest.TestCase):
         self.assertEqual(response["result"]["_meta"][META_KEY]["status"], "unavailable")
         self.assertNotIn("synthetic private marker", json.dumps(response))
 
-    def test_stop_hook_requests_only_one_text_delivery_and_then_confirms_exact_text(self):
+    def test_stop_hook_requests_only_one_text_delivery_and_leaves_exact_candidate_pending(self):
         self.terminal()
         answer = self.capture()["terminal_answer"]
         event = {"session_id": "task", "hook_event_name": "Stop", "turn_id": "turn-1",
@@ -220,8 +237,7 @@ class HostContinuityTests(unittest.TestCase):
         event["last_assistant_message"] = answer["text"]
         self.assertEqual(self.store.handle_hook(event, read_run=self.read), {})
         confirmed = self.capture()["terminal_answer"]
-        self.assertTrue(confirmed["delivery_confirmed"])
-        self.assertEqual(confirmed["delivery_source"], "codex-stop-v1")
+        self.assertFalse(confirmed["delivery_confirmed"])
         self.assertEqual(self.store.handle_hook(event, read_run=self.read), {})
 
     def test_noncanonical_model_answer_is_not_replaced_or_falsely_confirmed(self):
@@ -233,7 +249,7 @@ class HostContinuityTests(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertFalse(self.capture()["terminal_answer"]["delivery_confirmed"])
 
-    def test_multiple_run_stop_hook_confirms_only_exact_composite(self):
+    def test_multiple_run_stop_hook_accepts_only_exact_composite_as_a_candidate(self):
         self.terminal()
         first = self.capture("one")["terminal_answer"]["text"]
         second = self.capture("two")["terminal_answer"]["text"]
@@ -241,7 +257,21 @@ class HostContinuityTests(unittest.TestCase):
                  "last_assistant_message": first + "\n\n" + second}
         self.store.handle_hook(event, read_run=self.read)
         runs = self.store.handoff("task", read_run=self.read)["runs"]
-        self.assertTrue(all(run["terminal_answer"]["delivery_confirmed"] for run in runs))
+        self.assertFalse(any(run["terminal_answer"]["delivery_confirmed"] for run in runs))
+        event["last_assistant_message"] = first + "\n\n" + second + " extra"
+        self.assertEqual(self.store.handle_hook(event, read_run=self.read), {})
+
+    def test_final_answer_exposes_runtime_stage_and_next_evidence(self):
+        self.terminal("partial")
+        self.projection["closeout"] = {"delivery_stage": {
+            "highest": "component-built", "next": "product-built", "stages": {
+                "product-built": {"verified": False, "required": "product artifact identity and build evidence"},
+            },
+        }}
+        answer = self.capture()["terminal_answer"]["text"]
+        self.assertIn("交付阶段：component-built", answer)
+        self.assertIn("下一未验证阶段：product-built", answer)
+        self.assertIn("所需证据：product artifact identity and build evidence", answer)
 
     def test_session_start_restores_notes_without_execution_or_secret_authority(self):
         self.capture()

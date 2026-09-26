@@ -103,10 +103,16 @@ def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
             if probe.get("delivered") is True:
                 prepared = store.get(task_id)
                 event_time = (datetime.fromisoformat(prepared.prepared_at) + timedelta(seconds=1)).isoformat()
+                events.append({"type": "event_msg", "payload": {
+                    "type": "task_started", "turn_id": "fixture-turn",
+                }})
                 events.append({"type": "response_item", "timestamp": event_time, "payload": {
                     "type": "message", "id": "fixture-host-final", "role": "assistant",
                     "phase": "final_answer",
                     "content": [{"type": "output_text", "text": "fixture final"}],
+                }})
+                events.append({"type": "event_msg", "timestamp": event_time, "payload": {
+                    "type": "task_complete", "turn_id": "fixture-turn",
                 }})
             rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n",
                                encoding="utf-8")
