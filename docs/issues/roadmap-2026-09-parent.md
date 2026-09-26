@@ -26,8 +26,8 @@ authority and the Agent interface as `observe`/`execute`.
 - [ ] 08 task handoff and fresh Runtime readback
 - [ ] 09 incremental source navigation: #276
 - [ ] 10 source/LightRAG fusion with repository identity: #276
-- [ ] 11 bounded local evidence batching
-- [ ] 12 hypothesis, support and counterevidence strategy
+- [ ] 11 bounded local evidence batching: #280
+- [ ] 12 hypothesis, support and counterevidence strategy: #280
 - [ ] 13 one-domain graph experiment, adopt only if measured benefit
 - [ ] 14 bounded read-only helper experiment
 - [ ] 15 counterevidence reviewer experiment
