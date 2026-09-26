@@ -94,3 +94,42 @@ do not isolate a candidate-specific regression. macOS load averages ranged
 above the host's 10 logical CPUs during this investigation. A quieter Linux/WSL
 or controlled-host run and the final integrated candidate's full suite are
 still required before release qualification.
+
+## Integration update (2026-09-27)
+
+- #247 policy commit `1d9f77f` is integrated and 38 routing/replay tests pass.
+  Installed-path follow-up `f3320bd` is under review for argument-digest
+  containment and a possible trusted Host `PreToolUse` shell guardrail; it is
+  not integrated or accepted yet. Native Windows remains unverified.
+- #250 terminal-delivery commit `76c5637` is integrated. The coordinator's
+  14 terminal, 20 host-continuity and 17 evaluation/replay tests passed.
+  Installed synthetic Codex does not prove real-model or Desktop delivery.
+- #276 source-navigation commit `0b6cdd6` is integrated; 8 new navigation
+  and 13 trace tests passed. [PR #281](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/281)
+  is stacked against the snapshot branch, not yet `main`.
+- #277 credential commit `b472773` is integrated. The coordinator reran 20
+  credential-memory, 13 local-credential and 7 configuration tests, all
+  passed. [PR #286](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/286)
+  is likewise stacked. Installed-plugin and Linux/WSL acceptance remain.
+- #279 input normalization is committed as `4b4377c` in its issue worktree,
+  pending integration review. #280 evidence batching and #283 release
+  provenance remain active. #282 tracing, #284 platform acceptance and #285
+  stateful 20 × 3 evaluation are scoped, not implemented.
+
+The coordinator's clean `76c5637` Runtime stability report was
+`promotable=true`: 128/128 capacity Runs in 32.493 s (40 s limit) and 64/64
+restart Runs in 17.105 s (30 s limit), with zero replay backend reads. A later
+805-test Runtime run had two failures: one OpenSSH timeout under heavy load
+passed on isolated rerun; the stability self-test first rejected a dirty
+worktree during concurrent documentation edits. Its clean rerun failed the
+performance gate while macOS load average was roughly 28 on 10 logical CPUs.
+No timeout or release budget was relaxed. After #276, the full Debug suite
+passed 207 tests with 2 platform skips. Final clean integrated-source and
+Linux/WSL qualification are still required.
+
+GitHub Actions for PRs #281 and #286 did not start: GitHub annotated failed
+account payments or exceeded spending limit; downstream Linux/Windows jobs
+were skipped. This is an account-side blocker, not CI success. The isolated
+installer also exposes a historical-release-object requirement for superseded
+lock commit `7dc350c`; #283 owns repair without weakening published-release
+verification.
