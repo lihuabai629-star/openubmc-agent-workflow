@@ -48,6 +48,12 @@
         "unresolved_work": 0,
         "usage_source": "synthetic"
       },
+      "recovery": {
+        "backend_invocations": 1,
+        "caller_deadline_interrupted": true,
+        "host_cancellation_verified": false,
+        "same_run": true
+      },
       "run_id": "fixture-diagnosis-resume",
       "runtime_status": "completed",
       "scenario_id": "diagnosis-resume",
@@ -573,5 +579,5 @@
   "scenario_count": 20,
   "schedule_digest": "sha256:7bbf3a76b8d66c7bb97647cd53a0d727fc1ec172b4d30f6b603a56bfe9678477",
   "schema": "openubmc-agent-workflow.stateful-agent-evaluation.v1/report",
-  "source_commit": "fca15f84f1dba0c073d1152834ab2994d38c5767"
+  "source_commit": "eeef831ffacbaab886d8e1a96b13645dcf50f2fc"
 }
