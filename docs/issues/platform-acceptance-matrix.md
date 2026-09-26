@@ -39,3 +39,6 @@ which is external to a source-code fix.
 Own platform qualification scripts, CI-compatible tests and evidence docs.
 Do not edit real user credentials, global Codex trust, payment settings or a
 real BMC.
+
+The executable evidence format, native collection procedure and current open
+rows are in [platform acceptance evidence](../platform-acceptance-evidence.md).
