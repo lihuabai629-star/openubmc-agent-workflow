@@ -73,3 +73,23 @@ them against the accepted autosave behavior before making new changes.
 The previous candidate finished 128/128 capacity and 64/64 restart Runs but
 exceeded the existing time budgets. That is a failed release gate until a
 controlled comparison and a passing candidate run establish otherwise.
+
+## Performance comparison (2026-09-27, macOS)
+
+The original `9799a04` and clean candidate `f6b8bdd` used the same Python
+3.12.2 virtual environment and `scripts.runtime_stability.qualify_runtime_stability`
+on the same host. Full original: capacity 33.381 s, restart soak 17.980 s,
+`promotable=true`. Full candidate: capacity 25.696 s, restart soak 17.608 s,
+`promotable=true`. This establishes a passing local run after the earlier
+candidate failure; it does not erase the earlier failure or certify a future
+integrated source.
+
+The targeted 128-Run capacity check was repeated in ABBA order with process
+CPU accounting. Original: 21.973 s wall / 21.038 s user+system CPU, then
+33.247 s wall / 30.709 s CPU. Candidate: 29.009 s wall / 27.347 s CPU,
+then 29.457 s wall / 27.416 s CPU. All four passed the 40 s limit. The original
+also varied substantially while no source files changed, so these measurements
+do not isolate a candidate-specific regression. macOS load averages ranged
+above the host's 10 logical CPUs during this investigation. A quieter Linux/WSL
+or controlled-host run and the final integrated candidate's full suite are
+still required before release qualification.
