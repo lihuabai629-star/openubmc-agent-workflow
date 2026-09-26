@@ -17,7 +17,7 @@ authority and the Agent interface as `observe`/`execute`.
 ## Work map
 
 - [ ] 01 interruption baseline and controlled performance comparison
-- [ ] 02 input compatibility and safe normalization
+- [ ] 02 input compatibility and safe normalization: #279
 - [ ] 03 credential autosave compatibility: #277
 - [ ] 04 retain existing protection; no new approval gate per user direction
 - [ ] 05 Windows/WSL route: #247
