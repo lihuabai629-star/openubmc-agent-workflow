@@ -16,7 +16,7 @@ authority and the Agent interface as `observe`/`execute`.
 
 ## Work map
 
-- [ ] 01 interruption baseline and controlled performance comparison
+- [ ] 01 interruption baseline and controlled performance comparison: #285
 - [ ] 02 input compatibility and safe normalization: #279
 - [ ] 03 credential autosave compatibility: #277
 - [ ] 04 retain existing protection; no new approval gate per user direction
@@ -34,8 +34,8 @@ authority and the Agent interface as `observe`/`execute`.
 - [ ] 16 MCP structured result and compatibility validation
 - [ ] 17 MCP Tasks experiment with old-client fallback
 - [ ] 18 Desktop contract and same-Run acceptance (separate active project)
-- [ ] 19 20 scenarios × 3 stateful Agent trials and independent scoring
-- [ ] 20 Linux/WSL, Windows and hosted CI platform matrix
+- [ ] 19 20 scenarios × 3 stateful Agent trials and independent scoring: #285
+- [ ] 20 Linux/WSL, Windows and hosted CI platform matrix: #284
 - [ ] 21 bounded OpenTelemetry/tracing with behavior-neutral disable path: #282
 - [ ] 22 artifact identity, SBOM and qualification/provenance binding: #283
 - [ ] 23 documentation, issue reconciliation and targeted module cleanup
