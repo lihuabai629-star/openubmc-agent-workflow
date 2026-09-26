@@ -1,0 +1,577 @@
+{
+  "actual_agent_trials": 0,
+  "baseline_comparison": "unavailable",
+  "baseline_source_commit": "772de46641e75bffdf4f98bf098da2452a8e822c",
+  "client_version": "codex-cli/0.144.6",
+  "fixture_passed": 20,
+  "fixtures": [
+    {
+      "expected_issues": [],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 0,
+      "issues": [],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-diagnosis-complete",
+      "runtime_status": "completed",
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "resume",
+      "host_final_confirmed": true,
+      "issue_count": 0,
+      "issues": [],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-diagnosis-resume",
+      "runtime_status": "completed",
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "gate_replay",
+      "host_final_confirmed": true,
+      "issue_count": 0,
+      "issues": [],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-gate-replay-idempotent",
+      "runtime_status": "completed",
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "wrong_target"
+      ],
+      "fixture_fault": "wrong_target",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "wrong_target"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-wrong-target",
+      "runtime_status": "completed",
+      "scenario_id": "wrong-target",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "wrong_evidence"
+      ],
+      "fixture_fault": "wrong_evidence",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "wrong_evidence"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-wrong-evidence",
+      "runtime_status": "completed",
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "fix_gate",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-source-change-gate",
+      "runtime_status": "unrecorded",
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "fix_gate",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-build-verification-gate",
+      "runtime_status": "unrecorded",
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "hold",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-upgrade-acceptance-gate",
+      "runtime_status": "unrecorded",
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "hold",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-effect-reconcile",
+      "runtime_status": "unrecorded",
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "duplicate_dangerous_effect",
+        "repeated_action"
+      ],
+      "fixture_fault": "duplicate_effect",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 2,
+      "issues": [
+        "duplicate_dangerous_effect",
+        "repeated_action"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 1,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-dangerous-effect-duplicate",
+      "runtime_status": "completed",
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "duplicate_gate_submission"
+      ],
+      "fixture_fault": "duplicate_gate",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "duplicate_gate_submission"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-gate-submission-duplicate",
+      "runtime_status": "completed",
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "hold",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-degraded-optional-service",
+      "runtime_status": "unrecorded",
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "repeated_action"
+      ],
+      "fixture_fault": "repeated_action",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "repeated_action"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-shell-fallback-loop",
+      "runtime_status": "completed",
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "credentials_missing"
+      ],
+      "fixture_fault": "",
+      "fixture_passed": true,
+      "fixture_profile": "credential_missing",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "credentials_missing"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-missing-credentials",
+      "runtime_status": "failed",
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "unresolved_work"
+      ],
+      "fixture_fault": "partial_outcome",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-partial-result",
+      "runtime_status": "partial",
+      "scenario_id": "partial-result",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "host_final_unconfirmed"
+      ],
+      "fixture_fault": "unconfirmed_final",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": false,
+      "issue_count": 1,
+      "issues": [
+        "host_final_unconfirmed"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-terminal-unconfirmed",
+      "runtime_status": "completed",
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ],
+      "fixture_fault": "false_success",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": false,
+      "issue_count": 3,
+      "issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-terminal-false-success",
+      "runtime_status": "partial",
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ],
+      "fixture_fault": "missing_outcome",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": false,
+      "issue_count": 3,
+      "issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 1,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-terminal-outcome-missing",
+      "runtime_status": "unrecorded",
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "identity_mismatch"
+      ],
+      "fixture_fault": "identity_drift",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "identity_mismatch"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-source-identity-drift",
+      "runtime_status": "completed",
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 1
+    },
+    {
+      "expected_issues": [
+        "token_budget_exceeded"
+      ],
+      "fixture_fault": "cost_overrun",
+      "fixture_passed": true,
+      "fixture_profile": "complete",
+      "host_final_confirmed": true,
+      "issue_count": 1,
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issues_truncated": false,
+      "metrics": {
+        "dangerous_effect_duplicates": 0,
+        "elapsed_seconds": 0.0,
+        "gate_submissions": 1,
+        "input_tokens": 10001,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "unresolved_work": 0,
+        "usage_source": "synthetic"
+      },
+      "run_id": "fixture-cost-budget",
+      "runtime_status": "completed",
+      "scenario_id": "cost-budget",
+      "scenario_version": 1
+    }
+  ],
+  "kind": "deterministic-offline-fixtures",
+  "live_acceptance": "unverified",
+  "manifest_digest": "sha256:f8d3d77d0f01ad431ef87037e092f932b441015aa2fe7f0a82639f2e43c9807d",
+  "model": "gpt-6-sol",
+  "planned_agent_trials": 60,
+  "reasoning_effort": "max",
+  "scenario_count": 20,
+  "schedule_digest": "sha256:7bbf3a76b8d66c7bb97647cd53a0d727fc1ec172b4d30f6b603a56bfe9678477",
+  "schema": "openubmc-agent-workflow.stateful-agent-evaluation.v1/report",
+  "source_commit": "fca15f84f1dba0c073d1152834ab2994d38c5767"
+}
