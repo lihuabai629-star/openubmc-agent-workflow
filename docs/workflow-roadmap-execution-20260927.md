@@ -57,6 +57,7 @@ them against the accepted autosave behavior before making new changes.
 | #247 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-247`, `codex/issue-247` | `01a0df10-3602-7b40-9af3-8a5c09fd9461` | Started |
 | #250 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-250`, `codex/issue-250` | `01a0df10-30c6-7333-bb40-2854494b240e` | Started |
 | #276 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-276`, `codex/issue-276` | `01a0df10-3c5b-7152-b4d0-e6ada1795350` | Started |
+| #277 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-277`, `codex/issue-277` | `01a0df19-b7b3-7973-90c9-6ce98d0f5e56` | Started |
 
 1. Preserve the current candidate in a local commit. Create separate worktrees
    and tasks for #247, #250, and source navigation/fusion; assign explicit file
