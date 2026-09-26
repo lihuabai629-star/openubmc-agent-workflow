@@ -109,6 +109,23 @@ def _atomic_write(path: Path, content: bytes) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def _marker_backup(path: Path) -> Path | None:
+    """Stage a private rollback copy before a multi-marker activation."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    original = read_private_text(path, max_bytes=4096).encode()
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-rollback-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write(original)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return Path(temporary)
+
+
 def device_associations(config: dict) -> dict[str, str]:
     """Validate and normalize non-secret BMC-to-OS address associations."""
     if not isinstance(config, dict) or type(config.get('schema_version')) is not int or config['schema_version'] != 1:
@@ -134,26 +151,30 @@ def device_associations(config: dict) -> dict[str, str]:
 def _validate_targets(config: object) -> None:
     if not isinstance(config, dict) or type(config.get('schema_version')) is not int or config['schema_version'] != 1:
         raise ConfigurationError('Unsupported target configuration schema')
-    for name in ('credentials', 'defaults', 'targets'):
+    for name in ('credentials', 'defaults', 'targets', 'target_ports'):
         if not isinstance(config.get(name, {}), dict):
             raise ConfigurationError('Credential records and target defaults must be objects')
-    if set(config) - {'schema_version', 'credentials', 'defaults', 'targets', 'devices', 'legacy_environment_fallback'}:
+    if set(config) - {'schema_version', 'credentials', 'defaults', 'targets', 'target_ports',
+                      'devices', 'legacy_environment_fallback', 'legacy_source_overlay'}:
         raise ConfigurationError('Unknown target configuration field')
-    if 'legacy_environment_fallback' in config and type(config['legacy_environment_fallback']) is not bool:
-        raise ConfigurationError('Legacy environment fallback must be a boolean')
+    for name in ('legacy_environment_fallback', 'legacy_source_overlay'):
+        if name in config and type(config[name]) is not bool:
+            raise ConfigurationError('Legacy fallback flags must be booleans')
     device_associations(config)
     for record in config.get('credentials', {}).values():
         if not isinstance(record, dict) or set(record) - {'user', 'password', 'identity_file'} or any(not isinstance(value, str) or '\0' in value for value in record.values()):
             raise ConfigurationError('Credential fields must be strings')
     normalized_addresses = set()
-    for address in config.get('targets', {}):
-        try:
-            normalized = str(ipaddress.ip_address(address.strip()))
-            if normalized in normalized_addresses:
-                raise ConfigurationError('Duplicate normalized target address')
-            normalized_addresses.add(normalized)
-        except ValueError:
-            raise ConfigurationError('Target overrides require a literal IP address') from None
+    for group in ('targets', 'target_ports'):
+        normalized_addresses.clear()
+        for address in config.get(group, {}):
+            try:
+                normalized = str(ipaddress.ip_address(address.strip()))
+                if normalized in normalized_addresses:
+                    raise ConfigurationError('Duplicate normalized target address')
+                normalized_addresses.add(normalized)
+            except (AttributeError, ValueError):
+                raise ConfigurationError('Target overrides require a literal IP address') from None
     for purposes in [config.get('defaults', {}), *config.get('targets', {}).values()]:
         if not isinstance(purposes, dict):
             raise ConfigurationError('Target purposes must be objects')
@@ -162,6 +183,20 @@ def _validate_targets(config: object) -> None:
                 raise ConfigurationError('Invalid purpose or transport reference')
             if any(reference not in config.get('credentials', {}) for reference in references.values()):
                 raise ConfigurationError('Credential reference has no corresponding record')
+    for purposes in config.get('target_ports', {}).values():
+        if not isinstance(purposes, dict):
+            raise ConfigurationError('Port-qualified target purposes must be objects')
+        for purpose, transports in purposes.items():
+            if purpose not in {'bmc', 'os'} or not isinstance(transports, dict):
+                raise ConfigurationError('Invalid port-qualified target purpose')
+            for transport, ports in transports.items():
+                if transport not in {'ssh', 'redfish'} or not isinstance(ports, dict):
+                    raise ConfigurationError('Invalid port-qualified target transport')
+                for port, reference in ports.items():
+                    if (not isinstance(port, str) or re.fullmatch(r'[1-9][0-9]{0,4}', port) is None
+                            or int(port) > 65535 or int(port) == {'ssh': 22, 'redfish': 443}[transport]
+                            or not isinstance(reference, str) or reference not in config.get('credentials', {})):
+                        raise ConfigurationError('Invalid port-qualified credential reference')
 
 
 def _validate_kb(config: object) -> None:
@@ -300,7 +335,7 @@ class LocalConfigurationStore:
             active = _revision(self.source, 'active')
             if saved != expected_revision or active != expected_active_revision or saved != active:
                 raise ConfigurationConflict('Configuration changed; refresh before remembering the account')
-            if active is None:
+            if active is None or expected_source_text is not None:
                 current_source = (read_private_text(self.source, max_bytes=1024 * 1024)
                                   if self.source.exists() or self.source.is_symlink() else None)
                 if current_source != expected_source_text:
@@ -313,8 +348,33 @@ class LocalConfigurationStore:
             info = snapshot.parent.stat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
                 raise ConfigurationError('Configuration snapshot directory must be private and current-user owned')
-            _atomic_write(snapshot, content)
-            marker = json.dumps({'schema': 'openubmc.configuration.v1', 'revision': revision}).encode()
-            _atomic_write(_sidecar(self.source, 'saved'), marker)
-            _atomic_write(_sidecar(self.source, 'active'), marker)
-            return self.status()
+            markers = (_sidecar(self.source, 'saved'), _sidecar(self.source, 'active'))
+            backups: list[Path | None] = []
+            try:
+                for path in markers:
+                    backups.append(_marker_backup(path))
+                _atomic_write(snapshot, content)
+                marker = json.dumps({'schema': 'openubmc.configuration.v1', 'revision': revision}).encode()
+                for path in markers:
+                    _atomic_write(path, marker)
+                return self.status()
+            except BaseException:
+                # A failed write must not leave either a new active pointer or
+                # an inactive saved credential draft behind. Prepared backups
+                # can be renamed even when another write has exhausted space.
+                for path, backup in zip(markers, backups):
+                    if backup is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, path)
+                snapshot.unlink(missing_ok=True)
+                directory = os.open(self.source.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+                raise
+            finally:
+                for backup in backups:
+                    if backup is not None:
+                        backup.unlink(missing_ok=True)

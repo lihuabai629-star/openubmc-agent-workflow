@@ -374,7 +374,7 @@ class CredentialResolver:
             self._loaders["redfish"] = redfish_loader
         from .credentials import LocalCredentialSource
         self._local_source = LocalCredentialSource(config_path=config_path, environ=environ)
-        self._local_cache: dict[tuple[str, str, str, str], object] = {}
+        self._local_cache: dict[tuple[str, str, str, str, int], object] = {}
         self._task_sources: dict[str, Path | None] = {}
         self._task_snapshots: dict[str, tuple[Path | None, str | None]] = {}
         self._task_source_environments: dict[str, dict[str, str]] = {}
@@ -382,22 +382,28 @@ class CredentialResolver:
         self._lock = threading.RLock()
 
     def resolve_local(
-        self, *, task_id: str, host: str, transport: str, purpose: str = "bmc", required: bool = True,
+        self, *, task_id: str, host: str, transport: str, purpose: str = "bmc",
+        port: int | None = None, required: bool = True,
     ) -> CredentialResolution[object]:
         """Resolve one complete local record and bind its source for the task."""
         from .credentials import normalize_credential_host
         if not task_id.strip() or not host.strip() or purpose not in {"bmc", "os"} or transport not in {"ssh", "redfish"}:
             raise ValueError("Local credentials require a task, target, BMC/OS purpose and SSH/Redfish transport")
-        key = (task_id, normalize_credential_host(host), purpose, transport)
+        selected_port = {'ssh': 22, 'redfish': 443}[transport] if port is None else port
+        if type(selected_port) is not int or not 1 <= selected_port <= 65535:
+            raise ValueError("Local credential port must be between 1 and 65535")
+        key = (task_id, normalize_credential_host(host), purpose, transport, selected_port)
         with self._lock:
             if key in self._local_cache:
                 return CredentialResolution(self._local_cache[key], cache_hit=True)
             path, snapshot = self._selected_local_snapshot(task_id)
-            values = self._local_source.resolve(snapshot[0], host=host, purpose=purpose, transport=transport, required=required)
+            values = self._local_source.resolve(snapshot[0], host=host, purpose=purpose,
+                                                transport=transport, port=selected_port,
+                                                required=required, legacy_path=path)
             if values is None:
                 return CredentialResolution(None, cache_hit=False)
             credential_type = ResolvedSshCredentials if transport == "ssh" else ResolvedRedfishCredentials
-            resolved = credential_type.from_mapping(values)
+            resolved = credential_type.from_mapping({**values, "port": selected_port})
             self._task_sources[task_id] = path
             self._remember_source_environment(task_id)
             self._task_snapshots[task_id] = snapshot
@@ -488,18 +494,64 @@ class CredentialResolver:
         transports: tuple[str, ...] = ("ssh", "redfish"),
     ) -> dict[str, str]:
         """Project selected records only into local Domain Adapter input."""
+        from .credential_file import (CREDENTIALS_FILE_MAX_BYTES, CredentialFileError,
+                                      parse_credentials_text, selected_credential_value)
+        from .credentials import CredentialConfigurationError, read_private_credentials
         arguments = arguments or {}
         values = {"__runtime_selected__": "1"}
+        legacy_values = {}
+        with self._lock:
+            source, snapshot = self._selected_local_snapshot(task_id)
+            if source is not None and snapshot[0] is not None:
+                content = read_private_credentials(snapshot[0])
+                if content.lstrip().startswith("{"):
+                    import json
+                    try:
+                        config = json.loads(content)
+                    except (ValueError, RecursionError):
+                        raise CredentialConfigurationError("credentials_invalid", "Invalid local target configuration") from None
+                    if not isinstance(config, dict):
+                        raise CredentialConfigurationError("credentials_invalid", "Invalid local target configuration")
+                    if config.get("legacy_source_overlay") is True:
+                        try:
+                            legacy_values = parse_credentials_text(read_private_credentials(
+                                source, max_bytes=CREDENTIALS_FILE_MAX_BYTES))
+                        except CredentialFileError:
+                            raise CredentialConfigurationError("credentials_invalid", "Invalid legacy overlay source") from None
+        if legacy_values:
+            for names in (("OPENUBMC_SSH_USER",), ("OPENUBMC_SSH_PASSWORD",),
+                          ("OPENUBMC_REDFISH_USER", "REDFISH_USERNAME"),
+                          ("OPENUBMC_REDFISH_PASSWORD", "REDFISH_PASSWORD"),
+                          ("OPENUBMC_OS_SSH_USER",), ("OPENUBMC_OS_SSH_PASSWORD",),
+                          ("OPENUBMC_TELNET_USER",), ("OPENUBMC_TELNET_PASSWORD",),
+                          ("OPENUBMC_OS_IP",), ("OPENUBMC_OS_SSH_PORT",)):
+                selected = selected_credential_value(legacy_values, names,
+                                                     environ=self._local_source.environ)
+                if selected is not None:
+                    for name in names:
+                        values[name] = selected
         for purpose, transport in (("bmc", "ssh"), ("bmc", "redfish"), ("os", "ssh")):
             if transport not in transports:
                 continue
             prefix = ("os_" if purpose == "os" else "") + transport
             if any(arguments.get(prefix + suffix) for suffix in ("_user", "_user_env", "_password", "_password_env", "_identity_file")):
                 continue
-            selected_host = str(arguments.get("os_ip", "")) if purpose == "os" else host
+            selected_host = (str(arguments.get("os_ip") or values.get("OPENUBMC_OS_IP", ""))
+                             if purpose == "os" else host)
             if not selected_host:
                 continue
+            port_name = ("os_" if purpose == "os" else "") + transport + "_port"
+            raw_port = arguments.get(port_name)
+            if purpose == "os" and transport == "ssh" and raw_port in (None, ""):
+                raw_port = selected_credential_value(legacy_values, ("OPENUBMC_OS_SSH_PORT",),
+                                                     environ=self._local_source.environ)
+            try:
+                selected_port = (int(raw_port) if raw_port not in (None, "")
+                                 else {'ssh': 22, 'redfish': 443}[transport])
+            except (TypeError, ValueError):
+                raise CredentialConfigurationError("credentials_invalid", "Invalid local credential port") from None
             record = self.resolve_local(task_id=task_id, host=selected_host, purpose=purpose, transport=transport,
+                                        port=selected_port,
                                         required=len(transports) == 1 or purpose == "os").credentials
             env_prefix = "OPENUBMC_" + prefix.upper()
             if record is None:
@@ -851,6 +903,7 @@ class SshLane(Generic[MasterT, ChannelResultT]):
         self._record("authentications", "ssh_authentications")
         self._authentication_memory.authenticated(
             host=self._coordinator.target.host, transport="ssh", credentials=self._credentials,
+            port=self._coordinator.target.ssh_port,
         )
         if reconnecting:
             self._record("reconnects", "ssh_reconnects")
@@ -1481,6 +1534,7 @@ class RedfishLane(Generic[RedfishSessionT, RedfishResultT]):
         if getattr(self._transport, "authenticates_on_open", False) is True:
             self._authentication_memory.authenticated(
                 host=self._coordinator.target.host, transport="redfish", credentials=self._credentials,
+                port=self._coordinator.target.redfish_port,
             )
         if reconnecting:
             self._record("reconnects", "redfish_reconnects")
