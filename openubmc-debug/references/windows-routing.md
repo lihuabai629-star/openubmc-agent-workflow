@@ -14,9 +14,10 @@ route does not claim broad native Windows Runtime support.
 The installed MCP bootstrap checks `pluginctl doctor` protocol health before
 proxying the Runtime. It emits an `openubmc-routing` receipt on MCP stderr
 before forwarding each `observe`/`execute` call. The receipt includes the
-selected WSL distribution and a digest of the request arguments, not raw
-target arguments or credentials. An unhealthy probe stays on the setup
-surface; an inconsistent tool list blocks the Runtime call.
+selected WSL distribution and a process-keyed HMAC of bounded request
+arguments, not raw target arguments, credentials, or a guessable digest. An
+unhealthy probe stays on the setup surface; an inconsistent tool list blocks
+the Runtime call.
 
 When MCP is unavailable, unhealthy, on the wrong host, or the requested
 operation is unsupported, call `ExecutionRouter.choose` in
@@ -40,7 +41,11 @@ unresolved in metrics until a Runtime-facing adapter verifies an actual Runtime
 evidence reference. The Runtime alone owns Run, Gate, Effect, Outcome,
 verification, and rollback decisions.
 
-The MCP bootstrap cannot intercept a Codex Host terminal command. The
-`ExecutionRouter` budget is enforceable only where the Host or another caller
-passes every shell action through `admit_shell` with its observed host. Do not
-describe an unobserved terminal command as a routed fallback.
+The MCP bootstrap does not see Codex Host terminal calls. A trusted plugin
+`PreToolUse` hook can deny supported `Bash` and `exec_command` calls, but the
+hook input alone cannot reliably identify an openUBMC target operation, bind
+it to a fallback receipt, or establish the actual command host. Some specialized
+tool paths can opt out. `ExecutionRouter` enforces its budget only where the
+Host or another caller passes every applicable shell action through
+`admit_shell` with its observed host. Do not describe an unobserved terminal
+command as a routed fallback.

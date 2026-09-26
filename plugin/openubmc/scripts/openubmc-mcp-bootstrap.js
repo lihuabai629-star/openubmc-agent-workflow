@@ -8,7 +8,7 @@ const path = require("path");
 const readline = require("readline");
 const { createHostAdapter } = require("./openubmc-bootstrap-host.js");
 const { createSetupOperations } = require("./openubmc-bootstrap-operations.js");
-const { routeRuntimeCall } = require("./openubmc-execution-routing.js");
+const { MAX_MCP_LINE_BYTES, routeRuntimeCall } = require("./openubmc-execution-routing.js");
 
 const capability = process.argv[2];
 if (!new Set(["runtime", "kb"]).has(capability)) {
@@ -37,9 +37,33 @@ function proxyBackend(backend, preflight) {
   let structuredCalls = 0;
   const lineReader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   lineReader.on("line", (line) => {
+    if (capability === "runtime" && Buffer.byteLength(line, "utf8") > MAX_MCP_LINE_BYTES) {
+      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: null,
+        error: { code: -32600, message: "routing_request_too_large" } })}\n`);
+      return;
+    }
     let request;
-    try { request = JSON.parse(line); } catch (_error) { request = null; }
+    try { request = JSON.parse(line); } catch (_error) {
+      if (capability === "runtime") {
+        process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: null,
+          error: { code: -32700, message: "routing_request_invalid" } })}\n`);
+        return;
+      }
+      request = null;
+    }
     if (capability === "runtime") {
+      if (request === null || typeof request !== "object" || Array.isArray(request)) {
+        process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: null,
+          error: { code: -32600, message: "routing_request_invalid" } })}\n`);
+        return;
+      }
+      if (request.method === "tools/call"
+          && (!request.params || typeof request.params !== "object"
+              || Array.isArray(request.params) || typeof request.params.name !== "string")) {
+        process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id ?? null,
+          error: { code: -32602, message: "routing_request_invalid" } })}\n`);
+        return;
+      }
       const route = routeRuntimeCall(request, {
         report: preflight.report,
         hostPlatform,
@@ -57,7 +81,7 @@ function proxyBackend(backend, preflight) {
       }
       if (route) {
         structuredCalls += 1;
-        // Only a digest of arguments is emitted. Do this before forwarding
+        // Only a process-keyed MAC of bounded arguments is emitted. Do this before forwarding
         // the call so installed-path traces show the routing decision first.
         process.stderr.write(`openubmc-routing ${JSON.stringify(route.receipt)}\n`);
       }

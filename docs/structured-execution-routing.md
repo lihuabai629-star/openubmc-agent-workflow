@@ -33,8 +33,8 @@ evidence boundary, protocol result, and stable fallback `reason_code`. Windows
 fallback requires an explicit `shell_host`. The default task budget is eight
 shell commands and cannot exceed 32 or be increased after routing. Every
 command must pass `admit_shell` with the adapter-observed command origin before
-execution. A mismatch with the receipt is rejected and counted. The router rejects chained
-commands, exhausted budgets, and a repeated equivalent argument vector with a
+execution. A mismatch with the receipt is rejected and counted. The router
+rejects chained commands, exhausted budgets, and a repeated equivalent argument vector with a
 `convergence_blocker`. It records known PowerShell → WSL → SSH hops in each
 command receipt. Other opaque wrappers must be accounted for by their adapter;
 this parser cannot prove arbitrary script internals.
@@ -58,18 +58,36 @@ Before proxying the Runtime, it uses `pluginctl doctor`'s bounded MCP
 forwarding each `observe` or `execute` call, it applies
 `openubmc-execution-routing.js` and writes an `openubmc-routing` receipt to MCP
 stderr. The receipt binds the selected WSL distribution or POSIX host, tool,
-semantic operation when present, a digest of request arguments, and the typed
-Runtime result boundary. It contains no argument text or credentials. The
-Runtime MCP response is forwarded unchanged. A failed health check exposes
+semantic operation when present, a process-keyed HMAC of bounded canonical
+request arguments, and the typed Runtime result boundary. The key never
+enters a receipt or log. Malformed, oversized, or deeply nested requests are
+rejected before hashing or forwarding. The receipt contains no argument text
+or credentials. The Runtime MCP response is forwarded unchanged. A failed health check exposes
 the existing setup surface; an inconsistent tool list blocks the call before
 it reaches the backend.
 
+## Host shell boundary
+
 The shell policy is `scripts/execution_router.py`; the identical packaged copy
-is `openubmc-debug/scripts/execution_router.py`. The MCP plugin cannot
-intercept terminal or shell tool calls made by the Codex Host. Enforcing
-`admit_shell` across those calls requires a Host integration that supplies the
-observed execution host and refuses calls without a bound, unexhausted receipt.
-Until that Host seam exists, the Python router and Skill instruction govern
-fallback only for callers that use them; the plugin must not claim global
-shell-budget enforcement. Installed-path tests use controlled Linux and WSL
-adapters. Native Windows execution remains unverified here.
+is `openubmc-debug/scripts/execution_router.py`. The MCP bootstrap does not
+observe shell calls made by the Codex Host. A separate, trusted plugin
+`PreToolUse` hook can match `Bash`, including unified `exec_command`, and deny
+supported calls before execution. The native Codex 0.153.4 probe
+`scripts/qualify_pretool_shell_hook.py` verified this in a disposable
+`CODEX_HOME`: its synthetic blocked command was denied and an unrelated
+synthetic command ran. No hook definition or trust setting was changed in the
+user's setup. See the [official hook coverage and deny schema](https://learn.chatgpt.com/docs/hooks).
+
+A production hook has not been added to `plugin/openubmc/hooks/hooks.json`.
+The `PreToolUse` input contains a shell command, session ID, and working
+directory, but it does not provide the requested openUBMC operation, target
+scope, bound fallback receipt, or a trustworthy observed command host. Inferring
+these from arbitrary command text would miss wrapped calls and could block
+unrelated shell work. Enforcing the budget requires a Host adapter that binds
+those facts to the session and passes every applicable command through
+`admit_shell`. Plugin hooks also require user trust and some specialized tool
+paths can opt out, so a hook alone is not a complete enforcement boundary.
+Until the Host binding and native Windows/WSL coverage are verified, the Python
+router and Skill instruction govern only callers that use them; no global
+shell-budget enforcement is claimed. Installed MCP tests use controlled Linux
+and WSL adapters. Native Windows execution remains unverified here.

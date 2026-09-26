@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -80,11 +81,13 @@ for line in sys.stdin:
 
     def invoke(
         self, *, windows: bool, healthy: bool, doctor_tools: list[str] | None = None,
+        arguments: dict | None = None, raw_input: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         call_log = self.root / f"calls-{'windows' if windows else 'linux'}-{'healthy' if healthy else 'unhealthy'}"
         call_log.unlink(missing_ok=True)
         self.control.write_text(json.dumps({"health": healthy, "call_log": str(call_log),
-                                            "tools": doctor_tools or ["observe", "execute"]}), encoding="utf-8")
+                                            "tools": (["observe", "execute"] if doctor_tools is None
+                                                      else doctor_tools)}), encoding="utf-8")
         environment = dict(os.environ)
         environment.update({
             "HOME": str(self.root / "home"),
@@ -100,7 +103,7 @@ for line in sys.stdin:
              "params": {"protocolVersion": "2024-11-05"}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-             "params": {"name": "execute", "arguments": {
+             "params": {"name": "execute", "arguments": arguments if arguments is not None else {
                  "kind": "start", "intent": "diagnosis-only", "target": "fixture.invalid"}}},
         ]
         if not healthy:
@@ -108,7 +111,8 @@ for line in sys.stdin:
                                 "params": {"name": "openubmc_setup_status", "arguments": {}}})
         result = subprocess.run(
             ["node", str(self.plugin / "scripts/openubmc-mcp-bootstrap.js"), "runtime"],
-            input="".join(json.dumps(message) + "\n" for message in messages),
+            input=(raw_input if raw_input is not None
+                   else "".join(json.dumps(message) + "\n" for message in messages)),
             env=environment, capture_output=True, text=True, timeout=20,
         )
         return result, call_log
@@ -127,7 +131,7 @@ for line in sys.stdin:
         self.assertEqual(receipt["operation"], "diagnose")
         self.assertEqual(receipt["tool"], "execute")
         self.assertEqual(receipt["execution_host"], "linux")
-        self.assertTrue(receipt["requested_scope_digest"].startswith("sha256:"))
+        self.assertTrue(receipt["requested_scope_mac"].startswith("hmac-sha256:"))
         self.assertNotIn("fixture.invalid", result.stderr)
 
     def test_installed_windows_wsl_path_uses_selected_distribution(self) -> None:
@@ -156,6 +160,61 @@ for line in sys.stdin:
         self.assertEqual(result.returncode, 0, result.stderr)
         replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
         self.assertEqual(replies[3]["error"]["message"], "mcp_protocol_unhealthy")
+        self.assertFalse(call_log.exists())
+
+    def test_low_entropy_synthetic_secret_has_no_plaintext_or_raw_digest(self) -> None:
+        arguments = {"kind": "start", "intent": "diagnosis-only",
+                     "target": "fixture.invalid", "password": "1234"}
+        raw_sha = hashlib.sha256(json.dumps(arguments, sort_keys=True,
+                                           separators=(",", ":")).encode()).hexdigest()
+        result, _ = self.invoke(windows=False, healthy=True, arguments=arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        audit = next(json.loads(line.removeprefix("openubmc-routing "))
+                     for line in result.stderr.splitlines() if line.startswith("openubmc-routing "))
+        self.assertNotIn("1234", result.stderr)
+        self.assertNotIn(raw_sha, result.stderr)
+        self.assertNotIn("requested_scope_digest", audit)
+        self.assertTrue(audit["requested_scope_mac"].startswith("hmac-sha256:"))
+        second, _ = self.invoke(windows=False, healthy=True, arguments=arguments)
+        second_audit = next(json.loads(line.removeprefix("openubmc-routing "))
+                            for line in second.stderr.splitlines() if line.startswith("openubmc-routing "))
+        self.assertNotEqual(audit["requested_scope_mac"], second_audit["requested_scope_mac"])
+
+    def test_malformed_and_oversized_requests_never_reach_backend(self) -> None:
+        malformed, call_log = self.invoke(windows=False, healthy=True, raw_input="{not-json}\n")
+        self.assertEqual(malformed.returncode, 0, malformed.stderr)
+        self.assertEqual(json.loads(malformed.stdout)["error"]["message"], "routing_request_invalid")
+        self.assertFalse(call_log.exists())
+        self.assertNotIn("openubmc-routing ", malformed.stderr)
+
+        malformed_shape = {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": None}
+        invalid, call_log = self.invoke(windows=False, healthy=True,
+                                        raw_input=json.dumps(malformed_shape) + "\n")
+        self.assertEqual(json.loads(invalid.stdout)["error"]["message"], "routing_request_invalid")
+        self.assertFalse(call_log.exists())
+
+        too_large = {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "execute", "arguments": {"password": "x" * (130 * 1024)}}}
+        oversized, call_log = self.invoke(windows=False, healthy=True,
+                                          raw_input=json.dumps(too_large) + "\n")
+        self.assertEqual(oversized.returncode, 0, oversized.stderr)
+        self.assertEqual(json.loads(oversized.stdout)["error"]["message"],
+                         "routing_request_too_large")
+        self.assertFalse(call_log.exists())
+        self.assertNotIn("openubmc-routing ", oversized.stderr)
+
+    def test_argument_size_and_depth_limits_block_before_forwarding(self) -> None:
+        arguments = {"payload": "x" * (65 * 1024)}
+        oversized, call_log = self.invoke(windows=False, healthy=True, arguments=arguments)
+        replies = {item["id"]: item for item in map(json.loads, oversized.stdout.splitlines())}
+        self.assertEqual(replies[3]["error"]["message"], "routing_request_too_large")
+        self.assertFalse(call_log.exists())
+        nested = {"leaf": "fixture"}
+        for _ in range(34):
+            nested = {"next": nested}
+        deep, call_log = self.invoke(windows=False, healthy=True, arguments=nested)
+        replies = {item["id"]: item for item in map(json.loads, deep.stdout.splitlines())}
+        self.assertEqual(replies[3]["error"]["message"], "routing_request_too_large")
         self.assertFalse(call_log.exists())
 
 
