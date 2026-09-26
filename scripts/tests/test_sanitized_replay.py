@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import json
 import sys
 import unittest
@@ -8,10 +9,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from scripts.sanitized_replay import evaluate_case, evaluate_directory  # noqa: E402
+from scripts.sanitized_replay import ReplayError, evaluate_case, evaluate_directory  # noqa: E402
 
 
 class SanitizedReplayTests(unittest.TestCase):
+    @staticmethod
+    def _positive_fixture():
+        path = ROOT / "evaluation" / "sanitized-replays" / "offline-package-analysis-positive.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def test_live_probe_cannot_be_overridden_by_a_fixture_observation(self):
         path = ROOT / "evaluation" / "sanitized-replays" / "skill-routing-negative.json"
         case = json.loads(path.read_text(encoding="utf-8"))
@@ -162,6 +168,45 @@ class SanitizedReplayTests(unittest.TestCase):
         })
         self.assertEqual(result["dimensions"]["execution_host"]["status"], "failed")
         self.assertEqual(result["dimensions"]["release_gates"]["status"], "failed")
+
+    def test_evidence_from_another_observation_interval_cannot_satisfy_fixture(self):
+        case = self._positive_fixture()
+        identity = copy.deepcopy(case["expected"]["evidence_lineage"]["identity"])
+        identity.pop("observed_at")
+        identity["observation_interval"] = {
+            "start": "2026-09-20T00:00:00Z", "end": "2026-09-20T00:00:10Z",
+        }
+        case["expected"]["evidence_lineage"]["identity"] = identity
+        case["observed"]["evidence_lineage"]["identity"] = copy.deepcopy(identity)
+        case["observed"]["evidence_lineage"]["evidence"][0]["observed_at"] = "2026-09-21T00:00:00Z"
+        result = evaluate_case(case)
+        self.assertEqual(result["dimensions"]["evidence_lineage"]["status"], "failed")
+        self.assertTrue(any("observation interval" in failure for failure in
+                            result["dimensions"]["evidence_lineage"]["failures"]))
+
+    def test_same_evidence_cannot_be_justified_as_a_retry(self):
+        case = self._positive_fixture()
+        actions = case["observed"]["convergence_cost"]["actions"]
+        actions.append({**actions[0], "justified_retry": True})
+        result = evaluate_case(case)
+        self.assertEqual(result["dimensions"]["convergence_cost"]["status"], "failed")
+        self.assertTrue(any("without changed evidence" in failure for failure in
+                            result["dimensions"]["convergence_cost"]["failures"]))
+        actions[-1]["evidence_digest"] = "sha256:new-evidence"
+        self.assertEqual(evaluate_case(case)["dimensions"]["convergence_cost"]["status"], "passed")
+
+    def test_unsanitized_fixture_is_rejected_without_echoing_secret(self):
+        case = self._positive_fixture()
+        secret = "synthetic-report-secret"
+        case["observed"]["credential_containment"]["password"] = secret
+        with self.assertRaises(ReplayError) as failure:
+            evaluate_case(case)
+        self.assertNotIn(secret, str(failure.exception))
+        case = self._positive_fixture()
+        case["observed"]["credential_containment"]["password=" + secret] = "value"
+        with self.assertRaises(ReplayError) as failure:
+            evaluate_case(case)
+        self.assertNotIn(secret, str(failure.exception))
 
 
 if __name__ == "__main__":
