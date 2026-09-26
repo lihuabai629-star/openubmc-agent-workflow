@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Pinned stateful Agent trial plan and bounded Runtime/host evidence scoring.
 
-The offline command is a semantic fixture suite. Only score-live counts Agent
-trials, and it requires an existing Runtime SQLite ledger and Codex host rollout.
+The offline command is a semantic fixture suite. Live scoring requires an
+existing Runtime SQLite ledger and Codex Host rollout for each Agent trial.
 """
 
 from __future__ import annotations
@@ -692,7 +692,7 @@ def run_agent_trials(*, manifest: Mapping[str, object], plan: Mapping[str, objec
     """Dispatch 60 isolated fake-Runtime trials to an explicit host adapter.
 
     The adapter contract is documented with the corpus. This runner never uses
-    a shell, BMC address, global configuration writer, or raw adapter output.
+    a shell, contacts a BMC, changes global configuration, or emits raw adapter output.
     """
     validate_plan(plan, manifest)
     if _git_commit("HEAD") != plan["source_commit"]:
