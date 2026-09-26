@@ -12,6 +12,7 @@ import time
 
 from .semantic_runtime import bounded_request, is_safe_runtime_id, project_run_turn
 from .terminal_delivery import TerminalAnswerStore, render_final_answer
+from .delivery_stage import DELIVERY_STAGES
 
 
 SCHEMA = "openubmc.host-continuity/v1"
@@ -100,8 +101,13 @@ class HostContinuity:
             use_projected_next_action=True,
         ).to_public_dict()
         closeout = _mapping(projection.get("closeout"))
-        stage = str(_mapping(closeout.get("delivery_stage")).get("highest") or "unverified")
+        stages = _mapping(closeout.get("delivery_stage"))
+        stage = str(stages.get("highest") or "unverified")
+        next_stage = str(stages.get("next") or "")
+        support = _mapping(_mapping(stages.get("stages")).get(next_stage))
         return {"turn": turn, "delivery_stage": stage,
+                "next_delivery_stage": next_stage if next_stage in DELIVERY_STAGES else "",
+                "required_stage_evidence": str(support.get("required") or ""),
                 "intent": projection.get("intent", ""),
                 "targets": projection.get("targets", []),
                 "workflow_definition": projection.get("workflow_definition", {}),
@@ -182,6 +188,8 @@ class HostContinuity:
             text = render_final_answer(
                 status=str(outcome.get("status", "")), summary=summary,
                 delivery_stage=facts["delivery_stage"], next_action=str(turn.get("next") or ""),
+                next_stage=facts["next_delivery_stage"],
+                required_evidence=facts["required_stage_evidence"],
             )
             text += "\nRun：" + run_id
             with self._database():
@@ -280,23 +288,10 @@ class HostContinuity:
         all_expected = "\n\n".join(run["terminal_answer"]["text"] for run in handoff["runs"]
                                     if run.get("terminal_answer"))
         actual = event.get("last_assistant_message")
-        turn_id = str(event.get("turn_id") or "")
-        if isinstance(actual, str) and actual.strip() in {expected, all_expected} and is_safe_runtime_id(turn_id):
-            # Re-read each Outcome immediately before confirming delivery. The host
-            # event confirms the exact complete composite text, not just a substring.
-            for run in pending:
-                run_id = run["run_id"]
-                projection = read_run(run_id)
-                outcome = _mapping(_mapping(projection).get("run_outcome"))
-                if not outcome:
-                    raise ValueError("Runtime terminal Outcome unavailable")
-                stage = self._facts(projection, run_id)["delivery_stage"]
-                with self._database():
-                    self._answers(task_id, run_id).acknowledge(
-                        task_id=task_id, run_id=run_id, outcome=outcome, delivery_stage=stage,
-                        text=run["terminal_answer"]["text"], host_event_id="codex-stop:" + turn_id,
-                        delivery_source="codex-stop-v1",
-                    )
+        if isinstance(actual, str) and actual.strip() in {expected, all_expected}:
+            # Stop runs before the host commits its final message. A matching
+            # candidate prevents another continuation but cannot confirm delivery.
+            # The rollout audit requires a later task_complete event for this task.
             return {}
         if isinstance(actual, str) and actual.strip():
             # A richer answer needs independent semantic review. Presence alone is

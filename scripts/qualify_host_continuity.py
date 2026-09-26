@@ -143,6 +143,17 @@ def probe(executable: Path):
             if result.returncode or not first_hooks:
                 raise ValueError('native fixture failed: '+result.stderr[-1800:])
             task = first_hooks[-1]['event']['session_id']
+            ledger_read = lambda run: read_runtime_projection(root/'context-runtime.sqlite3', run)
+            store = HostContinuity(root/'host-continuity')
+            handoff = store.handoff(task, read_run=ledger_read)
+            if len(handoff['runs']) != 1 or not handoff['runs'][0].get('terminal_answer'):
+                raise ValueError('native fixture has no prepared terminal answer')
+            rollout_paths = list((home/'sessions').rglob('*'+task+'.jsonl'))
+            if len(rollout_paths) != 1:
+                raise ValueError('native fixture has no unique host rollout')
+            store.acknowledge_rollout(
+                task, handoff['runs'][0]['run_id'], rollout_paths[0], read_run=ledger_read,
+            )
             resume_command = [str(executable), 'exec', 'resume', '--json', '--skip-git-repo-check',
                               '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
                               '--model', 'gpt-5.6-sol', *config, task,
