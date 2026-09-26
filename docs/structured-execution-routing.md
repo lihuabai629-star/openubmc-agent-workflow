@@ -52,7 +52,24 @@ Gate types, including future ones. Mutation, deployment, runtime verification,
 and rollback still require the corresponding typed Runtime evidence and the
 Runtime's own Gate/Outcome checks.
 
-The source policy is `scripts/execution_router.py`; the identical packaged copy
-is `openubmc-debug/scripts/execution_router.py`. Controlled adapter tests and
-the sanitized replay entry point exercise the public behavior. Linux/WSL and
-installed-plugin acceptance remain separate from a native Windows check.
+The installed MCP boundary is `plugin/openubmc/scripts/openubmc-mcp-bootstrap.js`.
+Before proxying the Runtime, it uses `pluginctl doctor`'s bounded MCP
+`initialize`/`tools/list` probe and requires Runtime protocol health. Before
+forwarding each `observe` or `execute` call, it applies
+`openubmc-execution-routing.js` and writes an `openubmc-routing` receipt to MCP
+stderr. The receipt binds the selected WSL distribution or POSIX host, tool,
+semantic operation when present, a digest of request arguments, and the typed
+Runtime result boundary. It contains no argument text or credentials. The
+Runtime MCP response is forwarded unchanged. A failed health check exposes
+the existing setup surface; an inconsistent tool list blocks the call before
+it reaches the backend.
+
+The shell policy is `scripts/execution_router.py`; the identical packaged copy
+is `openubmc-debug/scripts/execution_router.py`. The MCP plugin cannot
+intercept terminal or shell tool calls made by the Codex Host. Enforcing
+`admit_shell` across those calls requires a Host integration that supplies the
+observed execution host and refuses calls without a bound, unexhausted receipt.
+Until that Host seam exists, the Python router and Skill instruction govern
+fallback only for callers that use them; the plugin must not claim global
+shell-budget enforcement. Installed-path tests use controlled Linux and WSL
+adapters. Native Windows execution remains unverified here.

@@ -8,6 +8,7 @@ const path = require("path");
 const readline = require("readline");
 const { createHostAdapter } = require("./openubmc-bootstrap-host.js");
 const { createSetupOperations } = require("./openubmc-bootstrap-operations.js");
+const { routeRuntimeCall } = require("./openubmc-execution-routing.js");
 
 const capability = process.argv[2];
 if (!new Set(["runtime", "kb"]).has(capability)) {
@@ -27,13 +28,45 @@ function safeWriteError(value) {
   if (value) process.stderr.write(String(value).slice(-8192));
 }
 
-function proxyBackend(backend) {
+function proxyBackend(backend, preflight) {
   const child = childProcess.spawn(backend.command, [...backend.prefix, capability], {
     env: adapter.childEnvironment,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
-  process.stdin.pipe(child.stdin);
+  let structuredCalls = 0;
+  const lineReader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  lineReader.on("line", (line) => {
+    let request;
+    try { request = JSON.parse(line); } catch (_error) { request = null; }
+    if (capability === "runtime") {
+      const route = routeRuntimeCall(request, {
+        report: preflight.report,
+        hostPlatform,
+        selectedWsl: backend.selected_wsl || null,
+        sequence: structuredCalls + 1,
+      });
+      if (route && !route.allowed) {
+        // No shell is started here. A host shell fallback requires its own
+        // bounded receipt before the caller leaves this MCP transport.
+        if (request.id !== undefined && request.id !== null) {
+          process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id,
+            error: { code: -32001, message: route.reason_code } })}\n`);
+        }
+        return;
+      }
+      if (route) {
+        structuredCalls += 1;
+        // Only a digest of arguments is emitted. Do this before forwarding
+        // the call so installed-path traces show the routing decision first.
+        process.stderr.write(`openubmc-routing ${JSON.stringify(route.receipt)}\n`);
+      }
+    }
+    if (!child.stdin.write(`${line}\n`)) {
+      lineReader.pause();
+      child.stdin.once("drain", () => lineReader.resume());
+    }
+  });
   child.stdout.pipe(process.stdout);
   child.stderr.pipe(process.stderr);
   const stop = () => {
@@ -41,13 +74,19 @@ function proxyBackend(backend) {
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  process.stdin.once("end", () => child.stdin.end());
+  lineReader.once("close", () => child.stdin.end());
   child.once("error", (error) => {
     safeWriteError(`openUBMC backend failed to start: ${error.code || "spawn_failed"}\n`);
+    lineReader.close();
+    process.exitCode = 1;
+  });
+  child.stdin.on("error", (error) => {
+    safeWriteError(`openUBMC backend input closed: ${error.code || "write_failed"}\n`);
     process.exitCode = 1;
   });
   child.once("exit", (code) => {
-    process.exitCode = code === null ? 1 : code;
+    lineReader.close();
+    process.exitCode = process.exitCode || (code === null ? 1 : code);
   });
 }
 
@@ -196,5 +235,5 @@ if (!backend.ok) {
 } else {
   const preflight = operations.preflightBackend(backend);
   if (!preflight.ok) serveSetup({ ...backend, ...preflight, ok: false });
-  else proxyBackend(backend);
+  else proxyBackend(backend, preflight);
 }

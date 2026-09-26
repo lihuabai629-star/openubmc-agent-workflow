@@ -11,6 +11,13 @@ execution host is `wsl`; a native Windows probe cannot impersonate that
 backend. WSL distribution selection belongs to the Local Setup Plane. This
 route does not claim broad native Windows Runtime support.
 
+The installed MCP bootstrap checks `pluginctl doctor` protocol health before
+proxying the Runtime. It emits an `openubmc-routing` receipt on MCP stderr
+before forwarding each `observe`/`execute` call. The receipt includes the
+selected WSL distribution and a digest of the request arguments, not raw
+target arguments or credentials. An unhealthy probe stays on the setup
+surface; an inconsistent tool list blocks the Runtime call.
+
 When MCP is unavailable, unhealthy, on the wrong host, or the requested
 operation is unsupported, call `ExecutionRouter.choose` in
 `scripts/execution_router.py` and retain its receipt. Set `shell_host` to the
@@ -32,3 +39,8 @@ mutation, deployment, runtime verification, or rollback. A fallback stays
 unresolved in metrics until a Runtime-facing adapter verifies an actual Runtime
 evidence reference. The Runtime alone owns Run, Gate, Effect, Outcome,
 verification, and rollback decisions.
+
+The MCP bootstrap cannot intercept a Codex Host terminal command. The
+`ExecutionRouter` budget is enforceable only where the Host or another caller
+passes every shell action through `admit_shell` with its observed host. Do not
+describe an unobserved terminal command as a routed fallback.

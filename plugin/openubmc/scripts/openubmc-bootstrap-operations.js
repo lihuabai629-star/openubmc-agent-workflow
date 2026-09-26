@@ -11,6 +11,7 @@ const recoveryActions = Object.freeze({
   dependency_prepare_interrupted: "Retry preparation; the incomplete staging cache was not activated.",
   dependency_hash_mismatch: "Use packages matching the release lock hashes, then retry preparation.",
   dependency_prepare_failed: "Review local package-manager connectivity and retry preparation.",
+  mcp_protocol_unhealthy: "Restart the task after checking the Runtime MCP initialize and tools/list probe.",
 });
 
 function parseJsonOutput(adapter, buffer) {
@@ -79,7 +80,8 @@ function createSetupOperations(adapter, capability) {
       [...backend.prefix, "doctor", "--capability", "all", ...backend.configurationArgs], { timeout: 45_000 });
     const report = parseJsonOutput(adapter, checked.stdout);
     const selected = report?.capabilities?.[capability];
-    if (selected?.startup_ready && report?.codex_configuration?.ready) {
+    if (selected?.startup_ready && report?.codex_configuration?.ready
+        && checked.status === 0 && report?.mcp_health?.[capability]?.ok === true) {
       return { ok: true, cleanup: cleanupReport, report };
     }
     const rawError = String(selected?.error || "").toLowerCase();
@@ -87,6 +89,7 @@ function createSetupOperations(adapter, capability) {
     if (rawError.includes("not prepared")) reason = "dependencies_not_prepared";
     else if (rawError.includes("cache drift")) reason = "dependency_cache_drift";
     else if (rawError.includes("node 20")) reason = "wsl_node_unavailable";
+    else if (selected?.startup_ready && report?.mcp_health?.[capability]?.ok !== true) reason = "mcp_protocol_unhealthy";
     else if (adapter.decodeOutput(checked.stderr).includes("plugin file inventory mismatch")) reason = "package_integrity_failed";
     else if (report?.codex_configuration && !report.codex_configuration.ready) reason = "configuration_repair_required";
     return { ok: false, reason, cleanup: cleanupReport, report };
