@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 import re
 
+from _evidence_batch import summarize_captured_snapshot
 from _workflow_freshness import alarm_identity, alarm_records, payload_result
 from _workflow_source import (
     search_source_terms,
@@ -41,16 +42,19 @@ def log_line_records(tool_result: dict[str, object]) -> list[dict[str, object]]:
                 physical_numbers[line_index]
                 if isinstance(physical_numbers, list)
                 and line_index < len(physical_numbers)
-                and isinstance(physical_numbers[line_index], int)
+                and type(physical_numbers[line_index]) is int
                 else None
             )
             records.append(
                 {
                     "id": len(records),
+                    "target": tool_result.get("ip"),
+                    "source": tool_result.get("tool", "collect_logs"),
                     "path": path,
                     "entry_index": entry_index,
                     "line_index": line_index,
                     "line_number": line_number,
+                    "pointer": f"/payload/result/entries/{entry_index}/lines/{line_index}",
                     "text": str(line),
                     "text_truncated": False,
                 }
@@ -282,6 +286,8 @@ def build_correlation(
     enabled: bool,
     workflow_logs_result: dict[str, object] | None = None,
     time_window: int = 300,
+    source_version: str | None = None,
+    target_epoch: int | None = None,
 ) -> dict[str, object]:
     records = alarm_records(active_result)[:alarm_limit]
     alarm_line_records = log_line_records(alarm_logs_result)
@@ -384,6 +390,16 @@ def build_correlation(
             and alarm_line_epochs[index] is not None
             and abs(int(alarm_line_epochs[index]) - record_epoch) <= time_window
         ]
+        if time_refs:
+            time_status = "within_window"
+        elif record_epoch is None:
+            time_status = "alarm_time_unknown"
+        elif utc_offset_minutes is None:
+            time_status = "timezone_unknown"
+        elif any(epoch is None for epoch in alarm_line_epochs):
+            time_status = "log_time_incomplete"
+        else:
+            time_status = "no_match_in_window"
         state_refs = [
             index
             for index in stable_log_refs
@@ -553,6 +569,12 @@ def build_correlation(
                 "timestamp_evidence": bool(time_refs),
                 "log_evidence_scope": evidence_scope,
                 "utc_offset_minutes": utc_offset_minutes,
+                "temporal_relation": {
+                    "status": time_status,
+                    "window_seconds": time_window,
+                    "matched_log_refs": time_refs,
+                    "causal_proof": False,
+                },
                 "completeness": {
                     "level": level,
                     "identity_timeline_complete": identity_complete,
@@ -586,7 +608,21 @@ def build_correlation(
         if workflow_keyword
         else []
     )
+    try:
+        batch = summarize_captured_snapshot(
+            target=str(active_result.get("ip") or alarm_logs_result.get("ip") or "") or None,
+            source_version=source_version,
+            target_epoch=target_epoch,
+            alarms=active_result,
+            logs=alarm_logs_result,
+            utc_offset_minutes=utc_offset_minutes,
+        )
+    except (ValueError, TypeError, OverflowError) as exc:
+        # Local processing is auxiliary. Keep the original captured evidence.
+        batch = {"status": "processor_failed", "error_type": type(exc).__name__,
+                 "raw_evidence_preserved": True}
     return {
+        "batch": batch,
         "source_search": source_search,
         "since_boot": since_boot,
         "alarm_log_search": {

@@ -228,6 +228,14 @@ Do not assemble a root cause from unrelated source hits. The bundled bounded sea
 
 Convert log timestamps only with the target's captured numeric UTC offset (for example, `+0800` as `480` minutes). A timezone abbreviation or a missing offset is not enough to compare a local log timestamp with an epoch alarm timestamp.
 
+### Local evidence batch
+
+`_evidence_batch.summarize_captured_snapshot` accepts only already captured `active_alarms` and `collect_logs` helper results. Pass the explicit target, source version and target epoch from the capture boundary. It groups exact duplicate events or lines within their source and path, retains a count and every `/alarms/...` or `/logs/...` raw pointer, and labels unknown timezone, failed timestamp parsing, missing physical sequence and partial collection. A grouped line is a display view; the original helper result remains the evidence.
+
+`compare_snapshots(before, after)` reports `incomparable` when target, source version or target epoch is unknown or differs, or either collection is partial. It never uses a matching log line to infer a cause. The combined workflow's `correlation.records[].temporal_relation` reports a bounded time match with `causal_proof=false`; source ownership and trigger still need independent evidence. If local batch processing fails, `correlation.batch` says `processor_failed` and the original evidence pool remains available.
+
+Compact workflow JSON groups exact duplicate selected log lines; each group keeps `ids` for every original `log_refs` index and `pointers` back to each raw line. Full workflow JSON still contains the unmodified captured lanes. The compact `batch` carries counts and uncertainty flags without repeating all group text.
+
 For start/end alarm snapshots, report stable identity changes separately from mutable payload changes. Mutable payload includes state, severity, timestamp, sample/reading/value, threshold/limit, and unit. Compare uptime growth with observer or BMC elapsed time so a reboot is still detected when the new uptime has already grown beyond the old uptime.
 
 ## Cross-target comparison

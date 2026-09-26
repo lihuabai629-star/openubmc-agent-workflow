@@ -84,11 +84,18 @@ def comparison_request(*, mdb=False, hardware=True):
 
 
 class DiagnosticAdviceTests(unittest.TestCase):
-    def run_helper(self, request):
+    def run_helper(self, request, *, local_state=False, previous_state=None):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             path = root / "request.json"
             path.write_text(json.dumps(request), encoding="utf-8")
+            command = [sys.executable, str(CLI), "--input", str(path)]
+            if local_state:
+                command.append("--local-state")
+            if previous_state is not None:
+                prior_path = root / "previous.json"
+                prior_path.write_text(json.dumps(previous_state), encoding="utf-8")
+                command.extend(["--previous-state", str(prior_path)])
             environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
             for field, suffix in {
                 "HOME": "home", "CODEX_HOME": "codex", "XDG_CONFIG_HOME": "config",
@@ -98,10 +105,71 @@ class DiagnosticAdviceTests(unittest.TestCase):
                 directory.mkdir()
                 environment[field] = str(directory)
             result = subprocess.run(
-                [sys.executable, str(CLI), "--input", str(path)],
+                command,
                 capture_output=True, text=True, env=environment, timeout=15,
             )
             return result, json.loads(result.stdout) if result.stdout.strip() else None
+
+    def test_local_state_tracks_contradiction_and_avoids_repeated_observation(self):
+        request = advice_request()
+        request["facts"] = []
+        request["queries"]["mdb"] = {
+            "target": TARGET,
+            "selectors": [{"id": "drive-object", "kind": "mdb", "queries": ["lsprop Drive0"]}],
+        }
+        request["query_costs"] = {"hardware_discovery": 5, "mdb": 1}
+        first_process, first = self.run_helper(request, local_state=True)
+        self.assertEqual(first_process.returncode, 0, first_process.stderr)
+        self.assertEqual(len(first["candidates"]), 3)
+        self.assertEqual(first["next_observation"]["stage"], "mdb")
+        self.assertEqual(first["next_observation"]["relative_cost"], 1)
+        self.assertEqual(len(first["remaining_gaps"]), 3)
+        self.assertEqual(first["candidates"][0]["remaining_gap_refs"],
+                         [gap["id"] for gap in first["remaining_gaps"]])
+        self.assertFalse(first["root_cause_proven"])
+        repeated_process, repeated = self.run_helper(request, local_state=True, previous_state=first)
+        self.assertEqual(repeated_process.returncode, 0, repeated_process.stderr)
+        self.assertIsNone(repeated["next_observation"])
+        self.assertEqual(repeated["suggestion_status"], "already_issued")
+        self.assertEqual(repeated["issued_query_digests"], first["issued_query_digests"])
+        request["facts"] = advice_request()["facts"]
+        changed_process, changed = self.run_helper(request, local_state=True, previous_state=repeated)
+        self.assertEqual(changed_process.returncode, 0, changed_process.stderr)
+        states = {item["id"]: item for item in changed["candidates"]}
+        self.assertTrue(states["northbound_not_published"]["ruled_out"])
+        self.assertTrue(states["northbound_not_published"]["contradicting_refs"])
+        self.assertEqual(changed["next_observation"]["stage"], "hardware_discovery")
+        self.assertFalse(changed["root_cause_proven"])
+
+    def test_local_state_rejects_different_target_epoch_and_invalid_cost(self):
+        request = advice_request()
+        result, first = self.run_helper(request, local_state=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        request["target_epochs"][TARGET] = 8
+        result, state = self.run_helper(request, local_state=True, previous_state=first)
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(state)
+        self.assertNotIn("Traceback", result.stderr)
+        request = advice_request()
+        request["query_costs"] = {"hardware_discovery": 0}
+        result, advice = self.run_helper(request)
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(advice)
+
+    def test_equivalent_new_capture_does_not_repeat_unanswered_query(self):
+        request = advice_request()
+        result, first = self.run_helper(request, local_state=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(first["next_observation"]["stage"], "hardware_discovery")
+        new_capture = copy.deepcopy(request)
+        new_capture["snapshot_at"] = "2026-09-08T01:00:01+00:00"
+        new_capture["sources"]["capture"]["observed_at"] = new_capture["snapshot_at"]
+        result, second = self.run_helper(new_capture, local_state=True, previous_state=first)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(second["next_observation"])
+        self.assertEqual(second["suggestion_status"], "already_issued")
+        self.assertNotEqual(first["candidates"][1]["supporting_refs"],
+                            second["candidates"][1]["supporting_refs"])
 
     def test_missing_drive_recommends_the_observation_that_separates_remaining_causes(self):
         result, advice = self.run_helper(advice_request())
