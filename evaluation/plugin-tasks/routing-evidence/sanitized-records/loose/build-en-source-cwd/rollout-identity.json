@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:2c96522ac6f2a31261961ac121d81a0ace42d7631f957a7320ad0440dd17966a",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f47-852d-7773-bfcc-8961cd60d59c",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "Check this openUBMC source checkout for the prerequisites needed to build a component with bmcgo. This task authorizes read-only preflight only: do not compile, install, publish, or edit files."
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:60e3e4e4d2f28d8af6aa1763e535f798abe07e8af4d7cea8c1a0f61cc8e04249"
+}

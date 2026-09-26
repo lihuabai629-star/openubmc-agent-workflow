@@ -1,0 +1,423 @@
+[
+  {
+    "description": "在 ASPEED 平台（AST2600/AST2700）上适配新的内核驱动或对已有 kernel 驱动通过patch进行定制化。核心操作：(1) 将驱动改动生成为 patch 集成到 yocto_soc 构建中；(2) 在内核树中新增驱动源文件、修改 Kconfig/Makefile 并在 Yocto 中使能。Use when user asks to \"aspeed平台适配新驱动\", \"aspeed kernel驱动打patch\", \"AST2600驱动移植\", \"AST2700驱动开发\", \"yocto_soc内核驱动修改\", \"meta-ubmc驱动适配\". Do NOT use for userspace application development or non-kernel driver work.",
+    "enabled": true,
+    "name": "openubmc-aspeed-kernel-driver-dev",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-aspeed-kernel-driver-dev/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "openUBMC bingo 构建工具链技能，覆盖组件构建测试、manifest 产品出包、源码拉取、版本差异追溯、依赖分析和 lockfile 维护。",
+    "enabled": true,
+    "name": "openubmc-bingo-build",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "openUBMC bingo 源码开发技能，覆盖 bingo CLI 架构、命令扩展、工作区识别、本地调试、测试验证、打包安装和常见开发风险定位。",
+    "enabled": true,
+    "name": "openubmc-bingo-development",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-development/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Validate or package openUBMC components and products with bmcgo, immutable build plans, checked attempts, and locally finalized Conan/HPM evidence. Use for local compile/gen/test, component Conan packages, product HPM builds, or build-failure diagnosis. Do not use for live-target diagnosis, firmware upload, activation, or runtime file replacement.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-build to select the mode that safely contains the command's actual effects, preserve my exact command, reuse the selected checkout, and return checked local build evidence or locally finalized artifact evidence.",
+      "displayName": "openUBMC Build",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Plan, run, and verify openUBMC builds"
+    },
+    "name": "openubmc-build",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-build/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "openUBMC 社区 issue 与 PR 贡献流程技能，覆盖 GitCode issue 创建、PR 提交、AI 生成声明、CLA、CI、机器人命令和常见阻塞处理。",
+    "enabled": true,
+    "name": "openubmc-community-contribution",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-community-contribution/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "专为openUBMC 开发者打造的组件创建助手技能，专注于提供全新标准业务组件的快速搭架子与脚手架代码同步生成功能。Use when user asks to \"新建组件框架\", \"创建标准组件\", \"bingo new创建服务\", \"openUBMC新建app\".",
+    "enabled": true,
+    "name": "openubmc-component-creator",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-component-creator/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "针对 compute_mgmt 组件 src/lualib/lib/cpu_comm 目录下的 CPU 通信命令框架，指导开发者适配新的 CPU 平台和新的 CPU 通信命令。Use when user asks to \"适配新CPU平台\", \"新增CPU通信命令\", \"扩展cpu_comm命令配置\", \"添加新协议回调\", \"继承driver_base实现新驱动\", \"扩展cmd_config新增OEM命令\". Do NOT use for generic IPMI command development unrelated to cpu_comm framework.",
+    "enabled": true,
+    "name": "openubmc-compute-new-ability-dev",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-compute-new-ability-dev/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Diagnose, compare, and verify openUBMC runtime issues by correlating local source or configuration, northbound interfaces, live MDB/D-Bus objects and alarms, logs or files, and optional OS-host evidence. Use for a supplied BMC IP, a runtime symptom, comparison of two or more live targets, a Developer diagnostic handoff, or post-upgrade verification. Prefer two to four complementary evidence surfaces for composite problems, and use an available openUBMC KB only as a non-blocking candidate router. Keep remote work read-only and route implementation, build, upgrade, or live mutation to their owning skills.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-debug 从源码、接口、对象、告警和日志中组合证据定位问题；需要时对比多个环境，并按 source-only、live-patch 或 build-upgrade 编排修复后的交付验证。",
+      "displayName": "openUBMC Debug",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "用多证据面定位 openUBMC 运行态问题"
+    },
+    "name": "openubmc-debug",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "调试 openUBMC 的 Systemd、Skynet、MDB/D-Bus 和 ASAN 问题，用于服务启动失败、资源接口异常、协程或 task 异常、内存泄漏排查。Use when user asks to \"服务启动失败\", \"MDB或D-Bus接口访问失败\", \"Skynet服务调试\", \"Lua协程或mc.tasks异常\", \"ASAN内存泄漏排查\", \"日志分析\", \"systemctl排查\", \"journalctl查日志\". Do NOT use for OpenBMC naming conventions or generic Linux debugging without openUBMC context.",
+    "enabled": true,
+    "name": "openubmc-debugging",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Use only for unresolved openUBMC decisions about source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior. Exclude specified edits, documentation-only work, and workflows owned by other Skills.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-developer only for unresolved openUBMC decisions about source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior. Exclude specified edits, documentation-only work, and workflows owned by other Skills.",
+      "displayName": "OpenUBMC Developer",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Resolve openUBMC source ownership and structure decisions"
+    },
+    "name": "openubmc-developer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-developer/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "编写和执行 openUBMC 组件的 UT/IT 测试，涵盖 LuaUnit 用例编写、Mock 打桩、集成测试配置、覆盖率分析和测试用例设计。Use when user asks to \"编写单元测试\", \"编写集成测试\", \"运行UT\", \"运行IT\", \"bingo test\", \"测试覆盖率\", \"设计测试用例\", \"LuaUnit断言\", \"Mock打桩\", \"测试数据准备\". Do NOT use for OpenBMC test frameworks or third-party test runners.",
+    "enabled": true,
+    "name": "openubmc-dt-testing",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-dt-testing/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "openUBMC 开发环境前置准备。完成后调用 init.py 自动安装。",
+    "enabled": false,
+    "name": "openubmc-environment-setup",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-environment-setup/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "为 gitcode.com 托管的代码仓创建 issue。支持指定组织（默认 openubmc），可自动从 git remotes 获取仓库名称。",
+    "enabled": true,
+    "name": "openubmc-gitcode-create-issue",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-gitcode-create-issue/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "为 gitcode.com 托管的代码仓创建 Pull Request。支持指定组织（默认 openubmc），可自动从 git remotes 获取仓库信息。",
+    "enabled": true,
+    "name": "openubmc-gitcode-create-pr",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-gitcode-create-pr/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "开发 openUBMC 北向接口映射配置（Redfish / Web-backend / CLI / SNMP），涵盖 rackmount 仓库的 mapping_config JSON 编写、Schema 文件配置、ProcessingFlow 资源协作接口映射、Statements 数据处理和 ReqBody/RspBody 配置。Use when user asks to \"新增Redfish接口映射配置\", \"编写mapping_config JSON\", \"配置ProcessingFlow资源协作接口映射\", \"编写ReqBody请求体校验\", \"配置RspBody响应体\", \"创建Redfish Schema文件\", \"Statements数据处理转换\", \"CallIf条件执行和Foreach循环\". Do NOT use for hand-writing Redfish interface business code in Lua/C.",
+    "enabled": true,
+    "name": "openubmc-interface-mapping",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-interface-mapping/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "基于 openUBMC/QA 公开仓指导 KPTestOpenFramework 自动化用例开发、脚本 review、测试集配置和 iTestSmart 导入，适用于 KPTest、QA 自动化用例和文本用例转脚本场景。",
+    "enabled": true,
+    "name": "openubmc-kptest-openframework",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-kptest-openframework/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Temporarily plan, apply, verify, or roll back a file replacement on a live openUBMC/BMC target during runtime debugging. Use for runtime-compatible Lua or SR/CSR replacement with explicit target mapping, checksum or backup evidence, mount restoration, bounded restart scope, and fresh verification. Do not use for permanent source delivery, component/product builds, or full firmware upgrade.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-live-patch to apply or roll back a typed temporary BMC file replacement, reuse carried TargetRun context, restore the original mount mode, and verify checksum and fresh runtime evidence.",
+      "displayName": "openUBMC Live Patch",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Plan and verify temporary BMC patches"
+    },
+    "name": "openubmc-live-patch",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-live-patch/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Diagnose openUBMC/BMC issues from a one-click log bundle (.tar/.tar.gz), an extracted log directory, or a BMC/server entry point where the bundle should be collected first and analyzed locally. Use when the requested evidence source is a diagnostic bundle or offline logs. Do not use for direct live MDB/D-Bus/alarm comparison or multi-surface runtime diagnosis without a bundle workflow; route those tasks to openubmc-debug.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-log-analyzer 采集或读取 openUBMC 一键日志包并在本地分析问题；缺少实时证据时转交 openubmc-debug。",
+      "displayName": "OpenUBMC 日志分析",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "一键采集、解压并分析 openUBMC BMC 日志包"
+    },
+    "name": "openubmc-log-analyzer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-log-analyzer/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "创建和实现 openUBMC Lua 组件，涵盖脚手架、MDS 建模、代码生成、Lua SDK、UT/IT 测试、构建发布和资源验证的完整开发流程。Use when user asks to \"创建Lua组件\", \"bingo new新建组件\", \"实现MDB接口\", \"bingo gen代码生成\", \"Lua SDK对象生命周期\", \"组件UT和IT测试\", \"编写单元测试\", \"编写集成测试\", \"Conan2和CMake构建发布\", \"bingo build构建\". Do NOT use for generic Lua service templates or OpenBMC component workflows.",
+    "enabled": true,
+    "name": "openubmc-lua-component",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-lua-component/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "开发 openUBMC 的 MDB/D-Bus 资源协作接口，包括 mdb_interface 接口定义、MDS 数据建模、bingo gen 代码自动生成、RPC 方法实现、跨组件通信和 IPMI 命令开发。Use when user asks to \"定义MDB资源协作接口\", \"model.json配置MDS对象\", \"service.json跨组件依赖\", \"bingo gen代码自动生成\", \"实现RPC方法回调\", \"IPMI命令开发\", \"属性订阅与信号监听\", \"types.json复杂类型定义\". Do NOT use for generic D-Bus, OpenBMC phosphor-dbus-interfaces, or sdbusplus YAML workflows.",
+    "enabled": true,
+    "name": "openubmc-mdb-interface-dev",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-mdb-interface-dev/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "OpenUBMC 组织通用 PR 监控与审核技能。包含 Issue 操作规范、PR 审核规范、提交规范、合并流程。适用于 OpenUBMC 组织下所有仓库。",
+    "enabled": true,
+    "name": "openubmc-pr-monitor",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-pr-monitor/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "在 ARM 服务器上搭建 openUBMC QEMU ARM KVM 环境，覆盖 25.12 LTS manifest 原生 bingo 构建 QEMU runtime、ARM 侧编译或验证 openUBMC/qemu、hi1711 KVM 启动、Telnet/SSH/Web/Redfish/IPMI ready 时间探测和 KVM/TCG 性能对比。适用于用户要求搭建 openUBMC QEMU ARM KVM 环境、启动 openUBMC qemu 并做基础验证、验证 2512 LTS QEMU runtime、比较 KVM 与 TCG 启动性能、排查 data/mockdata/9p 缺失导致服务不起来的场景。",
+    "enabled": true,
+    "name": "openubmc-qemu-arm-kvm",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-qemu-arm-kvm/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "调试 openUBMC QEMU 资源树、MDB Scanner/Chip/ThresholdSensor、Redfish Sensor 可见性、GPU 或温度传感器 mock 数据、SR/CSR 已匹配但运行态读数不可用或为 255、QEMU I2C mux/channel/address/mock 协议不匹配等问题。Use when user asks to \"QEMU 资源树有对象但温度读不到\", \"Redfish Sensor 没有 GPU 温度\", \"MDB Scanner 有对象但读数是 255\", \"qemu_mockup mockdata 和 I2C 通道不匹配\", \"PCIe/GPU 自发现成功但传感器不可用\". 不要用于普通 QEMU 启动教程、ARM KVM 性能优化或非 openUBMC 的通用 Redfish 问题。",
+    "enabled": true,
+    "name": "openubmc-qemu-resource-tree-debug",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-qemu-resource-tree-debug/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "处理 openUBMC 的 QEMU 启动、冒烟验证和 skynet coredump 排查。Use when user asks to \"Qemu怎么启动\", \"Qemu冒烟测试\", \"Qemu启动后Web不通\", \"skynet持续coredump\", \"SSH通但Web不通\", \"QEMU环境调试\". Do NOT use for generic QEMU tutorials or OpenBMC QEMU workflows.",
+    "enabled": true,
+    "name": "openubmc-qemu-testing",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-qemu-testing/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "用中文分析两个源码分支、git refs、本地源码目录或 zip 源码包之间的 Redfish 接口变化。适用于 openUBMC/rackmount 风格仓库，尤其是 interface_config/redfish 或 oem/huawei/redfish 下的 mapping_config JSON。会按 interface_mapping.md 语义细分接口新增删除修改、属性变化、请求体/响应体对象变化、请求头/响应头变化、请求/返回数据类型变化、POST/PATCH 请求体变化、Statements 与 ProcessingFlow 引用影响，并输出中文 Markdown 报告和 CSV 清单。",
+    "enabled": true,
+    "name": "openubmc-redfish-interface-diff",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-interface-diff/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Plan, qualify, and execute bounded Redfish read-only tests for openUBMC and compatible BMCs. Use for strict Target/Product Profiles, generic dynamic resource discovery, source/release qualification, pinned-TLS GET/HEAD/OPTIONS runs with one-run authorization or a fixed-scope R0 Lease, NPU read regressions, collected DMTF evidence, and repeatability comparison. Do not use this Runner for business writes, Actions, reset, export, or full-interface mutation coverage.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-redfish-testing 审查已批准的 Redfish Profiles，生成离线 Plan，并在单次授权和固定 TLS 指纹满足后执行只读 Pilot。",
+      "displayName": "openUBMC Redfish Read-Only Pilot",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "为已授权 BMC 编排受限、可审计的 Redfish 只读 Pilot"
+    },
+    "name": "openubmc-redfish-testing",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "软件失效性分析(SFMEA)技能，分析需求/代码修改的系统级功能受损/失效场景及影响分析。Use when user asks to \"SFMEA分析\", \"软件失效性分析\", \"故障模式分析\", \"容错设计分析\", \"故障注入分析\", \"生成SFMEA表格\", \"可靠性分析\". Do NOT use for 硬件FMEA或非软件相关失效分析。",
+    "enabled": true,
+    "name": "openubmc-sfmea",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-sfmea/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "基于当前会话内容总结 OpenUBMC Skill 的失败场景，生成本地脱敏草稿，并给出预填 GitCode Issue 链接。Use when user asks to \"提交 skill 反馈\", \"skill-report\", \"报告 skill 问题\", \"提交 issue 反馈\", \"把这次失败场景发给维护者\". Do NOT use for 普通编码任务、非 OpenUBMC skill 问题，或需要直接修代码的场景。",
+    "enabled": true,
+    "name": "openubmc-skill-feedback",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-skill-feedback/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Use when an already-built openUBMC HPM must be uploaded, activated, and verified on one or many BMCs through Redfish or the same-origin openUBMC WebUI upgrade API, including component firmware such as CPLD, VRD, and CSR. Also assess an explicit firmware rollback request against a separately available recovery path. Requires current-task mutation authorization, target(s), and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.",
+    "enabled": false,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-upgrade 接收已验证的 HPM 或 build-upgrade handoff，为目标选择 Redfish 或同源 WebUI 升级路径；组件包以匹配任务 Completed/ErrorCode=0 验证，BMC 包以 fresh Manager 版本验证。批量升级使用受控并发和逐目标 journal。",
+      "displayName": "openUBMC Upgrade",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "通过 Redfish 或 WebUI 验证并升级 openUBMC HPM"
+    },
+    "name": "openubmc-upgrade",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-upgrade/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "开发和调试 openUBMC WebUI 前端。Use when user asks to \"开发WebUI页面\", \"调试webui前端\", \"修改/UI/Rest接口页面\", \"配置反向代理\", \"运行npm run dev进行本地验证\", \"WebUI构建失败\", \"WebUI提交前检查\". Do NOT use for generic Vue projects, backend implementation, or non-openUBMC WebUI repositories.",
+    "enabled": true,
+    "name": "openubmc-webui-dev",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-webui-dev/SKILL.md",
+    "pluginId": null,
+    "scope": "user"
+  },
+  {
+    "description": "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $imagegen to make or edit an image for this project.",
+      "displayName": "Image Gen",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/imagegen/assets/imagegen.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/imagegen/assets/imagegen-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Generate or edit images for websites, games, and more"
+    },
+    "name": "imagegen",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/imagegen/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, customization, automations, and self-knowledge—including 'you,' 'your,' 'this app,' or 'this coding agent' when they refer to Codex—and for OpenAI APIs/products and ChatGPT Work. Also use for model choice/migration, prompting, SDKs, Responses, Realtime, agents, evals, and Chat/Work/Codex comparisons. Do not use for generic app/software tasks that merely mention Codex.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use OpenAI Docs for official docs lookup, questions about Codex itself or Codex surfaces, model selection, model migration, and prompt-upgrade work.",
+      "displayName": "OpenAI Docs",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/assets/openai.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/assets/openai-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "OpenAI and Codex docs for models, skills, tasks, and setup"
+    },
+    "name": "openai-docs",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, and self-knowledge; OpenAI APIs and ChatGPT Work. 'You'/'this app' means Codex only."
+  },
+  {
+    "description": "Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, valid manifest defaults, and personal-marketplace entries by default. Use when Codex needs to create a new personal plugin, add optional plugin structure, generate or update marketplace entries for plugin ordering and availability metadata, or update an existing local plugin during development with the CLI-driven cachebuster and reinstall flow.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $plugin-creator to scaffold a valid plugin in the personal marketplace, then validate it before handing it back.",
+      "displayName": "Plugin Creator",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/plugin-creator/assets/plugin-creator.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/plugin-creator/assets/plugin-creator-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Scaffold plugins and marketplace entries"
+    },
+    "name": "plugin-creator",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/plugin-creator/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Perform a read-only, defect-first review of a specified code change and return every actionable finding. Use when another agent delegates review of uncommitted changes, a base-branch diff, a commit, or custom review instructions.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $review-agent to review the requested code changes and return actionable findings.",
+      "displayName": "Review Agent",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Find actionable bugs in code changes"
+    },
+    "name": "review-agent",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/review-agent/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": null,
+      "displayName": "Skill Creator",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-creator/assets/skill-creator.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-creator/assets/skill-creator-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Create or update a skill"
+    },
+    "name": "skill-creator",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-creator/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Create or update a skill"
+  },
+  {
+    "description": "Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": null,
+      "displayName": "Skill Installer",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-installer/assets/skill-installer.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-installer/assets/skill-installer-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Install curated skills from openai/skills or other repos"
+    },
+    "name": "skill-installer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/skill-installer/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Install curated skills from openai/skills or other repos"
+  }
+]

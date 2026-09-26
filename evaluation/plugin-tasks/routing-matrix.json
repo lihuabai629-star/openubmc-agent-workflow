@@ -1,0 +1,105 @@
+{
+  "schema": "openubmc.skill-routing-matrix.v1",
+  "cases": [
+    {
+      "case_id": "diagnosis-zh-ordinary",
+      "intent": "diagnosis",
+      "language": "zh",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-debug"],
+      "turns": ["我的 openUBMC BMC 上 webserver 服务启动失败了，帮我读取当前服务状态和相关日志，判断原因。目标和凭据这次没有提供；只做只读检查，缺什么就明确说明，不要声称已经完成设备诊断。"]
+    },
+    {
+      "case_id": "diagnosis-en-ordinary",
+      "intent": "diagnosis",
+      "language": "en",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-debug"],
+      "turns": ["Diagnose why the fan sensor is missing on my openUBMC BMC. I have not supplied a target or credentials in this task. Perform only authorized read-only checks, state the missing inputs, and do not claim the device was diagnosed."]
+    },
+    {
+      "case_id": "logs-en-ordinary",
+      "intent": "logs",
+      "language": "en",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-log-analyzer"],
+      "turns": ["Analyze the openUBMC one-click log bundle at /tmp/openubmc-routing-eval/missing-bundle.tar.gz for repeated webserver crashes. Use only local read-only checks; if the bundle is absent, report that exact blocker without inventing findings."]
+    },
+    {
+      "case_id": "build-zh-explicit-source",
+      "intent": "build",
+      "language": "zh",
+      "workspace_mode": "explicit-source",
+      "expected_routes": ["openubmc-build"],
+      "turns": ["请检查外部源码目录 {source_path} 是否具备用 bmcgo 构建 openUBMC 组件的前置条件。本次只授权只读预检，不执行编译、安装、发布或修改源码；给出实际检查结果和缺口。"]
+    },
+    {
+      "case_id": "build-en-source-cwd",
+      "intent": "build",
+      "language": "en",
+      "workspace_mode": "source",
+      "expected_routes": ["openubmc-build"],
+      "turns": ["Check this openUBMC source checkout for the prerequisites needed to build a component with bmcgo. This task authorizes read-only preflight only: do not compile, install, publish, or edit files."]
+    },
+    {
+      "case_id": "upgrade-en-ordinary",
+      "intent": "upgrade",
+      "language": "en",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-upgrade"],
+      "turns": ["I already have an openUBMC HPM and eventually need to upgrade a BMC. For now, only inspect the prerequisites and list the missing target and artifact identity; do not upload, activate, restart, or change any device."]
+    },
+    {
+      "case_id": "credentials-zh-ordinary",
+      "intent": "credentials",
+      "language": "zh",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-environment-setup"],
+      "turns": ["帮我检查 Codex 的 openUBMC BMC/OS 凭据配置入口是否就绪。只检查隔离环境中的配置状态，不写入账号、不修改现有凭据；不要要求我在对话里发送密码。"]
+    },
+    {
+      "case_id": "kb-en-ordinary",
+      "intent": "knowledge-base",
+      "language": "en",
+      "workspace_mode": "ordinary",
+      "expected_routes": [],
+      "expected_mcp": ["openubmc-kb"],
+      "turns": ["Search the configured openUBMC knowledge base for guidance on a missing fan sensor. Treat knowledge results only as candidate guidance. If the KB is not configured or authentication fails, report that environment failure plainly."]
+    },
+    {
+      "case_id": "component-zh-explicit-source",
+      "intent": "component-development",
+      "language": "zh",
+      "workspace_mode": "explicit-source",
+      "expected_routes": ["openubmc-developer"],
+      "turns": ["在外部 openUBMC 源码目录 {source_path} 中，我还没确定一个新的 MDB 属性应写进 model.json 生成链，还是手写 Lua。请只读分析源码所有权和扩展模式，不修改文件。"]
+    },
+    {
+      "case_id": "negative-zh-ordinary",
+      "intent": "negative",
+      "language": "zh",
+      "workspace_mode": "ordinary",
+      "expected_routes": [],
+      "turns": ["解释 Python 列表推导式，并给一个纯 Python 示例。"]
+    },
+    {
+      "case_id": "ambiguous-zh-ordinary",
+      "intent": "ambiguous",
+      "language": "zh",
+      "workspace_mode": "ordinary",
+      "expected_routes": [],
+      "turns": ["帮我看看这个问题，先告诉我还需要哪些信息。"]
+    },
+    {
+      "case_id": "context-en-multi-turn",
+      "intent": "multi-turn",
+      "language": "en",
+      "workspace_mode": "ordinary",
+      "expected_routes": ["openubmc-debug"],
+      "turns": [
+        "A service on a machine will not start. Tell me what context you need; do not access anything yet.",
+        "It is the webserver service on an openUBMC BMC. Continue as a read-only diagnosis, but the target and credentials are still unavailable, so preserve those as blockers."
+      ]
+    }
+  ]
+}

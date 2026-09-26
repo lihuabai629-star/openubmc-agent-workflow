@@ -1,0 +1,37 @@
+{
+  "digest": "sha256:6699e1a32e03ebc3fb37da473240ecd6ddf8f64b50545727b9542abc394866d6",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f5f-5b44-7623-8173-5c33af77718a",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      },
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "A service on a machine will not start. Tell me what context you need; do not access anything yet.",
+      "It is the webserver service on an openUBMC BMC. Continue as a read-only diagnosis, but the target and credentials are still unavailable, so preserve those as blockers."
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:bfd3c4ae4dd3a1172a81416c10b35c00e4eec66287e72e5154cfd7de28452560"
+}
