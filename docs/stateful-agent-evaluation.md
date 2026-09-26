@@ -52,8 +52,10 @@ and plan digest before any scoring.
 
 ## Actual Agent trials
 
-An executable Host adapter can be passed to `run-trials` after checking out the
-plan's exact `source_commit`. The runner invokes the adapter once per slot, with
+An executable Host adapter can be passed to `run-trials` from a checkout of the
+plan's exact `source_commit`. The committed plan and reports were added in the
+following evidence commit, so keep a copy of `trial-plan.json` outside that
+source checkout and pass its absolute path. The runner invokes the adapter once per slot, with
 the path to a `request.json` argument. It measures elapsed time and discards
 adapter stdout and stderr. The request contains the prompt, pinned identities,
 fixture target, and an output directory. The adapter must return success only
@@ -78,13 +80,15 @@ metadata for an external audit. The local Codex CLI JSON stream alone is not
 the native rollout format expected by the final-answer audit.
 
 ```sh
+PLAN_PATH=/absolute/path/to/trial-plan.json
+# Run the following from a checkout at the plan's source_commit.
 python scripts/stateful_agent_evaluation.py run-trials \
-  --plan evaluation/stateful-agent/trial-plan.json \
+  --plan "$PLAN_PATH" \
   --adapter /absolute/path/to/trusted-host-adapter \
   --trial-root /absolute/path/to/isolated-trials \
   --output /absolute/path/to/dispatch.json
 python scripts/stateful_agent_evaluation.py summarize-live \
-  --plan evaluation/stateful-agent/trial-plan.json \
+  --plan "$PLAN_PATH" \
   --trial-root /absolute/path/to/isolated-trials \
   --output /absolute/path/to/live-report.json
 ```
