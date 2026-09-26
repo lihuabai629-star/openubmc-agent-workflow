@@ -44,6 +44,7 @@ from .mutation import (
 )
 from .orchestration import TaskIntent, TaskOrchestrationContext
 from .credential_memory import AuthenticationMemory
+from .redaction import register_secret_values, require_secret_free
 
 
 T = TypeVar("T")
@@ -395,8 +396,15 @@ class CredentialResolver:
         key = (task_id, normalize_credential_host(host), purpose, transport, selected_port)
         with self._lock:
             if key in self._local_cache:
-                return CredentialResolution(self._local_cache[key], cache_hit=True)
+                cached = self._local_cache[key]
+                register_secret_values({"password": cached.password})
+                return CredentialResolution(cached, cache_hit=True)
             path, snapshot = self._selected_local_snapshot(task_id)
+            # Pin the source even when this lookup is incomplete. A later call
+            # in the same task must not silently select a different file.
+            self._task_sources[task_id] = path
+            self._task_snapshots[task_id] = snapshot
+            self._remember_source_environment(task_id)
             values = self._local_source.resolve(snapshot[0], host=host, purpose=purpose,
                                                 transport=transport, port=selected_port,
                                                 required=required, legacy_path=path)
@@ -404,11 +412,24 @@ class CredentialResolver:
                 return CredentialResolution(None, cache_hit=False)
             credential_type = ResolvedSshCredentials if transport == "ssh" else ResolvedRedfishCredentials
             resolved = credential_type.from_mapping({**values, "port": selected_port})
-            self._task_sources[task_id] = path
-            self._remember_source_environment(task_id)
-            self._task_snapshots[task_id] = snapshot
+            register_secret_values({"password": resolved.password})
             self._local_cache[key] = resolved
             return CredentialResolution(resolved, cache_hit=False)
+
+    def forget_task(self, task_id: str) -> None:
+        """Release task-bound credential values and source snapshots on close."""
+        with self._lock:
+            self._local_cache = {
+                key: value for key, value in self._local_cache.items()
+                if key[0] != task_id
+            }
+            self._cache = {
+                key: value for key, value in self._cache.items()
+                if key[0] != task_id
+            }
+            self._task_sources.pop(task_id, None)
+            self._task_snapshots.pop(task_id, None)
+            self._task_source_environments.pop(task_id, None)
 
     def associated_os(self, *, task_id: str, bmc_host: str) -> str | None:
         """Return a configured association, never authorization to access the OS."""
@@ -419,13 +440,13 @@ class CredentialResolver:
             raise ValueError("An association lookup requires a task and BMC")
         with self._lock:
             path, snapshot = self._selected_local_snapshot(task_id)
+            self._task_sources[task_id] = path
+            self._task_snapshots[task_id] = snapshot
+            self._remember_source_environment(task_id)
             if not self._local_source.is_structured(snapshot[0]):
                 return None
             config = json.loads(read_private_credentials(snapshot[0]))
             association = device_associations(config).get(normalize_credential_host(bmc_host))
-            self._task_sources[task_id] = path
-            self._task_snapshots[task_id] = snapshot
-            self._remember_source_environment(task_id)
             return association
 
     def _selected_local_snapshot(self, task_id: str):
@@ -456,9 +477,9 @@ class CredentialResolver:
         """Read the compatibility file while binding the same task source as JSON."""
         with self._lock:
             path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            values = loader(environ=self.source_environment(task_id))
             self._task_sources[task_id] = path
             self._remember_source_environment(task_id)
+            values = loader(environ=self.source_environment(task_id))
             return values
 
     def refresh_local_revision(self, task_id: str) -> bool:
@@ -616,6 +637,7 @@ class CredentialResolver:
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None:
+                register_secret_values({"password": cached.password})
                 return CredentialResolution(cached, cache_hit=True)
             loader = self._loaders.get(selector.transport)
             if loader is None:
@@ -631,6 +653,7 @@ class CredentialResolver:
                 raise TypeError(
                     f"credential loader must return {expected_type.__name__ if expected_type else 'a supported credential type'}"
                 )
+            register_secret_values({"password": resolved.password})
             self._cache[key] = resolved
             return CredentialResolution(resolved, cache_hit=False)
 
@@ -660,6 +683,7 @@ class RemoteReadRequest:
         collector_name: str,
         operation: Mapping[str, object],
     ) -> "RemoteReadRequest":
+        require_secret_free(operation, boundary="RemoteReadRequest identity")
         return cls(
             request_id=request_id,
             target=target,
@@ -2898,5 +2922,9 @@ class OpenUBMCTaskRun:
                 )
             }
             self._requests.clear()
-        for lane in lanes.values():
-            lane.close()
+        try:
+            for lane in lanes.values():
+                lane.close()
+        finally:
+            if self._credential_resolver is not None:
+                self._credential_resolver.forget_task(self.task_id)

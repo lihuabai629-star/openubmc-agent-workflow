@@ -13,6 +13,7 @@ import time
 from .semantic_runtime import bounded_request, is_safe_runtime_id, project_run_turn
 from .terminal_delivery import TerminalAnswerStore, render_final_answer
 from .delivery_stage import DELIVERY_STAGES
+from .redaction import require_secret_free
 
 
 SCHEMA = "openubmc.host-continuity/v1"
@@ -150,6 +151,10 @@ class HostContinuity:
         if not isinstance(notes, Mapping) or set(notes) - NOTE_FIELDS:
             raise ValueError("unsupported host note fields")
         bounded_request(notes)
+        # The fixed note keys are public metadata; inspect every nested value
+        # before SQLite or a later SessionStart hook can replay it to a model.
+        for value in notes.values():
+            require_secret_free(value, boundary="host continuity notes")
         for name, value in notes.items():
             if name == "goal":
                 if not isinstance(value, str):

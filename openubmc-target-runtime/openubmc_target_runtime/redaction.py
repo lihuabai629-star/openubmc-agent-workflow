@@ -205,7 +205,7 @@ def _secret_material_path(
         for key, item in value.items():
             name = str(key)
             candidate = (*path, name)
-            if is_secret_key(name):
+            if is_secret_key(name) or redact_text(name) != name:
                 return candidate
             found = _secret_material_path(item, candidate)
             if found is not None:

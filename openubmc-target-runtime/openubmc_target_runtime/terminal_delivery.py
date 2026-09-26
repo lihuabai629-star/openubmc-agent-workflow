@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 
 from .delivery_stage import DELIVERY_STAGES
+from .redaction import require_secret_free
 
 
 SCHEMA = "openubmc.terminal-answer/v1"
@@ -80,6 +81,7 @@ def outcome_fingerprint(
     *,
     delivery_stage: str = "unverified",
 ) -> str:
+    require_secret_free(outcome, boundary="terminal Outcome fingerprint")
     selected_stage = _text(delivery_stage) or "unverified"
     if selected_stage not in TERMINAL_DELIVERY_STAGES:
         raise TerminalAnswerError("unsupported delivery stage")
@@ -252,6 +254,7 @@ class TerminalAnswerStore:
         )
 
     def _save(self, task_id: str, record: FinalAnswerRecord) -> None:
+        require_secret_free(record.to_public_dict(), boundary="terminal answer persistence")
         values = self._load()
         values[task_id] = record.to_public_dict()
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -276,6 +279,7 @@ class TerminalAnswerStore:
         delivery_stage: str,
         text: str,
     ) -> FinalAnswerRecord:
+        require_secret_free(text, boundary="terminal answer preparation")
         selected_stage = _text(delivery_stage) or "unverified"
         fingerprint = outcome_fingerprint(
             outcome,

@@ -744,7 +744,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                     self.assertIsNone(status["orchestration"])
                     self.assertFalse(status["task_context"]["recovered"])
                     self.assertIn(
-                        "allowed_actions",
+                        "ValueError",
                         status["task_context"]["last_error"],
                     )
                     self.assertIsNone(store.load("policy-restore-task"))

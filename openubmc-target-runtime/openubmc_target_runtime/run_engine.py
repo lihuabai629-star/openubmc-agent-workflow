@@ -62,6 +62,7 @@ from .effect_runner import (
     LocalEffectRunner,
     PreparedEffect,
 )
+from .redaction import redact_effect_output
 from .capability import EffectClass
 from .comparison_receipt import COMPARISON_RECEIPT_SCHEMA
 from .diagnostic_receipt import (
@@ -3465,7 +3466,9 @@ class RunEngine:
                     getattr(error, "mutation_effects_started", False)
                 ),
             }
-        input_digest = fingerprint(outcome_identity)
+        # The digest is durable. Scrub exception metadata and direct result
+        # values before hashing so it cannot become a guessable secret digest.
+        input_digest = fingerprint(redact_effect_output(outcome_identity))
         command_id = "effect-result-" + input_digest[:32]
         def build(transaction: RunDecisionDraft) -> RunDecision:
             current = _projection(self.driver.run_snapshot(intent.run_id))

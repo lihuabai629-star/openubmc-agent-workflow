@@ -454,7 +454,7 @@ class _OrchestratedMcpTask:
                     self._last_persisted_digest = ""
                     self._last_persisted_at = 0.0
                     self._failed_persisted_digest = digest
-                    self._persistence_error = f"{type(exc).__name__}: {exc}"
+                    self._persistence_error = type(exc).__name__
                 return
             with self._lock:
                 self._last_persisted_digest = digest
@@ -485,7 +485,7 @@ class _OrchestratedMcpTask:
         try:
             raw = self._state_store.load(self.task_id)
         except Exception as exc:
-            self._persistence_error = f"{type(exc).__name__}: {exc}"
+            self._persistence_error = type(exc).__name__
             return
         if raw is None:
             return
@@ -595,7 +595,7 @@ class _OrchestratedMcpTask:
                 self._last_persisted_digest = self._context_digest(context)
                 self._last_persisted_at = time.monotonic()
         except Exception as exc:
-            self._persistence_error = f"{type(exc).__name__}: {exc}"
+            self._persistence_error = type(exc).__name__
             self._state_store.delete(self.task_id)
 
     @staticmethod
@@ -1506,13 +1506,16 @@ class _OrchestratedMcpTask:
             self._mutation_outcomes.clear()
             self._mutation_journal_identities.clear()
             self._target_arguments.clear()
-        for tool_name, resource in resources:
-            backend = self.tool_backends[tool_name]
-            key = id(backend)
-            if key in seen:
-                continue
-            seen.add(key)
-            backend.close_task(resource)
+        try:
+            for tool_name, resource in resources:
+                backend = self.tool_backends[tool_name]
+                key = id(backend)
+                if key in seen:
+                    continue
+                seen.add(key)
+                backend.close_task(resource)
+        finally:
+            self._credential_resolver.forget_task(self.task_id)
 
 
 class OrchestratedMcpBackend:
@@ -2299,9 +2302,7 @@ class RuntimeMcpService:
                 self._context_maintenance_last_error = ""
             except Exception as exc:
                 self._context_maintenance_failures += 1
-                self._context_maintenance_last_error = (
-                    f"{type(exc).__name__}: {exc}"
-                )[:2048]
+                self._context_maintenance_last_error = type(exc).__name__
             self._context_maintenance_attempts += 1
             self._last_context_maintenance_at = now
         finally:
