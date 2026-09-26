@@ -1,0 +1,75 @@
+# Workflow roadmap execution plan (2026-09-27)
+
+## Specification and boundary
+
+- Goal: complete the user-approved 24-item workflow improvement roadmap against
+  the `openubmc-agent-workflow` checkout, with independent issue branches and
+  evidence-based acceptance. The Desktop client is an existing separate
+  workstream; coordinate its contract and acceptance without editing its active
+  checkout from this repository.
+- Repository: `lihuabai629-star/openubmc-agent-workflow`, local Git root
+  `/Users/liqinghua/Documents/Codex/2026-09-26/openubmc-workflow-continuity`.
+  Snapshot `73eeba56dda909c41dfb66345aa15f0dcd067142` contains the current
+  first-pass implementation of 03, 05, 06, 07, 08 and 10's source ownership.
+- Contract: the Agent interface remains `observe`/`execute`; Runtime alone owns
+  Run, Gate, Incident, Effect, Outcome, mutation identity, verification and
+  rollback authorization. Host bookmarks, retrieval, UI, MCP transport and
+  evaluation cannot become independent device-effect authorities.
+- Standard gate: this phase changes host/runtime compatibility, local
+  persistence, retrieval and qualification, not MDB, MDS or northbound BMC
+  interface definitions. Public MCP result/schema changes require backwards
+  compatibility checks and a documented interface review risk. No generated
+  openUBMC component files or Conan caches are edited.
+- User decisions: credential saving happens automatically after verified
+  authentication. Do not add a new redaction approval gate; preserve existing
+  secret handling and never print credentials. Classify community, internal
+  and product repositories before aggregating search results.
+- Validation: local tests and a 20-scenario stateful evaluation corpus, then
+  Linux/WSL and installed-plugin acceptance. A release claim requires passing
+  the existing Runtime stability budget and release gates.
+- Rollback: each issue uses a dedicated branch/worktree from the snapshot.
+  Reverting an issue commit must leave the snapshot's Runtime ledger, source
+  identities and existing credentials intact. No production deployment is a
+  prerequisite for local implementation.
+
+## Dependency order and ownership
+
+| Stream | Roadmap items | Primary files and contracts | Validation and completion |
+| --- | --- | --- | --- |
+| Performance and evaluation | 01, 19, 20, 23 | `scripts/tests/test_runtime_stability.py`, qualification/evaluation scripts, CI metadata | Controlled base/candidate timing comparison; existing 40 s/30 s budgets pass without relaxing them; 20 scenarios × 3 stateful trials report correctness, interruption, repeat work and cost. Linux/WSL results are separate from macOS. |
+| Windows structured routing | 05, 16 and GitHub #247 | `scripts/execution_router.py`, packaged mirror, host probes and fallback receipts | Typed Runtime preferred on healthy MCP; bounded, attributable fallback; Windows/WSL simulations and native acceptance. No shell text satisfies a typed mutation gate. |
+| Terminal delivery | 06–08 and GitHub #250 | Host continuity, MCP adapter, packaged hooks, terminal-answer qualification | Installed hook end-to-end readback, restart/cancel, partial/blocked answers, duplicate/task mismatch; no repeated device call. |
+| Input and credentials | 02, 03, 04 | Runtime request decoding, credential resolver, local configuration and packaging | Default and nondefault ports, legacy config migration, verified autosave, malformed/ambiguous target handling and compatibility; no new approval gate. |
+| Source navigation and fusion | 09, 10 | Debug source catalog/trace/search, index store and optional LightRAG client | Incremental commit/dirty-aware index; exact symbol/error lookup; source/KB fusion retains product/repository provenance; optional service failure leaves local results usable. |
+| Evidence and diagnosis | 11–13 | Debug evidence processing and hypothesis advice | Bounded local batch processing with raw evidence pointers; hypothesis/support/refutation; compare one-domain graph prototype with fusion baseline before adoption. |
+| Host and protocol trials | 14–18, 24 | MCP compatibility, conditional Tasks/helper/reviewer/kernel adapters and Desktop contract | Controlled A/B evidence for optional features; old client path works; same Run is shown in Desktop/plugin; no new Runtime owner. |
+| Operations | 21–23 | Bounded telemetry, package/release provenance, docs and issue reconciliation | Traces tie to Run/Effect without secrets; disabling telemetry is behavior-neutral; package identity/SBOM/qualification are linked; every closed issue cites tests and commit/PR. |
+
+GitHub #253 is the final offline regression synthesis after its behavior-defining
+dependencies, including #247 and #250, have landed. Existing #260/#263 are
+specification parents whose implementation children #261/#264 are closed; audit
+them against the accepted autosave behavior before making new changes.
+
+## First execution wave
+
+| Issue | Worktree / branch | Codex task | State |
+| --- | --- | --- | --- |
+| #247 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-247`, `codex/issue-247` | `01a0df10-3602-7b40-9af3-8a5c09fd9461` | Started |
+| #250 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-250`, `codex/issue-250` | `01a0df10-30c6-7333-bb40-2854494b240e` | Started |
+| #276 | `/Users/liqinghua/Documents/Codex/2026-09-27/workflow-issue-276`, `codex/issue-276` | `01a0df10-3c5b-7152-b4d0-e6ada1795350` | Started |
+
+1. Preserve the current candidate in a local commit. Create separate worktrees
+   and tasks for #247, #250, and source navigation/fusion; assign explicit file
+   ownership and tests. New issue work starts from the snapshot commit.
+2. In the coordinator worktree, reproduce the Runtime stability failure and
+   compare the same test on `origin/main` under controlled host load. Diagnose
+   before changing production timeouts or thresholds.
+3. Review the incoming branches against the public behavior seams. Integrate
+   them one at a time, rerun focused tests and then the full release qualifier.
+4. Dispatch subsequent independent issues (input/credentials, evidence/
+   diagnosis, telemetry) as slots and dependencies become available. Keep the
+   issue map and verification record current.
+
+The previous candidate finished 128/128 capacity and 64/64 restart Runs but
+exceeded the existing time budgets. That is a failed release gate until a
+controlled comparison and a passing candidate run establish otherwise.
