@@ -27,6 +27,9 @@ def hook(root: Path) -> None:
         stream.write(json.dumps({
             "event": event.get("hook_event_name"),
             "tool": event.get("tool_name"),
+            "event_keys": sorted(event),
+            "tool_input_keys": sorted(event.get("tool_input", {})),
+            "session_id": event.get("session_id"),
             "blocked_match": command == blocked_command,
             "allowed_match": command == allowed_command,
         }) + "\n")
@@ -125,13 +128,19 @@ def probe(executable: Path) -> None:
                   "codex": subprocess.check_output([str(executable), "--version"],
                                                    text=True).strip(),
                   "hook_event_count": len(events),
+                  "session_id_present": all(bool(item.get("session_id")) for item in events),
+                  "session_count": len({item.get("session_id") for item in events}),
+                  "event_keys": sorted({key for item in events for key in item["event_keys"]}),
+                  "tool_input_keys": sorted({key for item in events
+                                             for key in item["tool_input_keys"]}),
                   "matched_blocked": sum(bool(item["blocked_match"]) for item in events),
                   "matched_allowed": sum(bool(item["allowed_match"]) for item in events),
                   "blocked_file_exists": (root / "blocked").exists(),
                   "allowed_file_exists": (root / "allowed").exists(),
                   "codex_exit": result.returncode}
         print(json.dumps(report, indent=2))
-        if (result.returncode != 0 or report["matched_blocked"] != 1
+        if (result.returncode != 0 or not report["session_id_present"]
+                or report["session_count"] != 1 or report["matched_blocked"] != 1
                 or report["matched_allowed"] != 1 or report["blocked_file_exists"]
                 or not report["allowed_file_exists"]):
             raise RuntimeError("native synthetic shell hook fixture failed: "

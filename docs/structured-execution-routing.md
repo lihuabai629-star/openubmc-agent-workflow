@@ -75,18 +75,40 @@ observe shell calls made by the Codex Host. A separate, trusted plugin
 supported calls before execution. The native Codex 0.153.4 probe
 `scripts/qualify_pretool_shell_hook.py` verified this in a disposable
 `CODEX_HOME`: its synthetic blocked command was denied and an unrelated
-synthetic command ran. No hook definition or trust setting was changed in the
-user's setup. See the [official hook coverage and deny schema](https://learn.chatgpt.com/docs/hooks).
+synthetic command ran. Both hook events had one `session_id`. The separate
+`scripts/qualify_host_continuity.py` probe observed that Codex's MCP
+`_meta.threadId` equals the hook's session ID, so this is a usable task
+correlation key. No hook definition or trust setting was changed in the user's
+setup. See the [official hook coverage and deny schema](https://learn.chatgpt.com/docs/hooks).
+
+The same native shell fixture recorded the exact event key set:
+
+| Binding needed for an openUBMC fallback | Native `PreToolUse` evidence |
+| --- | --- |
+| Task | `session_id` present; matches MCP `threadId` in the separate native probe |
+| Command | `tool_input.command` present |
+| Target and operation | No typed fields; neither is inferable from every shell string |
+| Bound fallback receipt and remaining budget | No receipt or trusted route state in the event |
+| Actual command host and selected WSL distribution | No execution-host field; `cwd` describes the session, not a nested WSL/SSH host |
+
+The fixture passed an explicit `workdir` to `exec_command`, yet the hook's
+`tool_input` contained only `command`. This observed shape agrees with the
+documented `PreToolUse` schema; it is evidence for Codex 0.153.4 on macOS,
+not native Windows/WSL acceptance.
 
 A production hook has not been added to `plugin/openubmc/hooks/hooks.json`.
 The `PreToolUse` input contains a shell command, session ID, and working
 directory, but it does not provide the requested openUBMC operation, target
 scope, bound fallback receipt, or a trustworthy observed command host. Inferring
 these from arbitrary command text would miss wrapped calls and could block
-unrelated shell work. Enforcing the budget requires a Host adapter that binds
-those facts to the session and passes every applicable command through
-`admit_shell`. Plugin hooks also require user trust and some specialized tool
-paths can opt out, so a hook alone is not a complete enforcement boundary.
+unrelated shell work. Denying every shell call with missing binding would block
+unrelated work; allowing an unmarked command would make the budget optional.
+Enforcing the budget requires a Host adapter that supplies a protected,
+session-bound target/operation/receipt and observed host for each applicable
+command, then passes it through `admit_shell` before execution. A field or
+marker controlled by the model in the command string cannot serve as that
+binding. Plugin hooks also require user trust and some specialized tool paths
+can opt out, so a hook alone is not a complete enforcement boundary.
 Until the Host binding and native Windows/WSL coverage are verified, the Python
 router and Skill instruction govern only callers that use them; no global
 shell-budget enforcement is claimed. Installed MCP tests use controlled Linux

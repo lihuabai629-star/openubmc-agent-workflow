@@ -45,7 +45,9 @@ The MCP bootstrap does not see Codex Host terminal calls. A trusted plugin
 `PreToolUse` hook can deny supported `Bash` and `exec_command` calls, but the
 hook input alone cannot reliably identify an openUBMC target operation, bind
 it to a fallback receipt, or establish the actual command host. Some specialized
-tool paths can opt out. `ExecutionRouter` enforces its budget only where the
+tool paths can opt out. Native macOS fixtures confirm task correlation through
+`session_id`/MCP `threadId` but expose only the shell command, with no typed
+target, receipt, or execution host. `ExecutionRouter` enforces its budget only where the
 Host or another caller passes every applicable shell action through
 `admit_shell` with its observed host. Do not describe an unobserved terminal
 command as a routed fallback.
