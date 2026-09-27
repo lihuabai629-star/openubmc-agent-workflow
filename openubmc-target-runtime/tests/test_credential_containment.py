@@ -27,7 +27,9 @@ from openubmc_target_runtime.run_engine import RunEngine
 from openubmc_target_runtime.openssh import (
     OpenSshControlMasterTransport, OpenSshMaster, OpenSshMasterError, OpenSshUnavailable,
 )
-from openubmc_target_runtime.redaction import SecretMaterialError, secret_redaction_request
+from openubmc_target_runtime.redaction import (
+    SecretMaterialError, redact_text, register_secret_values, secret_redaction_request,
+)
 from openubmc_target_runtime.session_outcome import (
     InMemorySessionOutcomeRepository, SessionOutcomeRecord, SQLiteSessionOutcomeRepository,
 )
@@ -37,6 +39,16 @@ from openubmc_target_runtime.semantic_runtime import RunTurn, fingerprint
 
 
 class CredentialContainmentTests(unittest.TestCase):
+    def test_redaction_fast_path_keeps_plain_text_but_not_secret_forms(self) -> None:
+        self.assertEqual(redact_text("run-123/source"), "run-123/source")
+        self.assertEqual(redact_text("password=synthetic-secret"), "password=<redacted>")
+        self.assertEqual(redact_text("Bearer synthetic-token"), "Bearer <redacted>")
+        self.assertEqual(redact_text("ssh://user:synthetic@host"), "ssh://<redacted>@host")
+        self.assertEqual(redact_text("--password synthetic-secret"), "--password <redacted>")
+        with secret_redaction_request():
+            register_secret_values({"password": "syntheticplain"})
+            self.assertEqual(redact_text("prefixsyntheticplainsuffix"), "prefix<redacted>suffix")
+
     def test_selector_field_rejects_inline_value_before_fingerprinting(self) -> None:
         inline = "synthetic-inline-password"
         with self.assertRaises(ValueError) as failure:
