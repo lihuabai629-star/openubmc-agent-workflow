@@ -277,7 +277,7 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
                task_id: str, final: FinalAnswerRecord | None,
                rollout: Path | None, identity: Mapping[str, object],
                expected_identity: Mapping[str, object], metrics: Mapping[str, object],
-               offline_fault: str = "") -> dict[str, object]:
+               offline_fault: str = "", host_session_id: str = "") -> dict[str, object]:
     """Score from persisted Runtime facts and a persisted, matching host final."""
     issues: set[str] = set()
     try:
@@ -382,7 +382,8 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
         if final is not None and rollout is not None:
             try:
                 event_id, event_text, event_time = audit_rollout_final(
-                    rollout, task_id=task_id, prepared_at=final.prepared_at,
+                    rollout, task_id=host_session_id or task_id,
+                    prepared_at=final.prepared_at,
                     expected_text=final.text,
                 )
                 if (event_id, event_text, event_time) != (
@@ -400,7 +401,7 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
     elif rollout is not None:
         try:
             audit_rollout_final(
-                rollout, task_id=task_id,
+                rollout, task_id=host_session_id or task_id,
                 prepared_at="1970-01-01T00:00:00+00:00",
             )
             host_final_confirmed = True
@@ -667,6 +668,22 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
     bound = repo.case_for_task(task_id)
     if bound != run_id:
         raise ValueError("Runtime task binding does not match trial Run")
+    host_session_id = trial.get("host_session_id", "")
+    if host_session_id:
+        if (not isinstance(host_session_id, str) or re.fullmatch(
+                r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}",
+                host_session_id) is None):
+            raise ValueError("native Host session identity is invalid")
+        trace_path = runtime_db.parent / "host-trace.jsonl"
+        with trace_path.open(encoding="utf-8") as stream:
+            trace = [json.loads(line) for line in stream]
+        if not any(isinstance(item, Mapping)
+                   and item.get("task_id") == task_id
+                   and item.get("host_session_id") == host_session_id
+                   and item.get("tool") == "execute"
+                   and item.get("response_received") is True
+                   for item in trace):
+            raise ValueError("native MCP call does not bind Host session to Runtime task")
     final = TerminalAnswerStore(terminal_store).get(task_id) if terminal_store.is_file() else None
     metrics = _metrics_from_rollout(rollout)
     metrics["elapsed_seconds"] = elapsed_seconds
@@ -681,19 +698,17 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
     }
     result = score_case(case=case, repository=repo, run_id=run_id,
                         task_id=task_id, final=final, rollout=rollout,
-                        identity=identity, expected_identity=expected, metrics=metrics)
+                        identity=identity, expected_identity=expected, metrics=metrics,
+                        host_session_id=host_session_id)
     result["trial"] = row["trial"]
     result["kind"] = "agent-evidence-scored"
     return result
 
 
-def run_agent_trials(*, manifest: Mapping[str, object], plan: Mapping[str, object],
-                     adapter: Path, output_root: Path, timeout_seconds: int) -> dict[str, object]:
-    """Dispatch 60 isolated fake-Runtime trials to an explicit host adapter.
-
-    The adapter contract is documented with the corpus. This runner never uses
-    a shell, contacts a BMC, changes global configuration, or emits raw adapter output.
-    """
+def _dispatch_slots(*, manifest: Mapping[str, object], plan: Mapping[str, object],
+                    adapter: Path, output_root: Path, timeout_seconds: int,
+                    slots: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    """Dispatch selected slots without a shell or raw adapter output."""
     validate_plan(plan, manifest)
     if _git_commit("HEAD") != plan["source_commit"]:
         raise ValueError("current checkout does not match pinned source commit")
@@ -705,7 +720,7 @@ def run_agent_trials(*, manifest: Mapping[str, object], plan: Mapping[str, objec
     cases = {item["id"]: item for item in manifest["scenarios"]}
     output_root.mkdir(parents=True, exist_ok=True)
     attempts: list[dict[str, object]] = []
-    for slot in plan["schedule"]:
+    for slot in slots:
         case = cases[slot["scenario_id"]]
         directory = output_root / slot["task_id"]
         directory.mkdir(mode=0o700)
@@ -745,6 +760,30 @@ def run_agent_trials(*, manifest: Mapping[str, object], plan: Mapping[str, objec
             "plan_digest": plan["plan_digest"], "attempted": len(attempts),
             "successful_adapter_exits": sum(item["adapter_exit_code"] == 0 for item in attempts),
             "attempts": attempts}
+
+
+def run_agent_trials(*, manifest: Mapping[str, object], plan: Mapping[str, object],
+                     adapter: Path, output_root: Path, timeout_seconds: int) -> dict[str, object]:
+    """Dispatch all 60 slots to a Host adapter that supports every scenario."""
+    return _dispatch_slots(
+        manifest=manifest, plan=plan, adapter=adapter, output_root=output_root,
+        timeout_seconds=timeout_seconds, slots=plan["schedule"],
+    )
+
+
+def run_one_trial(*, manifest: Mapping[str, object], plan: Mapping[str, object],
+                  adapter: Path, output_root: Path, timeout_seconds: int,
+                  scenario_id: str, trial: int) -> dict[str, object]:
+    """Run one pinned slot for an authenticated Host pilot."""
+    validate_plan(plan, manifest)
+    selected = [slot for slot in plan["schedule"]
+                if slot["scenario_id"] == scenario_id and slot["trial"] == trial]
+    if len(selected) != 1:
+        raise ValueError("requested trial is not in the pinned schedule")
+    return _dispatch_slots(
+        manifest=manifest, plan=plan, adapter=adapter, output_root=output_root,
+        timeout_seconds=timeout_seconds, slots=selected,
+    )
 
 
 def summarize_live(*, manifest: Mapping[str, object], plan: Mapping[str, object],
@@ -846,6 +885,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     dispatch_parser.add_argument("--trial-root", type=Path, required=True)
     dispatch_parser.add_argument("--timeout-seconds", type=int, default=1800)
     dispatch_parser.add_argument("--output", type=Path, required=True)
+    single_parser = sub.add_parser("run-one")
+    single_parser.add_argument("--plan", type=Path, required=True)
+    single_parser.add_argument("--adapter", type=Path, required=True)
+    single_parser.add_argument("--trial-root", type=Path, required=True)
+    single_parser.add_argument("--scenario-id", required=True)
+    single_parser.add_argument("--trial", type=int, required=True)
+    single_parser.add_argument("--timeout-seconds", type=int, default=600)
+    single_parser.add_argument("--output", type=Path, required=True)
     summary_parser = sub.add_parser("summarize-live")
     summary_parser.add_argument("--plan", type=Path, required=True)
     summary_parser.add_argument("--trial-root", type=Path, required=True)
@@ -876,6 +923,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = run_agent_trials(
                 manifest=manifest, plan=plan, adapter=args.adapter,
                 output_root=args.trial_root, timeout_seconds=args.timeout_seconds,
+            )
+        elif args.command == "run-one":
+            result = run_one_trial(
+                manifest=manifest, plan=plan, adapter=args.adapter,
+                output_root=args.trial_root, timeout_seconds=args.timeout_seconds,
+                scenario_id=args.scenario_id, trial=args.trial,
             )
         elif args.command == "summarize-live":
             result = summarize_live(

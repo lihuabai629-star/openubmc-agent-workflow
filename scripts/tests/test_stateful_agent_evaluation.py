@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,6 +115,25 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
         self.assertEqual({tuple(row["issues"]) for row in report["trials"]},
                          {("missing_or_invalid_artifacts",)})
 
+    def test_single_trial_dispatch_invokes_only_the_selected_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            adapter = root / "adapter"
+            adapter.write_text("#!/bin/sh\nexit 0\n")
+            adapter.chmod(0o700)
+            with mock.patch.object(evaluation, "_git_commit", return_value="a" * 40):
+                dispatch = evaluation.run_one_trial(
+                    manifest=self.manifest, plan=self.plan, adapter=adapter,
+                    output_root=root / "trials", timeout_seconds=5,
+                    scenario_id="diagnosis-complete", trial=1,
+                )
+            self.assertEqual(dispatch["attempted"], 1)
+            self.assertEqual(dispatch["successful_adapter_exits"], 1)
+            self.assertEqual(
+                [item.name for item in (root / "trials").iterdir()],
+                ["eval-diagnosis-complete-v1-t1"],
+            )
+
     def test_live_scorer_reads_runtime_sqlite_and_completed_host_final(self) -> None:
         case = next(item for item in self.manifest["scenarios"]
                     if item["id"] == "diagnosis-complete")
@@ -189,6 +209,33 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
             self.assertEqual(result["issues"], [])
             self.assertTrue(result["host_final_confirmed"])
             self.assertEqual(result["runtime_status"], "completed")
+            native_session = "12345678-1234-1234-1234-123456789abc"
+            native_events = copy.deepcopy(events)
+            native_events[0]["payload"]["id"] = native_session
+            rollout.write_text("\n".join(json.dumps(item) for item in native_events) + "\n")
+            native_trial = {**trial, "host_session_id": native_session}
+            trace = root / "host-trace.jsonl"
+            trace.write_text(json.dumps({
+                "task_id": task_id, "host_session_id": native_session,
+                "tool": "execute", "response_received": True,
+            }) + "\n")
+            native_result = evaluation.score_live_trial(
+                case=case, plan=self.plan, manifest=self.manifest, trial=native_trial,
+                runtime_db=db, terminal_store=store_path, rollout=rollout,
+                elapsed_seconds=1.25,
+            )
+            self.assertTrue(native_result["host_final_confirmed"])
+            trace.write_text(json.dumps({
+                "task_id": task_id, "host_session_id": "other-session",
+                "tool": "execute", "response_received": True,
+            }) + "\n")
+            with self.assertRaisesRegex(ValueError, "does not bind Host session"):
+                evaluation.score_live_trial(
+                    case=case, plan=self.plan, manifest=self.manifest,
+                    trial=native_trial, runtime_db=db, terminal_store=store_path,
+                    rollout=rollout, elapsed_seconds=1.25,
+                )
+            rollout.write_text("\n".join(json.dumps(item) for item in events) + "\n")
             overclaim = evaluation.score_case(
                 case=case, repository=evaluation.ReadOnlyTrialRepository(db),
                 run_id=run_id, task_id=task_id,
