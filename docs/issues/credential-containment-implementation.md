@@ -70,3 +70,17 @@ Outcomes, and terminal answers reject secret-shaped input before storage. This d
 retroactively remove copies in host transcripts or external logs, and arbitrary
 unlabelled strings that have never been registered as secrets cannot always be
 recognized. Operators must use the rotation runbook for prior exposure.
+
+## Integrated local verification (2026-09-27)
+
+The containment commit `611122b` was integrated with the optional tracing and
+Host continuity changes. At optimized code commit `37447c9`, 20 synthetic
+containment tests, 36 MCP contract tests and the full 847-test Runtime suite
+passed on macOS/Python 3.12. The 128-Run capacity scenario identified repeated
+regex scanning of ordinary non-secret fields as a hotspot; `37447c9` adds a
+delimiter-aware fast path that still performs full replacement whenever a
+registered secret is present. It matched the previous redactor on 10,005
+deterministic synthetic strings and passed a clean standalone stability report.
+No real credential, target, rollout retention store or rotation was exercised.
+Native Linux/Windows acceptance and operator-owned historical rotation remain
+separate from this local code verification.

@@ -167,3 +167,50 @@ These updates do not replace a clean final-source stability run, real 20 × 3
 Agent trials, native platform acceptance, GitHub CI or the separate Desktop
 installer test. No source from this coordinator branch has been published as a
 new release.
+
+## Third integration update (2026-09-27)
+
+- #243's credential-containment patch is integrated as `611122b`. It rejects
+  inline secret-shaped MCP/Runtime input, keeps selected credentials local and
+  task-bound, removes SSH passwords from child argv/environment, and sanitizes
+  durable event, receipt, exception and Host-output boundaries. Synthetic
+  containment tests passed 20/20 after integration; no real credential or BMC
+  was used. The operator rotation runbook is in
+  [credential-exposure-response.md](credential-exposure-response.md). It does
+  not erase historical transcripts or rotate an account automatically.
+- Adjacent macOS capacity measurements exposed CPU overhead in the new
+  boundary checks. With the same Python 3.12 environment, original `main`
+  used 10.82 s user CPU, the integrated candidate before optimization used
+  16.37 s, and the optimized candidate used 11.66 s for 128/128 Runs. Commit
+  `37447c9` skips static redaction regexes only when a field has no syntax
+  marker and no registered secret value. The optimized function matched the
+  prior implementation on 10,005 deterministic synthetic strings, and
+  credential/MCP tests passed. No protection or release threshold was removed.
+- The pre-optimization source `459b4a6` had one failed standalone stability
+  report: capacity 53.066 s and restart 45.009 s exceeded the 40/30 s limits,
+  despite 128/128 and 64/64 completed Runs. The same source later passed at
+  30.966/16.659 s; the earlier failure remains evidence of load sensitivity.
+  The clean optimized code commit `37447c9` passed its standalone qualifier
+  (`promotable=true`): capacity 12.384 s, restart 7.435 s, zero failed calls
+  and zero replay backend reads. These are macOS observations, not Linux
+  release qualification.
+- After optimization, the full Runtime suite passed 847 tests (3 skips), the
+  full Debug suite passed 216 (2 skips), and 55 focused package, activation,
+  replay, stateful-evaluation and platform tests passed. Immediately before
+  the optimization, the full script suite passed 551 tests (35 skips). Four
+  previously unguarded `/proc` and pinned-Linux-Codex tests are now marked
+  Linux-only; their acceptance behavior was not replaced by macOS simulation.
+  The full script suite has not been rerun on the final optimized source.
+- The 20-scenario offline scorer remains 20/20 for its expected fixture
+  verdicts, but actual independent Agent trials are still **0/60**. #247's
+  global Host shell budget, #250's installed live final delivery, native
+  Linux/Windows/WSL, Desktop same-Run readback and exact-source hosted CI
+  remain unaccepted. The last observed hosted CI attempt had a zero-step
+  failed preflight and skipped Linux/Windows jobs due to account billing or
+  spending limits. Conditional helper/reviewer/Tasks/framework adoption is
+  not justified without controlled trials; the one-domain graph prototype
+  remains a local, unadopted experiment.
+
+The coordinator branch is still a local candidate, not a production deployment
+or release. Keep the parent and dependent issues open until their distinct
+acceptance evidence exists.
