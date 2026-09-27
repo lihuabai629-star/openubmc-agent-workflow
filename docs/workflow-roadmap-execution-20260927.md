@@ -214,3 +214,25 @@ new release.
 The coordinator branch is still a local candidate, not a production deployment
 or release. Keep the parent and dependent issues open until their distinct
 acceptance evidence exists.
+
+## Fourth integration update (2026-09-27)
+
+- Draft PR #287 now carries the coordinator candidate; it remains open and
+  unmerged. Its hosted validation preflight failed before any steps ran, and
+  Linux/Windows jobs were skipped. This does not replace native acceptance.
+- #247's Host binding audit is integrated as `132a2fd`. A disposable native
+  hook probe confirmed session identity and command-only `PreToolUse` input,
+  but not a trustworthy target/operation or a global shell-call budget. No
+  production hook or global trust setting was installed.
+- #285's guarded single-slot fake-Runtime adapter is integrated as `4ab8cc4`.
+  It is restricted to `diagnosis-complete`, uses a loopback relay with a
+  per-run random marker, rejects non-loopback plaintext upstream, and checks
+  that native shell snapshots are disabled. Twelve focused tests and quick
+  workflow validation pass after integration. The attempted native pilot on
+  Codex CLI 0.144.6 was cancelled before Runtime execution, so there is no
+  persisted Outcome and actual verified Agent trials remain **0/60**. No
+  additional model turn was run after the guard was added.
+- The full script suite must be run on a clean integrated commit; the latest
+  result is recorded on PR #287. The prior 551-test run and 35 platform skips
+  above belong to an earlier source. Release and item 19 acceptance remain
+  blocked by the missing live trials and platform evidence.
