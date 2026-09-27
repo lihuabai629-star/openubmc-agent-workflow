@@ -167,27 +167,46 @@ def validate_plan(plan: Mapping[str, object], manifest: Mapping[str, object]) ->
 
 
 def _metrics_from_rollout(path: Path) -> dict[str, object]:
-    tokens_in = tokens_out = calls = 0
-    usage_seen = False
+    streamed_in = streamed_out = streamed_calls = native_calls = response_calls = 0
+    streamed_usage_seen = False
+    native_usage: tuple[int, int] | None = None
     with path.open(encoding="utf-8") as stream:
         for line in stream:
             event = json.loads(line)
-            payload = _object(event.get("payload"))
-            event_type = payload.get("type") if event.get("type") == "event_msg" else event.get("type")
-            source = payload if event.get("type") == "event_msg" else event
+            kind = event.get("type")
+            source = _object(event.get("payload")) if kind == "event_msg" else event
+            event_type = source.get("type") if kind == "event_msg" else kind
             if event_type == "turn.completed":
                 usage = _object(source.get("usage"))
                 if type(usage.get("input_tokens")) is int and type(usage.get("output_tokens")) is int:
-                    tokens_in += int(usage["input_tokens"])
-                    tokens_out += int(usage["output_tokens"])
-                    usage_seen = True
-            if event_type == "item.completed":
+                    streamed_in += int(usage["input_tokens"])
+                    streamed_out += int(usage["output_tokens"])
+                    streamed_usage_seen = True
+            if event_type == "token_count":
+                total = _object(_object(source.get("info")).get("total_token_usage"))
+                if type(total.get("input_tokens")) is int and type(total.get("output_tokens")) is int:
+                    current = (int(total["input_tokens"]), int(total["output_tokens"]))
+                    if native_usage and (current[0] < native_usage[0] or current[1] < native_usage[1]):
+                        raise ValueError("native cumulative token usage decreased")
+                    native_usage = current
+            if event_type in {"item.completed", "item_completed"}:
                 item = _object(source.get("item"))
-                if item.get("type") in {"command_execution", "mcp_tool_call"}:
-                    calls += 1
-    return {"input_tokens": tokens_in if usage_seen else None,
-            "output_tokens": tokens_out if usage_seen else None,
-            "tool_calls": calls, "usage_source": "host-rollout"}
+                if item.get("type") in {"command_execution", "mcp_tool_call",
+                                        "CommandExecution", "McpToolCall"}:
+                    if kind == "event_msg":
+                        native_calls += 1
+                    else:
+                        streamed_calls += 1
+            if kind == "response_item":
+                item = _object(event.get("payload"))
+                if item.get("type") in {"function_call", "mcp_tool_call", "command_execution"}:
+                    response_calls += 1
+    tokens = native_usage or ((streamed_in, streamed_out) if streamed_usage_seen else None)
+    return {"input_tokens": tokens[0] if tokens else None,
+            "output_tokens": tokens[1] if tokens else None,
+            "tool_calls": native_calls or streamed_calls or response_calls,
+            "usage_source": ("native-rollout" if native_usage else
+                             "cli-events" if streamed_usage_seen else "unavailable")}
 
 
 class ReadOnlyTrialRepository:
@@ -412,6 +431,8 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
         if type(metrics.get("input_tokens")) is int and type(metrics.get("output_tokens")) is int
         else None
     )
+    if rollout is not None and total_tokens is None:
+        issues.add("usage_unavailable")
     if total_tokens is not None and total_tokens > TOKEN_BUDGET:
         issues.add("token_budget_exceeded")
     if type(metrics.get("tool_calls")) is int and metrics["tool_calls"] > CALL_BUDGET:

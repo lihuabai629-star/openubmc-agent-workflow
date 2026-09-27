@@ -161,7 +161,7 @@ percentage is inferred from the offline fixtures.
 ## Current result
 
 The committed offline report is a deterministic scorer result. It records
-20/20 expected fixture verdicts and **0/60 actual Agent trials**. Live
+20/20 expected fixture verdicts; it predates the authenticated pilot below. Live
 acceptance and the prior-source comparison are explicitly unverified. The
 pilot adapter covers only `diagnosis-complete`; the Runtime and release gates
 are unchanged.
@@ -178,5 +178,17 @@ per-tool approval override and read-only sandbox with a scripted local
 Responses server: start, cancel, same-session final and resume all passed.
 This is synthetic Host behavior, not a verified Agent trial. The loopback
 credential relay and snapshot guard were added after the failed model pilot
-and have not been validated by another authenticated turn; the 60-slot run
-remains unattempted.
+and were then used for one authenticated turn.
+
+That second, single-slot pilot used source `611a125`, Codex CLI 0.153.4,
+`gpt-6-sol` at `max`, the fake Runtime, a read-only sandbox, and only the
+fake `execute` tool approved. The provider connection crossed an ephemeral
+SSH loopback tunnel; no real BMC or global Codex configuration was touched.
+The Runtime task binding, terminal Outcome, native MCP session link and Host
+final all verified. It took 43.831 seconds and completed two MCP calls.
+The original metric reader missed native rollout token records; after fixing
+that parser and re-scoring the same immutable artifacts, the measured usage
+is 55,847 input plus 607 output tokens. This exceeds the existing 10,000
+token budget, so the trial has `token_budget_exceeded` and **does not pass**.
+The score is now 1/60 actual trials, 0 accepted trials; the remaining 59
+slots and the prior-source comparison are unattempted. No budget was relaxed.

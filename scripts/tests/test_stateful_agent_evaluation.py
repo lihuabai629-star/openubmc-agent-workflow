@@ -115,6 +115,45 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
         self.assertEqual({tuple(row["issues"]) for row in report["trials"]},
                          {("missing_or_invalid_artifacts",)})
 
+    def test_native_rollout_metrics_use_final_cumulative_usage_and_completed_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "rollout.jsonl"
+            events = [
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 8000, "output_tokens": 100}}}},
+                {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                    "type": "McpToolCall"}}},
+                {"type": "response_item", "payload": {"type": "function_call", "name": "execute"}},
+                {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                    "type": "McpToolCall"}}},
+                {"type": "response_item", "payload": {"type": "function_call", "name": "execute"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 12500, "output_tokens": 250}}}},
+            ]
+            path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+            self.assertEqual(evaluation._metrics_from_rollout(path), {
+                "input_tokens": 12500, "output_tokens": 250,
+                "tool_calls": 2, "usage_source": "native-rollout",
+            })
+            events[-1]["payload"]["info"]["total_token_usage"]["input_tokens"] = 1
+            path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+            with self.assertRaisesRegex(ValueError, "decreased"):
+                evaluation._metrics_from_rollout(path)
+
+    def test_cli_stream_metrics_remain_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "rollout.jsonl"
+            events = [
+                {"type": "item.completed", "item": {"type": "mcp_tool_call"}},
+                {"type": "turn.completed", "usage": {
+                    "input_tokens": 120, "output_tokens": 30}},
+            ]
+            path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+            self.assertEqual(evaluation._metrics_from_rollout(path), {
+                "input_tokens": 120, "output_tokens": 30,
+                "tool_calls": 1, "usage_source": "cli-events",
+            })
+
     def test_single_trial_dispatch_invokes_only_the_selected_slot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -184,6 +223,8 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
                  "payload": {"type": "message", "id": "final-1", "role": "assistant",
                              "phase": "final_answer",
                              "content": [{"type": "output_text", "text": "Synthetic completion"}]}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 120, "output_tokens": 30}}}},
                 {"type": "event_msg", "timestamp": observed_at,
                  "payload": {"type": "task_complete", "turn_id": "turn-1"}},
             ]
@@ -209,6 +250,26 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
             self.assertEqual(result["issues"], [])
             self.assertTrue(result["host_final_confirmed"])
             self.assertEqual(result["runtime_status"], "completed")
+            no_usage_events = [item for item in events if item.get("payload", {}).get("type") != "token_count"]
+            rollout.write_text("\n".join(json.dumps(item) for item in no_usage_events) + "\n")
+            no_usage = evaluation.score_live_trial(
+                case=case, plan=self.plan, manifest=self.manifest, trial=trial,
+                runtime_db=db, terminal_store=store_path, rollout=rollout,
+                elapsed_seconds=1.25,
+            )
+            self.assertIn("usage_unavailable", no_usage["issues"])
+            over_budget_events = copy.deepcopy(events)
+            for item in over_budget_events:
+                if item.get("payload", {}).get("type") == "token_count":
+                    item["payload"]["info"]["total_token_usage"]["input_tokens"] = 10001
+            rollout.write_text("\n".join(json.dumps(item) for item in over_budget_events) + "\n")
+            over_budget = evaluation.score_live_trial(
+                case=case, plan=self.plan, manifest=self.manifest, trial=trial,
+                runtime_db=db, terminal_store=store_path, rollout=rollout,
+                elapsed_seconds=1.25,
+            )
+            self.assertIn("token_budget_exceeded", over_budget["issues"])
+            rollout.write_text("\n".join(json.dumps(item) for item in events) + "\n")
             native_session = "12345678-1234-1234-1234-123456789abc"
             native_events = copy.deepcopy(events)
             native_events[0]["payload"]["id"] = native_session
