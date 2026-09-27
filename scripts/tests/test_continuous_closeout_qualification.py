@@ -369,6 +369,9 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(candidate.release["source_commit"], source_commit)
         self.assertIn(historical_commit, bundle_heads)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "requires pinned Linux Codex process probe"
+    )
     def test_qualification_integrates_product_client_isolation_lifecycle_and_projection(
         self,
     ) -> None:
