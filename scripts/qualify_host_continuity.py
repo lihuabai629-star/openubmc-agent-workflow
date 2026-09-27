@@ -62,7 +62,7 @@ def fixture(mode, root):
     Server(RecordingEndpoint(service, session_task_id=os.environ.get('CODEX_THREAD_ID'))).serve()
 
 
-def probe(executable: Path):
+def probe(executable: Path, *, read_only_approval_probe: bool = False):
     runtime_imports()
     from openubmc_target_runtime.host_continuity import HostContinuity, read_runtime_projection
 
@@ -132,9 +132,16 @@ def probe(executable: Path):
             'mcp_servers.continuity_probe.command': json.dumps(sys.executable),
             'mcp_servers.continuity_probe.args': json.dumps([str(Path(__file__).resolve()), 'mcp', '--root', str(root)]),
         }
+        if read_only_approval_probe:
+            settings['mcp_servers.continuity_probe.tools.execute.approval_mode'] = '"approve"'
         config = [part for key, value in settings.items() for part in ('-c', key+'='+value)]
+        safety_flags = (['--sandbox', 'read-only', '-c', 'approval_policy="never"']
+                        if read_only_approval_probe else
+                        ['--dangerously-bypass-approvals-and-sandbox'])
+        resume_safety_flags = (['-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"']
+                               if read_only_approval_probe else safety_flags)
         command = [str(executable), 'exec', '--json', '--skip-git-repo-check',
-                   '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
+                   *safety_flags, '--dangerously-bypass-hook-trust',
                    '-C', str(root), '--model', 'gpt-5.6-sol', *config,
                    'Run only the synthetic continuity fixture. No real targets or network providers.']
         try:
@@ -155,7 +162,7 @@ def probe(executable: Path):
                 task, handoff['runs'][0]['run_id'], rollout_paths[0], read_run=ledger_read,
             )
             resume_command = [str(executable), 'exec', 'resume', '--json', '--skip-git-repo-check',
-                              '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
+                              *resume_safety_flags, '--dangerously-bypass-hook-trust',
                               '--model', 'gpt-5.6-sol', *config, task,
                               'Recover the existing result without any tool or target operation.']
             resumed = subprocess.run(resume_command, cwd=root, env=env, capture_output=True, text=True, timeout=45)
@@ -197,11 +204,12 @@ if __name__ == '__main__':
     parser.add_argument('mode', choices=('probe', 'mcp', 'hook'))
     parser.add_argument('--root', type=Path)
     parser.add_argument('--codex', type=Path)
+    parser.add_argument('--read-only-approval-probe', action='store_true')
     args = parser.parse_args()
     if args.mode == 'probe':
         if not args.codex:
             parser.error('--codex is required')
-        probe(args.codex.resolve())
+        probe(args.codex.resolve(), read_only_approval_probe=args.read_only_approval_probe)
     else:
         if not args.root:
             parser.error('--root is required')

@@ -105,6 +105,9 @@ process environment. A loopback Responses relay adds the credential upstream,
 while native Codex sees only a fresh random local marker. The relay rejects
 requests without that marker before forwarding. The adapter disables
 shell snapshots and checks that the CLI accepts that setting before invocation.
+It keeps the filesystem sandbox read-only and grants automatic approval only
+to the isolated fake Runtime `execute` tool. Set `OPENUBMC_EVAL_CODEX_BIN` to
+the absolute executable path when it is not the `codex` first found on `PATH`.
 It scans trial files for the actual credential after each turn and removes any
 matching file before failing the attempt.
 
@@ -112,7 +115,7 @@ matching file before failing the attempt.
 python scripts/stateful_agent_evaluation.py plan \
   --source-ref HEAD --baseline-ref 772de46 \
   --model gpt-6-sol --reasoning-effort max \
-  --client-version codex-cli/0.144.6 \
+  --client-version codex-cli/0.153.4 \
   --output /absolute/private/trial-plan.json
 python scripts/stateful_agent_evaluation.py run-one \
   --plan /absolute/private/trial-plan.json \
@@ -122,9 +125,8 @@ python scripts/stateful_agent_evaluation.py run-one \
   --output /absolute/private/dispatch.json
 ```
 
-The shown client version is the attempted identity and currently fails closed
-before another model invocation. Rebuild the plan with a client version that
-can execute this MCP call while retaining a read-only sandbox.
+The shown client version passed a local scripted-Responses, fake-Runtime
+read-only approval probe. It has not yet passed an authenticated model trial.
 
 Score the selected slot using the standard `score-live` command and the measured
 `elapsed_seconds` from its `timing.json`. A trial counts only when the Runtime
@@ -170,9 +172,11 @@ read-only`. The model called `runtime_fake.execute` twice, but the native Host
 reported `user cancelled MCP tool call` before either call reached the fake
 Runtime server. There was no persisted task-to-Run binding or terminal Outcome.
 The provider returned model text, but this is **0 verified Agent trials**.
-Codex CLI help does not expose a scoped read-only approval option for this
-write-type MCP call. The adapter and scorer are retained for further Host
-integration; the 60-slot run remains unattempted. The loopback credential
-relay and snapshot guard were added after this observation and have not been
-validated by another model turn. The adapter refuses Codex CLI 0.144.6 before
-invocation under this known limitation.
+The adapter refuses Codex CLI 0.144.6 before invocation under this known
+limitation. A separate disposable CLI 0.153.4 probe then used the documented
+per-tool approval override and read-only sandbox with a scripted local
+Responses server: start, cancel, same-session final and resume all passed.
+This is synthetic Host behavior, not a verified Agent trial. The loopback
+credential relay and snapshot guard were added after the failed model pilot
+and have not been validated by another authenticated turn; the 60-slot run
+remains unattempted.

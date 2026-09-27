@@ -16,9 +16,12 @@ from scripts import stateful_agent_host_adapter as adapter
 class StatefulAgentHostAdapterTests(unittest.TestCase):
     def test_known_read_only_mcp_cancellation_blocks_before_credential_use(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
+            binary = Path(raw) / "codex"
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o700)
             with (mock.patch.object(adapter, "_request", return_value={
                     "client_version": "codex-cli/0.144.6"}),
-                  mock.patch.object(adapter.shutil, "which", return_value="/usr/bin/codex"),
+                  mock.patch.object(adapter.shutil, "which", return_value=str(binary)),
                   mock.patch.object(adapter.subprocess, "check_output",
                                     return_value="codex-cli 0.144.6"),
                   mock.patch.object(adapter, "_credential",
@@ -104,6 +107,8 @@ class StatefulAgentHostAdapterTests(unittest.TestCase):
             self.assertIn("features.shell_tool=false", command)
             self.assertIn("features.shell_snapshot=false", command)
             self.assertIn("read-only", command)
+            self.assertIn('mcp_servers.runtime_fake.enabled_tools=["execute"]', command)
+            self.assertIn('mcp_servers.runtime_fake.tools.execute.approval_mode="approve"', command)
             self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
 
     def test_secret_artifact_is_removed_before_attempt_fails(self) -> None:

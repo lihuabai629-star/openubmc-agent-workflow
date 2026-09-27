@@ -226,6 +226,8 @@ def _cli(base_url: str, request: Mapping[str, object], directory: Path,
             [str(Path(__file__).resolve()), "serve", str(directory / "request.json")]),
         "mcp_servers.runtime_fake.required": "true",
         "mcp_servers.runtime_fake.tool_timeout_sec": "60",
+        "mcp_servers.runtime_fake.enabled_tools": '["execute"]',
+        "mcp_servers.runtime_fake.tools.execute.approval_mode": '"approve"',
     }
     flags = [part for key, value in config.items() for part in ("-c", f"{key}={value}")]
     return [executable, "exec", "--json", "--skip-git-repo-check",
@@ -350,7 +352,8 @@ def _run_connected(request: Mapping[str, object], directory: Path,
     prepared = store.prepare(task_id=str(request["task_id"]), run_id=run_id,
                              outcome=outcome, delivery_stage=highest, text=final_text)
     resume = [executable, "exec", "resume", "--json", "--skip-git-repo-check",
-              "--ignore-user-config", "--model", str(request["model"]), *command[command.index("-c"):],
+              "--ignore-user-config", "--model", str(request["model"]),
+              "-c", 'sandbox_mode="read-only"', *command[command.index("-c"):],
               session_id, "Reply with exactly this single line and no other text: " + final_text]
     if _invoke(resume, env, directory / "codex-final.jsonl",
                credential=credential) != 0:
@@ -378,9 +381,12 @@ def _run_connected(request: Mapping[str, object], directory: Path,
 def run(request_path: Path) -> None:
     request = _request(request_path)
     directory = request_path.parent
-    executable = shutil.which("codex")
+    executable = os.environ.get("OPENUBMC_EVAL_CODEX_BIN") or shutil.which("codex")
     if not executable:
         raise ValueError("Codex CLI is unavailable")
+    executable_path = Path(executable)
+    if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+        raise ValueError("Codex CLI is not an executable file")
     version = subprocess.check_output([executable, "--version"], text=True).strip()
     if version != str(request["client_version"]).replace("/", " "):
         raise ValueError("Codex CLI version differs from pinned plan")
