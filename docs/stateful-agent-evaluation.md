@@ -192,3 +192,5 @@ is 55,847 input plus 607 output tokens. This exceeds the existing 10,000
 token budget, so the trial has `token_budget_exceeded` and **does not pass**.
 The score is now 1/60 actual trials, 0 accepted trials; the remaining 59
 slots and the prior-source comparison are unattempted. No budget was relaxed.
+The aggregate live-acceptance gate fails on any scored issue once all slots
+are present; budget failures cannot be reported as an evaluated pass.

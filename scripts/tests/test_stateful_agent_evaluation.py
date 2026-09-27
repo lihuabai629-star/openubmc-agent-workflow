@@ -115,6 +115,32 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
         self.assertEqual({tuple(row["issues"]) for row in report["trials"]},
                          {("missing_or_invalid_artifacts",)})
 
+    def test_completed_budget_violations_fail_live_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for slot in self.plan["schedule"]:
+                directory = root / slot["task_id"]
+                directory.mkdir()
+                (directory / "trial.json").write_text(json.dumps({"trial": slot["trial"]}))
+                (directory / "timing.json").write_text(json.dumps({
+                    "schema": f"{evaluation.SCHEMA}/timing",
+                    "adapter_exit_code": 0, "elapsed_seconds": 1.0,
+                }))
+
+            def scored(*, case, trial, **_kwargs):
+                return {"scenario_id": case["id"], "trial": trial["trial"],
+                        "host_final_confirmed": True, "issues": ["token_budget_exceeded"],
+                        "metrics": {"elapsed_seconds": 1.0, "input_tokens": 10001,
+                                    "output_tokens": 0, "tool_calls": 1}}
+
+            with mock.patch.object(evaluation, "score_live_trial", side_effect=scored):
+                report = evaluation.summarize_live(
+                    manifest=self.manifest, plan=self.plan, trial_root=root,
+                )
+            self.assertEqual(report["actual_agent_trials"], 60)
+            self.assertEqual(report["live_acceptance"], "failed")
+            self.assertEqual(report["safety_gate"], "passed")
+
     def test_native_rollout_metrics_use_final_cumulative_usage_and_completed_calls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "rollout.jsonl"
