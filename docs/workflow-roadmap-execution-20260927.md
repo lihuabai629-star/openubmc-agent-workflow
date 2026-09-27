@@ -236,3 +236,24 @@ acceptance evidence exists.
   result is recorded on PR #287. The prior 551-test run and 35 platform skips
   above belong to an earlier source. Release and item 19 acceptance remain
   blocked by the missing live trials and platform evidence.
+
+## Fifth integration update (2026-09-27)
+
+- The clean `7d86c9a` candidate completed the full script suite with exit
+  code 0. The guarded fake-Runtime Host path was then tested in a disposable
+  local CLI 0.153.4 fixture under a read-only sandbox and a single-tool
+  approval override. Start, cancel, same-session final and resume passed
+  without a real model or target.
+- One authenticated `diagnosis-complete` slot was attempted against source
+  `611a125` through a temporary SSH loopback tunnel, retaining the read-only
+  sandbox and fake backend. Runtime binding, terminal Outcome, native Host
+  session and final answer verified. The native rollout recorded two MCP
+  calls and 43.831 seconds. The corrected scorer in `fb9bc11` reads 55,847
+  input plus 607 output tokens, exceeding the unchanged 10,000-token budget.
+  Result: **1/60 actual trials, 0 accepted**; no prior-source comparison.
+  The remaining 59 trials were not dispatched, and the tunnel was closed.
+- The scorer now reads native cumulative token and completed-tool events,
+  rejects missing usage, and retains legacy CLI-stream parsing. The two
+  focused suites passed 14 tests after integration. A fresh full-suite and
+  stability result must still be bound to a clean final commit. No release,
+  merge or production deployment is authorized by this pilot.
