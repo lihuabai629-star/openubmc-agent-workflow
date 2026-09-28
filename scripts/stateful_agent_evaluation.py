@@ -379,42 +379,18 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
         issues.add("expected_completion_missing")
     if live_mode:
         scenario = case.get("id")
-        # Only scenarios with an explicit Runtime/Host process check may pass.
-        # The remaining manifest rows still have offline fixtures, but their
-        # native Host adapters and scenario-specific checks are not available.
-        if scenario not in {"diagnosis-complete", "diagnosis-resume",
-                            "build-verification-gate", "effect-reconcile"}:
+        # Only the complete-diagnosis scenario has a native Host adapter.
+        # Other manifest rows have offline fixtures, but cannot pass a live
+        # score until their interruptions/effects/gates bind to this Run.
+        if scenario != "diagnosis-complete":
             issues.add("scenario_not_exercised")
         opened_intent = str(_object(opened[0].get("payload")).get("intent", "")) if opened else ""
         gates = {str(_object(_object(event.get("payload")).get("gate")).get("name", ""))
                  for event in events if event.get("kind") == "RunGateOpened"}
-        if scenario == "build-verification-gate" and (
-            opened_intent != "diagnose-and-fix" or "build.artifact" not in gates
+        if scenario == "diagnosis-complete" and (
+            opened_intent != "diagnosis-only" or "diagnosis.acceptance" not in gates
         ):
             issues.add("scenario_not_exercised")
-        if scenario == "effect-reconcile":
-            started = {str(event.get("operation_id", "")) for event in events
-                       if event.get("kind") == "OperationStarted"}
-            reconciled = {str(event.get("operation_id", "")) for event in events
-                          if event.get("kind") == "OperationReconciled"}
-            if not started.intersection(reconciled):
-                issues.add("scenario_not_exercised")
-        if scenario == "diagnosis-resume":
-            interrupted = completed = 0
-            if rollout is not None:
-                try:
-                    with rollout.open(encoding="utf-8") as stream:
-                        for line in stream:
-                            host_event = json.loads(line)
-                            if host_event.get("type") != "event_msg":
-                                continue
-                            kind = _object(host_event.get("payload")).get("type")
-                            interrupted += kind == "turn_aborted"
-                            completed += kind == "task_complete"
-                except (OSError, ValueError, TypeError):
-                    pass
-            if not interrupted or not completed:
-                issues.add("scenario_not_exercised")
     if len(recorded) > 1:
         issues.add("multiple_outcomes")
     if not status or status == "partial" or outcome.get("remaining_work"):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -259,25 +260,40 @@ class HostContinuity:
         requested = next((answer for answer in answers if answer["run_id"] == run_id), None)
         if requested is None:
             raise TerminalAnswerError("terminal answer is not available in task handoff")
-        pending = [answer for answer in answers if not answer["delivery_confirmed"]]
-        candidate_texts = list(dict.fromkeys((
-            "\n\n".join(answer["text"] for answer in answers),
-            "\n\n".join(answer["text"] for answer in pending),
-        )))
-        final = None
-        for text in candidate_texts:
-            if not text or (requested not in pending and text != candidate_texts[0]):
-                continue
+        if requested["delivery_confirmed"]:
+            # The durable event binding is already authoritative. Replaying a
+            # delivery does not depend on the current pending set or old log path.
+            return self._answers(task_id, run_id).acknowledge(
+                task_id=task_id, run_id=run_id, outcome=outcome,
+                delivery_stage=stage, text=requested["text"],
+                host_event_id=requested["host_event_id"],
+            ).to_public_dict()
+
+        def matches_delivery_batch(candidate: tuple[str, str, str]) -> bool:
+            event_id, text, observed_at = candidate
             try:
-                final = audit_rollout_final(
-                    path, task_id=task_id, prepared_at=requested["prepared_at"],
-                    expected_text=text,
-                )
-                break
-            except TerminalAnswerError:
-                continue
-        if final is None:
-            raise TerminalAnswerError("rollout final event is missing or interrupted")
+                observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                if observed.tzinfo is None:
+                    return False
+                available = [answer for answer in answers if datetime.fromisoformat(
+                    answer["prepared_at"].replace("Z", "+00:00")) <= observed]
+                pending_at_final = [answer for answer in available
+                    if not answer["delivered_at"] or (
+                        datetime.fromisoformat(answer["delivered_at"].replace("Z", "+00:00"))
+                        == observed and answer["host_event_id"] == event_id)]
+            except (KeyError, TypeError, ValueError):
+                return False
+            if requested not in pending_at_final:
+                return False
+            return text in {
+                "\n\n".join(answer["text"] for answer in pending_at_final),
+                "\n\n".join(answer["text"] for answer in available),
+            }
+
+        final = audit_rollout_final(
+            path, task_id=task_id, prepared_at=requested["prepared_at"],
+            accept_final=matches_delivery_batch,
+        )
         with self._database() as connection:
             current_runs = [row["run_id"] for row in connection.execute(
                 "SELECT run_id FROM runs WHERE task_id=? ORDER BY updated_at, run_id",

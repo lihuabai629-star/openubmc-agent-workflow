@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -136,6 +137,7 @@ def render_final_answer(
 
 def audit_rollout_final(
     path: Path, *, task_id: str, prepared_at: str, expected_text: str = "",
+    accept_final: Callable[[tuple[str, str, str]], bool] | None = None,
 ) -> tuple[str, str, str]:
     """Read a completed host turn after preparation, never an interrupted draft."""
     try:
@@ -184,7 +186,8 @@ def audit_rollout_final(
                             if (completion_time is not None and completion_time.tzinfo is not None
                                     and completion_time >= datetime.fromisoformat(
                                         candidate[2].replace("Z", "+00:00")
-                                    ) and (not expected_text or candidate[1] == expected_text)):
+                                    ) and (not expected_text or candidate[1] == expected_text)
+                                    and (accept_final is None or accept_final(candidate))):
                                 final = candidate
                         active_turn, candidate = "", None
                     continue

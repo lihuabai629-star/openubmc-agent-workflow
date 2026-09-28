@@ -233,6 +233,47 @@ class HostContinuityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Runtime Outcome changed"):
                 self.store.acknowledge_rollout("task", "one", rollout, read_run=read)
 
+    def test_pending_composite_final_confirms_and_replays_each_run(self):
+        self.terminal()
+        self.capture("one")
+        first = self.store.handoff("task", read_run=self.read)["runs"][0]["terminal_answer"]
+
+        def rollout_for(text, name):
+            timestamp = (datetime.fromisoformat(first["prepared_at"])
+                         + timedelta(seconds=1)).isoformat()
+            path = self.root / f"{name}.jsonl"
+            path.write_text("\n".join(json.dumps(event) for event in [
+                {"type": "session_meta", "payload": {"id": "task"}},
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": name}},
+                {"type": "response_item", "timestamp": timestamp, "payload": {
+                    "type": "message", "role": "assistant", "phase": "final_answer", "id": name,
+                    "content": [{"type": "output_text", "text": text}],
+                }},
+                {"type": "event_msg", "timestamp": timestamp,
+                 "payload": {"type": "task_complete", "turn_id": name}},
+            ]) + "\n")
+            return path
+
+        self.store.acknowledge_rollout(
+            "task", "one", rollout_for(first["text"], "first"), read_run=self.read,
+        )
+        self.capture("two")
+        self.capture("three")
+        answers = [run["terminal_answer"] for run in
+                   self.store.handoff("task", read_run=self.read)["runs"]]
+        pending = "\n\n".join(answer["text"] for answer in answers[1:])
+        rollout = rollout_for(pending, "pending")
+        two = self.store.acknowledge_rollout("task", "two", rollout, read_run=self.read)
+        three = self.store.acknowledge_rollout("task", "three", rollout, read_run=self.read)
+        again = self.store.acknowledge_rollout("task", "two", rollout, read_run=self.read)
+        self.assertEqual(two["host_event_id"], three["host_event_id"])
+        self.assertEqual(two, again)
+        self.assertEqual(
+            self.store.acknowledge_rollout(
+                "task", "two", self.root / "missing-old-rollout.jsonl", read_run=self.read,
+            ), two,
+        )
+
     def test_repeated_capture_keeps_prepared_answer_identity(self):
         self.terminal("partial")
         self.projection["run_outcome"]["remaining_work"] = [{"summary": "build not verified"}]
