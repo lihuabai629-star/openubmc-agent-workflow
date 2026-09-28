@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import runpy
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from openubmc_target_runtime.mcp_lifecycle import _windows_process_state
-from openubmc_target_runtime.windows_private import (
-    ensure_private_directory,
-    harden_new_file,
-    verify_private_path,
-)
+PACKAGE = Path(__file__).resolve().parents[1]/"openubmc_target_runtime"
+_private = runpy.run_path(str(PACKAGE/"windows_private.py"))
+_lifecycle = runpy.run_path(str(PACKAGE/"mcp_lifecycle.py"))
+ensure_private_directory = _private["ensure_private_directory"]
+harden_new_file = _private["harden_new_file"]
+verify_private_path = _private["verify_private_path"]
+_windows_process_state = _lifecycle["_windows_process_state"]
 
 
 def main() -> int:
