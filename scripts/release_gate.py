@@ -631,7 +631,11 @@ def execute_release_gate(
         raise ValueError(
             "maintenance release must use the same major and minor as previous release"
         )
-    require_latest_published_release(previous_ref, github_repository)
+    baseline_repository = (
+        "lihuabai629-star/openubmc-codex-plugins"
+        if platform_matrix is not None else github_repository
+    )
+    require_latest_published_release(previous_ref, baseline_repository)
     require_published_candidate(resolved_release_commit, github_repository)
     for name, commands in gate_commands(
         current_ref=resolved_release_commit,
@@ -772,6 +776,7 @@ def execute_release_gate(
         "release_tag": selected_release_tag,
         "release_commit": candidate.release_commit,
         "previous_ref": previous_ref,
+        "baseline_repository": baseline_repository,
         "source_commit": resolved_source_commit,
         "formal_identity": {
             "model": selected_model_identity,

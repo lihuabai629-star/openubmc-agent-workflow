@@ -49,6 +49,11 @@ different source commits, different archive bytes, incomplete native rows,
 failed commands, unsupported validation modes or tampered report digests fail
 closed. Historical Release Gate and hosted-CI reports remain verifiable.
 
+The upgrade baseline is the latest published public marketplace release, while
+the candidate source and lock-only commit remain in the private workflow
+repository. These repositories have different release histories; the source
+repository's older GitHub Release list is not the plugin's installed baseline.
+
 The immutable archive may be distributed as a draft candidate for installation
 tests. A stable release is published only after every selected Release Gate and
 the separate Agent-trial acceptance passes for the same source and package.

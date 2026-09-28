@@ -626,6 +626,27 @@ class ReleaseGateTests(unittest.TestCase):
                     platform_matrix=Path(directory) / "matrix.json",
                 )
 
+    def test_installed_candidate_uses_published_marketplace_as_upgrade_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "v2.0.2", release_version="2.0.2"
+        ), patch.object(release_gate, "require_latest_published_release") as latest:
+            root = Path(directory)
+            for name in ("matrix.json", "candidate.tar.gz", "qualification.json"):
+                (root / name).write_bytes(b"candidate")
+            execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "gate",
+                platform_matrix=root / "matrix.json",
+                candidate_archive=root / "candidate.tar.gz",
+                candidate_qualification=root / "qualification.json",
+                executor=lambda command, *, cwd: subprocess.CompletedProcess(
+                    command, 1, "", "fixture stopped after baseline lookup"
+                ),
+            )
+            latest.assert_called_once_with(
+                "v2.0.1", "lihuabai629-star/openubmc-codex-plugins"
+            )
+
     def test_release_report_accepts_only_one_explicit_validation_path(self) -> None:
         def succeed(command, *, cwd):
             if "codex_adoption_qualification.py" in " ".join(command):
