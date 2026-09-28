@@ -239,6 +239,21 @@ def _dependency_failure_code(stage: str, output: bytes) -> str:
     return 'dependency_prepare_failed'
 
 
+def npm_command() -> list[str]:
+    if sys.platform != 'win32':
+        return ['npm']
+    npm = shutil.which('npm.cmd')
+    node = shutil.which('node.exe')
+    cli = Path(npm).parent/'node_modules/npm/bin/npm-cli.js' if npm else None
+    if not node or cli is None or not cli.is_file():
+        print(json.dumps({'stage': 'npm', 'status': 'failed', 'error_code': 'npm_unavailable'},
+                         sort_keys=True), file=sys.stderr, flush=True)
+        raise DependencyPreparationError('npm_unavailable', 'Node.js and npm are required')
+    # npm.cmd can return before its Node descendant has finished writing the
+    # dependency tree. Own the actual installer process before sealing a receipt.
+    return [node, str(cli)]
+
+
 def _run_dependency_command(command: list[str], env: dict[str, str], *, timeout: float, stage: str, mutex_fd: int) -> None:
     """Stop the complete owned process group before cache cleanup or retry."""
     started=time.monotonic()
@@ -332,7 +347,7 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool, *, capability:
             knowledge.mkdir()
             for name in ('package.json', 'package-lock.json'):
                 (knowledge/name).write_bytes(content['openubmc-kb-mcp/'+name])
-            command = ['npm.cmd' if sys.platform == 'win32' else 'npm', 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--prefix', str(knowledge)]
+            command = [*npm_command(), 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--prefix', str(knowledge)]
             if offline:
                 command.append('--offline')
         commands = [command]
