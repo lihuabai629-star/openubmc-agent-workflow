@@ -6,7 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-from .credential_file import (CREDENTIALS_FILE_MAX_BYTES, CredentialFileError, read_private_text,
+from .credential_file import (CREDENTIALS_FILE_MAX_BYTES, CredentialFileError, configuration_home, read_private_text,
                               parse_credentials_text, selected_credential_value, selected_credentials_path)
 
 
@@ -60,10 +60,9 @@ class LocalCredentialSource:
             raise CredentialConfigurationError(code, 'Check the explicit local credential source selectors') from None
         if selected is not None:
             return selected
-        config_home = self.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
         from .configuration import has_activation
         for name in ('credentials.json', 'credentials.env'):
-            path = Path(config_home) / 'openubmc' / name
+            path = configuration_home(self.environ) / 'openubmc' / name
             if path.exists() or path.is_symlink() or has_activation(path):
                 return path
         return None

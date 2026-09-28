@@ -17,6 +17,7 @@ import threading
 import uuid
 
 from .configuration import ConfigurationConflict, LocalConfigurationStore
+from .credential_file import configuration_home
 from .credentials import CredentialConfigurationError, LocalCredentialSource, read_private_credentials
 from .credential_file import (CREDENTIALS_FILE_MAX_BYTES, CredentialFileError,
                               parse_credentials_text, selected_credential_value)
@@ -76,10 +77,7 @@ class VerifiedCredentialMemory:
     def _path(self):
         path = self.source.select_path()
         if path is None:
-            home = self.source.environ.get("XDG_CONFIG_HOME")
-            if not home:
-                home = str(Path(self.source.environ.get("HOME") or Path.home()) / ".config")
-            path = Path(home) / "openubmc" / "credentials.json"
+            path = configuration_home(self.source.environ) / "openubmc" / "credentials.json"
         return path
 
     @staticmethod
