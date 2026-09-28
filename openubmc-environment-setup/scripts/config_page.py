@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Current-user local configuration page for Linux and WSL."""
+"""Current-user local configuration page for Windows and Linux."""
 
 from __future__ import annotations
 import argparse
@@ -29,9 +29,28 @@ from openubmc_target_runtime.configuration import (
     ConfigurationConflict,
 )
 from openubmc_target_runtime.credential_file import (
+    configuration_home,
     read_private_text,
 )
 from openubmc_target_runtime.credential_memory import import_legacy_targets
+
+
+def _platform_label():
+    if sys.platform == "win32":
+        return "Windows"
+    return "WSL" if "microsoft" in os.uname().release.lower() else "Linux"
+
+
+def _stop_owned_process(process):
+    if sys.platform == "win32":
+        subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def _masked(config):
@@ -93,7 +112,7 @@ class PluginMaintenance:
         self.root = Path(plugin_root)
         self.timeout = timeout
         self.environment = dict(os.environ if environment is None else environment)
-        self.home = Path(self.environment.get("HOME", str(Path.home())))
+        self.home = Path(self.environment.get("USERPROFILE") or self.environment.get("HOME") or Path.home())
         self.codex = Path(self.environment.get("CODEX_HOME", str(self.home/".codex")))
         self.preview_id = None
         self.preview_config = None
@@ -101,26 +120,22 @@ class PluginMaintenance:
         self.transaction = None
 
     def command(self, *arguments):
+        options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+                   if sys.platform == "win32" else {"start_new_session": True})
         process = subprocess.Popen(
             [sys.executable, "-I", "-B", str(self.root/"scripts/pluginctl.py"),
              *arguments, "--home", str(self.home), "--codex-home", str(self.codex)],
             env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            text=True, **options,
         )
         try:
             stdout, stderr = process.communicate(timeout=self.timeout)
         except BaseException:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            _stop_owned_process(process)
             try:
                 process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                _stop_owned_process(process)
                 process.wait(timeout=5)
             finally:
                 process.stdout.close()
@@ -145,7 +160,7 @@ class PluginMaintenance:
         if action == "status":
             report = self.command("doctor")
             config = report.get("codex_configuration", {})
-            config_home = Path(self.environment.get("XDG_CONFIG_HOME", str(self.home/".config")))
+            config_home = configuration_home(self.environment)
             sources = {
                 "targets": Path(self.environment.get("OPENUBMC_CREDENTIALS_FILE") or config_home/"openubmc/credentials.json"),
                 "conan": config_home/"openubmc/conan.json",
@@ -162,8 +177,8 @@ class PluginMaintenance:
                 except ConfigurationError:
                     local_configuration[kind] = {"configured": False, "active_revision": None, "error": "configuration_invalid"}
             execution_host = self.environment.get("OPENUBMC_EXECUTION_HOST") or (
-                "wsl" if "microsoft" in os.uname().release.lower() else "linux"
-            )
+                "windows-native" if sys.platform == "win32" else
+                "wsl" if _platform_label() == "WSL" else "linux")
             return {
                 "version": report.get("version"),
                 "source_commit": report.get("source_commit"),
@@ -483,9 +498,7 @@ class LocalConfigurationServer:
             return {
                 **{kind: self.view(kind) for kind in self.stores},
                 "environment": {
-                    "platform": "WSL"
-                    if "microsoft" in os.uname().release.lower()
-                    else "Linux",
+                    "platform": _platform_label(),
                     "hostname": socket.gethostname(),
                     "config_home": str(self.config_home),
                 },
@@ -494,9 +507,7 @@ class LocalConfigurationServer:
                 "configuration_entry": {
                     "url": self.url,
                     "reason": "configuration_ready" if configured else "configuration_required",
-                    "environment": "WSL"
-                    if "microsoft" in os.uname().release.lower()
-                    else "Linux",
+                    "environment": _platform_label(),
                 },
             }
 
@@ -763,9 +774,7 @@ def main():
     )
     if kb_source and args.config_home is None:
         sources["kb"] = Path(kb_source)
-    config_home = args.config_home or Path(
-        os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    )
+    config_home = args.config_home or configuration_home()
     targets = [
         {
             "ip": str(ipaddress.ip_address(host)),
@@ -789,7 +798,7 @@ def main():
     ) as server:
         print(server.url, flush=True)
         if args.open_browser and not args.no_browser:
-            if "microsoft" in os.uname().release.lower() and shutil.which("wslview"):
+            if _platform_label() == "WSL" and shutil.which("wslview"):
                 subprocess.Popen(
                     ["wslview", server.url],
                     stdout=subprocess.DEVNULL,

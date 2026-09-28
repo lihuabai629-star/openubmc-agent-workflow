@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import json
 import os
@@ -12,6 +11,23 @@ import tempfile
 import tomllib
 from typing import NamedTuple
 import uuid
+import sys
+
+if sys.platform != 'win32':
+    import fcntl
+
+
+def _lock_stream(stream) -> None:
+    if sys.platform == 'win32':
+        import msvcrt
+        stream.seek(0)
+        if os.fstat(stream.fileno()).st_size == 0:
+            stream.write('\0')
+            stream.flush()
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(stream, fcntl.LOCK_EX)
 
 
 def digest(data: bytes) -> str:
@@ -37,6 +53,8 @@ def save(path: Path, value: dict) -> None:
 
 
 def journal_root(home: Path) -> Path:
+    if sys.platform == 'win32':
+        return Path(os.environ.get('LOCALAPPDATA') or home/'AppData/Local')/'openubmc/migrations'
     return home/'.local/share/openubmc/migrations'
 
 
@@ -466,7 +484,7 @@ def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None, 
     journals = journal_root(home)
     journals.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (journals/'migration.lock').open('a') as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+        _lock_stream(mutex)
         pending = pending_migration(home, codex_home, mode, target_plugin)
         if pending:
             root, record = pending
@@ -517,7 +535,7 @@ def restore(home: Path, transaction: str, codex_home: Path | None = None) -> dic
     if root.is_symlink() or root.resolve().parent != journals.resolve():
         raise ValueError('transaction escapes the migration journal')
     with (journals/'migration.lock').open('a') as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+        _lock_stream(mutex)
         record = json.loads((root/'transaction.json').read_bytes())
         if record.get('transaction') != transaction or record.get('home') != str(home) or record.get('codex_home') != str((codex_home or home/'.codex').resolve()) or record.get('schema') != 'openubmc.plugin-migration.v1':
             raise ValueError('migration journal identity mismatch')

@@ -89,7 +89,7 @@ def verify_private_path(path: Path, *, safe_parent: bool = False) -> None:
     others, but cannot grant write, delete, ownership or ACL changes.
     """
     path = Path(path)
-    if path.is_symlink():
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise WindowsPrivateError("Private Windows paths cannot be reparse links")
     advapi, kernel, wintypes = _apis()
     user_sid, user_buffer = _current_user_sid(advapi, kernel, wintypes)
@@ -154,7 +154,7 @@ def ensure_private_directory(path: Path) -> None:
             raise WindowsPrivateError("Private configuration path is not a directory")
         verify_private_path(path)
         return
-    if path.is_symlink():
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise WindowsPrivateError("Private configuration path cannot be a reparse link")
     parent = path.parent
     if parent == path:

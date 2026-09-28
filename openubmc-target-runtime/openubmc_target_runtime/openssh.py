@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from .contracts import TargetSpec
@@ -78,6 +79,11 @@ class OpenSshMaster:
 
 class OpenSshControlMasterTransport:
     """Small canonical OpenSSH ControlMaster transport shared by Skills."""
+
+    def __new__(cls, *args, **kwargs):
+        if cls is OpenSshControlMasterTransport and sys.platform == "win32":
+            return ParamikoSshTransport(*args, **kwargs)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -423,3 +429,6 @@ class OpenSshControlMasterTransport:
         finally:
             master.closed = True
             master.tempdir.cleanup()
+
+
+from .paramiko_transport import ParamikoSshTransport  # noqa: E402

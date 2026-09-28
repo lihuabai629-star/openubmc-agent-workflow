@@ -3,10 +3,10 @@
 const childProcess = require("child_process");
 
 const recoveryActions = Object.freeze({
-  pip_unavailable: "Install Python pip in the selected Linux/WSL environment, then retry preparation.",
-  npm_unavailable: "Install Node.js 20 or newer and npm in the selected Linux/WSL environment, then retry preparation.",
-  registry_unavailable: "Restore package registry or DNS access in the selected Linux/WSL environment, then retry preparation.",
-  proxy_failure: "Correct the proxy configuration in the selected Linux/WSL environment, then retry preparation.",
+  pip_unavailable: "Install pip for the selected local Python, then retry preparation.",
+  npm_unavailable: "Install Node.js 20 or newer and npm on this computer, then retry preparation.",
+  registry_unavailable: "Restore package registry or DNS access on this computer, then retry preparation.",
+  proxy_failure: "Correct this computer's proxy configuration, then retry preparation.",
   dependency_prepare_timeout: "Check registry reachability and retry preparation after the timed-out worker exits.",
   dependency_prepare_interrupted: "Retry preparation; the incomplete staging cache was not activated.",
   dependency_hash_mismatch: "Use packages matching the release lock hashes, then retry preparation.",
@@ -88,7 +88,7 @@ function createSetupOperations(adapter, capability) {
     let reason = "dependency_preflight_failed";
     if (rawError.includes("not prepared")) reason = "dependencies_not_prepared";
     else if (rawError.includes("cache drift")) reason = "dependency_cache_drift";
-    else if (rawError.includes("node 20")) reason = "wsl_node_unavailable";
+    else if (rawError.includes("node 20")) reason = "node_unavailable";
     else if (selected?.startup_ready && report?.mcp_health?.[capability]?.ok !== true) reason = "mcp_protocol_unhealthy";
     else if (adapter.decodeOutput(checked.stderr).includes("plugin file inventory mismatch")) reason = "package_integrity_failed";
     else if (report?.codex_configuration && !report.codex_configuration.ready) reason = "configuration_repair_required";
@@ -110,7 +110,7 @@ function createSetupOperations(adapter, capability) {
       next_action: adapter.hostPlatform === "win32"
         ? "Use the openUBMC setup tools in this task, then start a new task."
         : "Use openubmc_setup_prepare in this task, then start a new task.",
-      execution_host: adapter.hostPlatform === "win32" ? "wsl" : "linux",
+      execution_host: adapter.hostPlatform === "win32" ? "windows-native" : "linux",
       native_windows_build_supported: false,
       plugin: {
         version: report.version || packageIdentity.version,
@@ -119,8 +119,8 @@ function createSetupOperations(adapter, capability) {
       },
       backend: {
         host: adapter.hostPlatform === "win32" ? "windows" : "linux",
-        execution_host: adapter.hostPlatform === "win32" ? "wsl" : "linux",
-        selected_wsl: failure.selected_wsl || null,
+        execution_host: adapter.hostPlatform === "win32" ? "windows-native" : "linux",
+        selected_wsl: null,
         native_windows_build_supported: false,
       },
       dependencies: Object.fromEntries(Object.entries(report.capabilities || {}).map(([name, value]) => [name, {
@@ -142,8 +142,6 @@ function createSetupOperations(adapter, capability) {
         skills: configuration.changes?.skills || [],
       },
     };
-    if (Array.isArray(failure.distros)) status.available_wsl_distros = failure.distros;
-    if (failure.selected_wsl) status.selected_wsl = failure.selected_wsl;
     return status;
   }
 
