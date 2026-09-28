@@ -25,8 +25,10 @@ if ($MarketplaceRoot) {
   tar -xf $Archive -C (Join-Path $MarketplaceRoot "plugins")
   if ($LASTEXITCODE -ne 0) { throw "Plugin archive extraction failed" }
   New-Item -ItemType Directory -Force -Path (Join-Path $MarketplaceRoot ".agents/plugins") | Out-Null
-  '{"name":"windows-test","plugins":[{"name":"openubmc","source":{"source":"local","path":"./plugins/openubmc"}}]}' |
-    Set-Content -Encoding utf8NoBOM (Join-Path $MarketplaceRoot ".agents/plugins/marketplace.json")
+  $manifestPath = Join-Path $MarketplaceRoot ".agents/plugins/marketplace.json"
+  $manifestJson = '{"name":"windows-test","plugins":[{"name":"openubmc","source":{"source":"local","path":"./plugins/openubmc"}}]}'
+  [System.IO.File]::WriteAllText(
+    $manifestPath, $manifestJson, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 $manifest = Get-Content -Raw (Join-Path $MarketplaceRoot ".agents/plugins/marketplace.json") | ConvertFrom-Json
