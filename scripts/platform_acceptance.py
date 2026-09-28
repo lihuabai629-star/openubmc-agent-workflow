@@ -294,9 +294,14 @@ def _row_errors(row: dict[str, Any], source_commit: str) -> list[str]:
     return errors
 
 
-def assess(report: dict[str, Any]) -> dict[str, Any]:
+def assess(
+    report: dict[str, Any], *, candidate_archive: Path | None = None
+) -> dict[str, Any]:
     if report.get("schema") != SCHEMA or not _full_commit(report.get("source_commit")):
         raise ValueError("invalid platform matrix schema or source commit")
+    validation_mode = report.get("validation_mode", "hosted-ci")
+    if validation_mode not in ("hosted-ci", "installed-candidate"):
+        raise ValueError("unsupported platform validation mode")
     rows = report.get("rows")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise ValueError("platform matrix rows must be objects")
@@ -309,16 +314,43 @@ def assess(report: dict[str, Any]) -> dict[str, Any]:
     if set(selected) != set(ROWS | OPTIONAL_ROWS):
         raise ValueError("platform matrix must contain every required and optional row")
     blockers: list[str] = []
+    required_rows = set(ROWS)
+    if validation_mode == "installed-candidate":
+        required_rows.remove("hosted-ci")
+        if selected["hosted-ci"].get("status") != "untested":
+            blockers.append(
+                "installed candidate validation requires an untested hosted-CI row"
+            )
+        if not _hash(report.get("candidate_archive_sha256")):
+            blockers.append("installed candidate archive SHA-256 is missing")
+        if candidate_archive is None or not candidate_archive.is_file():
+            blockers.append("installed candidate archive is missing")
+        elif file_digest(candidate_archive) != report.get("candidate_archive_sha256"):
+            blockers.append("installed candidate archive bytes differ from the matrix")
+        ci_run = selected["hosted-ci"].get("ci_run")
+        if ci_run is not None:
+            jobs = ci_run.get("jobs") if isinstance(ci_run, dict) else None
+            if not isinstance(jobs, list) or any(
+                not isinstance(job, dict) or job.get("steps_count") != 0
+                for job in jobs
+            ):
+                blockers.append(
+                    "executed hosted CI cannot be waived by installed candidate validation"
+                )
     for row_id, row in selected.items():
         errors = _row_errors(row, report["source_commit"])
         if errors:
             blockers.extend(f"{row_id}: {error}" for error in errors)
-        if row_id in ROWS and row.get("status") != "passed":
+        if row_id in required_rows and row.get("status") != "passed":
             blockers.append(f"{row_id}: {row.get('status')} - {row.get('reason', 'reason missing')}")
     passed = [selected[row_id] for row_id in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime", "hosted-ci") if selected[row_id].get("status") == "passed"]
     digests = {row["package_sha256"] for row in passed if _hash(row.get("package_sha256"))}
     if len(digests) > 1:
         blockers.append("Linux, Windows and hosted CI plugin package digests differ")
+    if validation_mode == "installed-candidate" and digests != {
+        report.get("candidate_archive_sha256")
+    }:
+        blockers.append("installed candidate package digest differs from native platform rows")
     evaluated = {key: value for key, value in report.items() if key not in ("release_ready", "blockers", "evidence_digest")}
     evaluated["release_ready"] = not blockers
     evaluated["blockers"] = blockers
@@ -430,9 +462,16 @@ def main(argv: list[str] | None = None) -> int:
     init = commands.add_parser("init", help="create an untested matrix for one immutable source commit")
     init.add_argument("--source-commit", required=True)
     init.add_argument("--output", type=Path, required=True)
+    init.add_argument(
+        "--validation-mode", choices=("hosted-ci", "installed-candidate"),
+        default="hosted-ci",
+    )
+    init.add_argument("--candidate-archive", type=Path)
     verify = commands.add_parser("verify", help="assess a matrix without changing existing release gates")
     verify.add_argument("--input", type=Path, required=True)
     verify.add_argument("--output", type=Path, required=True)
+    verify.add_argument("--candidate-archive", type=Path)
+    verify.add_argument("--expected-source-commit")
     capture = commands.add_parser("capture", help="record command status, test counts and log/artifact hashes")
     capture.add_argument("--cwd", type=Path, default=Path.cwd())
     capture.add_argument("--log-dir", type=Path, required=True)
@@ -447,10 +486,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "init":
             result = initial_report(args.source_commit)
+            if args.validation_mode == "installed-candidate":
+                if args.candidate_archive is None or not args.candidate_archive.is_file():
+                    raise ValueError("installed candidate initialization requires an archive")
+                result["validation_mode"] = "installed-candidate"
+                result["candidate_archive_sha256"] = file_digest(args.candidate_archive)
+            elif args.candidate_archive is not None:
+                raise ValueError("candidate archive requires installed-candidate mode")
             code = 0
         elif args.action == "verify":
             raw = json.loads(args.input.read_text(encoding="utf-8"))
-            result = assess(raw)
+            if (
+                args.expected_source_commit is not None
+                and raw.get("source_commit") != args.expected_source_commit
+            ):
+                raise ValueError("platform matrix source commit differs from expected release source")
+            result = assess(raw, candidate_archive=args.candidate_archive)
             code = 0 if result["release_ready"] else 1
         elif args.action == "capture":
             artifacts: dict[str, Path] = {}

@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from typing import NamedTuple
@@ -34,6 +35,11 @@ from scripts.formal_identity import (  # noqa: E402
     normalize_codex_identity,
     normalize_model_identity,
 )
+from scripts.platform_acceptance import (  # noqa: E402
+    assess as assess_platform_acceptance,
+    file_digest as platform_file_digest,
+)
+from scripts.plugin_archive import read_archive as read_plugin_archive  # noqa: E402
 
 from openubmc_target_runtime.release import (  # noqa: E402
     ReleaseLockError,
@@ -149,6 +155,43 @@ def _load_codex_adoption_evidence(
         raise ValueError("Codex Adoption Qualification model identity mismatch")
     if provenance.get("codex") != dict(expected_codex_identity):
         raise ValueError("Codex Adoption Qualification Codex identity mismatch")
+    return document
+
+
+def _load_candidate_qualification(
+    path: Path, *, source_commit: str, release_version: str, archive: Path
+) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"candidate plugin qualification is unavailable: {error}"
+        ) from error
+    if not archive.is_file():
+        raise ValueError("candidate plugin archive is unavailable")
+    archive_sha256 = platform_file_digest(archive)
+    try:
+        archive_lock, _ = read_plugin_archive(archive, archive_sha256)
+    except (
+        OSError, ValueError, KeyError, json.JSONDecodeError,
+        tarfile.TarError, EOFError,
+    ) as error:
+        raise ValueError(f"candidate plugin archive is invalid: {error}") from error
+    if not isinstance(document, dict) or (
+        document.get("schema") != "openubmc.codex-plugin.qualification.v1"
+        or document.get("source_commit") != source_commit
+        or document.get("archive_sha256") != archive_sha256
+        or archive_lock.get("source_commit") != source_commit
+        or archive_lock.get("version") != release_version
+        or document.get("content_digest") != archive_lock.get("content_digest")
+        or document.get("version") != archive_lock.get("version")
+        or document.get("ok") is not True
+        or document.get("deterministic_archive") is not True
+        or document.get("native_install") is not True
+    ):
+        raise ValueError(
+            "candidate plugin qualification does not match source and archive"
+        )
     return document
 
 
@@ -331,7 +374,16 @@ def gate_commands(
     codex_identity: Mapping[str, object],
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
+    platform_matrix: Path | None = None,
+    candidate_archive: Path | None = None,
+    candidate_qualification: Path | None = None,
 ) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
+    supplied = sum(
+        value is not None
+        for value in (platform_matrix, candidate_archive, candidate_qualification)
+    )
+    if supplied not in (0, 3):
+        raise ValueError("installed candidate requires matrix, archive and qualification together")
     clean_install = tuple(_install_command(current_ref, clean_home))
     previous_install = tuple(_install_command(previous_ref, lifecycle_home))
     current_upgrade = tuple(_install_command(current_ref, lifecycle_home))
@@ -348,22 +400,25 @@ def gate_commands(
         if ab_attestation_public_key is not None
         else lifecycle_home.parent / "agent-gateway-ab-attestation.pub"
     )
-    return (
-        (
+    if platform_matrix is not None:
+        qualification_gate = (
+            "installed_candidate",
+            ((sys.executable, str(ROOT / "scripts" / "platform_acceptance.py"),
+              "verify", "--input", str(platform_matrix),
+              "--output", str(lifecycle_home.parent / "platform-acceptance.json"),
+              "--candidate-archive", str(candidate_archive),
+              "--expected-source-commit", source_commit),),
+        )
+    else:
+        qualification_gate = (
             "github_ci",
-            (
-                (
-                    sys.executable,
-                    str(ROOT / "scripts" / "github_ci_evidence.py"),
-                    "--repository",
-                    github_repository,
-                    "--commit",
-                    source_commit,
-                    "--output",
-                    str(lifecycle_home.parent / "github-ci-evidence.json"),
-                ),
-            ),
-        ),
+            ((sys.executable, str(ROOT / "scripts" / "github_ci_evidence.py"),
+              "--repository", github_repository,
+              "--commit", source_commit,
+              "--output", str(lifecycle_home.parent / "github-ci-evidence.json")),),
+        )
+    return (
+        qualification_gate,
         ("clean_install", (clean_install,)),
         ("upgrade", (previous_install, current_upgrade)),
         (
@@ -488,7 +543,16 @@ def execute_release_gate(
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
     release_tag: str | None = None,
+    platform_matrix: Path | None = None,
+    candidate_archive: Path | None = None,
+    candidate_qualification: Path | None = None,
 ) -> dict[str, object]:
+    supplied = sum(
+        value is not None
+        for value in (platform_matrix, candidate_archive, candidate_qualification)
+    )
+    if supplied not in (0, 3):
+        raise ValueError("installed candidate requires matrix, archive and qualification together")
     selected_model_identity = normalize_model_identity(model_identity)
     selected_codex_identity = normalize_codex_identity(codex_identity)
     clean_home = work_root / "clean-install-home"
@@ -496,6 +560,7 @@ def execute_release_gate(
     results: list[dict[str, object]] = []
     blocked = False
     adoption_document: dict[str, object] | None = None
+    candidate_qualification_document: dict[str, object] | None = None
     candidate = _resolve_release_candidate(workspace, current_ref)
     resolved_source_commit = candidate.source_commit
     resolved_release_commit = candidate.release_commit
@@ -545,6 +610,9 @@ def execute_release_gate(
         codex_identity=selected_codex_identity,
         github_repository=github_repository,
         ab_attestation_public_key=ab_attestation_public_key,
+        platform_matrix=platform_matrix,
+        candidate_archive=candidate_archive,
+        candidate_qualification=candidate_qualification,
     ):
         if blocked:
             results.append(
@@ -583,6 +651,31 @@ def execute_release_gate(
                 blocked = True
                 if command_results:
                     command_results[-1]["stderr_tail"] = _tail(str(error))
+        if not blocked and name == "installed_candidate":
+            try:
+                path = work_root / "platform-acceptance.json"
+                assessed = json.loads(path.read_text(encoding="utf-8"))
+                verified = assess_platform_acceptance(
+                    assessed, candidate_archive=candidate_archive
+                )
+                if (
+                    verified.get("validation_mode") != "installed-candidate"
+                    or verified.get("source_commit") != resolved_source_commit
+                    or verified.get("release_ready") is not True
+                    or verified.get("evidence_digest")
+                    != assessed.get("evidence_digest")
+                ):
+                    raise ValueError("installed candidate platform evidence is invalid")
+                candidate_qualification_document = _load_candidate_qualification(
+                    candidate_qualification,
+                    source_commit=resolved_source_commit,
+                    release_version=candidate.release_version,
+                    archive=candidate_archive,
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                blocked = True
+                if command_results:
+                    command_results[-1]["stderr_tail"] = _tail(str(error))
         results.append(
             {
                 "name": name,
@@ -615,6 +708,24 @@ def execute_release_gate(
     github_ci_artifact = _artifact(work_root / "github-ci-evidence.json")
     if github_ci_artifact is not None:
         artifacts["github_ci"] = github_ci_artifact
+    if platform_matrix is not None and candidate_archive is not None:
+        for name, path in (
+            ("platform_acceptance", work_root / "platform-acceptance.json"),
+            ("candidate_archive", candidate_archive),
+            ("candidate_qualification", candidate_qualification),
+        ):
+            artifact = _artifact(path)
+            if artifact is not None:
+                if (
+                    name == "candidate_qualification"
+                    and candidate_qualification_document is not None
+                ):
+                    artifact.update({
+                        "source_commit": candidate_qualification_document["source_commit"],
+                        "archive_sha256": candidate_qualification_document["archive_sha256"],
+                        "qualified": candidate_qualification_document["ok"],
+                    })
+                artifacts[name] = artifact
     if ab_evidence is not None:
         ab_artifact = _artifact(ab_evidence)
         if ab_artifact is not None:
@@ -634,15 +745,23 @@ def execute_release_gate(
         "environment": environment,
         "environment_fingerprint": evidence_fingerprint(environment),
         "promotable": promotable,
+        "validation_mode": (
+            "installed-candidate" if platform_matrix is not None else "hosted-ci"
+        ),
         "gates": results,
         "artifacts": artifacts,
     }
     report["evidence_digest"] = evidence_fingerprint(report)
     verify_release_gate_report(
         report,
-        required_artifacts=("codex_adoption_qualification",)
-        if promotable
-        else (),
+        required_artifacts=(
+            (
+                "codex_adoption_qualification", "platform_acceptance",
+                "candidate_archive", "candidate_qualification",
+            )
+            if platform_matrix is not None
+            else ("codex_adoption_qualification",)
+        ) if promotable else (),
     )
     return report
 
@@ -675,6 +794,9 @@ def main(argv: list[str] | None = None) -> int:
         "--github-repository",
         default="lihuabai629-star/openubmc-agent-workflow",
     )
+    parser.add_argument("--platform-matrix", type=Path)
+    parser.add_argument("--candidate-archive", type=Path)
+    parser.add_argument("--candidate-qualification", type=Path)
     args = parser.parse_args(argv)
 
     if args.current_ref == args.previous_ref:
@@ -698,6 +820,18 @@ def main(argv: list[str] | None = None) -> int:
                 ab_evidence=args.ab_evidence.expanduser().absolute(),
                 github_repository=args.github_repository,
                 release_tag=args.release_tag,
+                platform_matrix=(
+                    args.platform_matrix.expanduser().absolute()
+                    if args.platform_matrix else None
+                ),
+                candidate_archive=(
+                    args.candidate_archive.expanduser().absolute()
+                    if args.candidate_archive else None
+                ),
+                candidate_qualification=(
+                    args.candidate_qualification.expanduser().absolute()
+                    if args.candidate_qualification else None
+                ),
                 ab_attestation_public_key=(
                     args.ab_attestation_public_key.expanduser().absolute()
                 ),

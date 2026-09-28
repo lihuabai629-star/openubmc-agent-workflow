@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -105,6 +106,78 @@ class PlatformAcceptanceTests(unittest.TestCase):
         report = acceptance.assess(passing_matrix())
         self.assertTrue(report["release_ready"], report["blockers"])
         self.assertEqual(len(report["evidence_digest"]), 64)
+
+    def test_installed_candidate_can_qualify_when_hosted_jobs_never_started(self) -> None:
+        matrix = passing_matrix()
+        matrix["validation_mode"] = "installed-candidate"
+        matrix["candidate_archive_sha256"] = HASH
+        hosted = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
+        hosted.clear()
+        hosted.update({"id": "hosted-ci", "status": "untested", "reason": "Account billing blocked job startup"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "candidate.tar.gz"
+            archive.write_bytes(b"qualification-evidence")
+            report = acceptance.assess(matrix, candidate_archive=archive)
+
+        self.assertTrue(report["release_ready"], report["blockers"])
+        self.assertEqual(report["validation_mode"], "installed-candidate")
+        self.assertEqual(report["candidate_archive_sha256"], HASH)
+
+    def test_installed_candidate_rejects_missing_or_wrong_archive_and_executed_ci_failure(self) -> None:
+        matrix = passing_matrix()
+        matrix["validation_mode"] = "installed-candidate"
+        matrix["candidate_archive_sha256"] = HASH
+        hosted = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
+        hosted.clear()
+        hosted.update({"id": "hosted-ci", "status": "untested", "reason": "No hosted execution"})
+        self.assertFalse(acceptance.assess(matrix)["release_ready"])
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "candidate.tar.gz"
+            archive.write_bytes(b"different archive")
+            self.assertFalse(acceptance.assess(matrix, candidate_archive=archive)["release_ready"])
+            archive.write_bytes(b"qualification-evidence")
+            hosted["ci_run"] = {"jobs": [{"name": "CI contract preflight", "steps_count": 3,
+                                           "conclusion": "failure"}]}
+            self.assertFalse(acceptance.assess(matrix, candidate_archive=archive)["release_ready"])
+
+    def test_verify_cli_binds_candidate_to_expected_source_and_archive_bytes(self) -> None:
+        matrix = passing_matrix()
+        matrix["validation_mode"] = "installed-candidate"
+        matrix["candidate_archive_sha256"] = HASH
+        hosted = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
+        hosted.clear()
+        hosted.update({"id": "hosted-ci", "status": "untested", "reason": "No hosted execution"})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "candidate.tar.gz"
+            archive.write_bytes(b"qualification-evidence")
+            source = root / "matrix.json"
+            source.write_text(json.dumps(matrix), encoding="utf-8")
+            output = root / "assessed.json"
+            command = [sys.executable, str(SCRIPTS / "platform_acceptance.py"), "verify",
+                       "--input", str(source), "--output", str(output),
+                       "--candidate-archive", str(archive),
+                       "--expected-source-commit", SOURCE]
+            self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+            self.assertTrue(json.loads(output.read_text())["release_ready"])
+            command[-1] = "b" * 40
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+
+    def test_init_cli_records_immutable_candidate_archive_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "candidate.tar.gz"
+            archive.write_bytes(b"qualification-evidence")
+            output = root / "matrix.json"
+            command = [sys.executable, str(SCRIPTS / "platform_acceptance.py"), "init",
+                       "--source-commit", SOURCE, "--output", str(output),
+                       "--validation-mode", "installed-candidate",
+                       "--candidate-archive", str(archive)]
+            self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["validation_mode"], "installed-candidate")
+            self.assertEqual(report["candidate_archive_sha256"], HASH)
 
     def test_arm_or_container_linux_cannot_certify_native_x86_64(self) -> None:
         matrix = passing_matrix()

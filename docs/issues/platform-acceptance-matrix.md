@@ -21,9 +21,10 @@ which is external to a source-code fix.
 - Confirm the separate Desktop installer presents the same Run/Outcome as the
   plugin using a synthetic target. Do not modify that project's active
   checkout here or infer real-BMC acceptance from a fixture.
-- Rerun the hosted GitHub CI once account billing permits jobs to start.
-  Billing repair or spending-limit changes require the account owner; do not
-  claim CI success from skipped jobs or local substitutes.
+- Use exact-source hosted GitHub CI when it can start. When account billing
+  blocks the jobs, #288 provides an explicit installed-candidate path based on
+  one archive, its qualification report and the native platform rows. Keep
+  skipped hosted jobs untested; an executed CI failure remains blocking.
 
 ## Acceptance
 
@@ -31,8 +32,9 @@ which is external to a source-code fix.
   commit, package digest, commands, exit codes, and pass/fail/untested reasons.
 - All supported platform rows pass their existing gates without weakening
   timeout or safety thresholds. Unsupported or unavailable rows remain open.
-- The source release claim is blocked until required Linux/Windows/WSL and
-  hosted-CI rows are actually observed.
+- The source release claim is blocked until the native Linux/Windows/WSL and
+  Desktop rows pass, plus either exact-source hosted CI or #288's installed
+  candidate path. Stateful Agent trial acceptance remains separate.
 
 ## Ownership
 

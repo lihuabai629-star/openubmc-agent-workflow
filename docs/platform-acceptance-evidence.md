@@ -2,8 +2,11 @@
 
 This document applies to [the platform acceptance specification](issues/platform-acceptance-matrix.md).
 It records the source acceptance decision separately from existing Runtime,
-plugin, release and CI gates. A source is **not release ready** until the five
-required rows below have passing evidence for the *same full source commit*.
+plugin and release gates. The default hosted-CI path requires all five rows to
+pass for the *same full source commit*. The explicit installed-candidate path
+requires the four native platform rows to pass for the same source and archive;
+the hosted-CI row remains untested with a reason. See
+[installed candidate qualification](specs/installed-candidate-qualification.md).
 The macOS row is useful local evidence but cannot replace any required row.
 
 ## Current observation (2026-09-27, Asia/Shanghai)
@@ -17,9 +20,11 @@ The macOS row is useful local evidence but cannot replace any required row.
 | Separate Desktop installer on synthetic target | Separate active Desktop project was not changed or run from this checkout | **Untested**. Same Run ID and Outcome digest still need direct readback from both clients. |
 | Hosted GitHub CI | [Run 36266142666](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/36266142666) was for commit `e6d37324f39b6422ae6aaf51335ac90ba7260f7a`, not this candidate | **Untested for this source**. On that run, preflight failed before any step with the account billing/spending-limit annotation; Linux and Windows jobs were skipped. `collect-ci` returned exit 1; its local JSON digest is `c731fea7d60952751d55d060e1585ca3f1c86cc990c7e51dd03a864a3755cc7b`. The account owner must resolve billing before an exact-commit rerun. |
 
-The matrix decision is currently **blocked**. None of the native Linux,
-Windows/WSL, Desktop or exact-commit hosted CI acceptance rows has been observed
-on this candidate. No fixture establishes real-BMC acceptance.
+The matrix decision is currently **blocked**. The clean x86_64 WSL2 validation
+and immutable-plugin qualification on PR #287 commit `421d554` passed, but that
+older commit and WSL2 do not fill the new candidate's native Linux row. Native
+Windows/WSL and Desktop rows also lack passing evidence. Hosted CI has not
+started, and no fixture establishes real-BMC acceptance.
 
 Local check details at the branch base: `.scratch/issue-284/venv/bin/python -m
 unittest scripts.tests.test_continuous_validation_workflow
@@ -53,6 +58,32 @@ python3 scripts/platform_acceptance.py verify \
   --input .scratch/platform-acceptance/matrix.json \
   --output .scratch/platform-acceptance/assessed.json
 ```
+
+For the installed-candidate path, first build and qualify one immutable archive
+from the selected clean source. Then initialize and verify with the same file:
+
+```bash
+python3 scripts/qualify_plugin.py \
+  --archive /tmp/openubmc-candidate.tar.gz \
+  --output /tmp/openubmc-candidate-qualification.json
+python3 scripts/platform_acceptance.py init \
+  --source-commit "$(git rev-parse HEAD)" \
+  --validation-mode installed-candidate \
+  --candidate-archive /tmp/openubmc-candidate.tar.gz \
+  --output .scratch/platform-acceptance/matrix.json
+# Populate the four native rows from captured installed-package observations.
+python3 scripts/platform_acceptance.py verify \
+  --input .scratch/platform-acceptance/matrix.json \
+  --candidate-archive /tmp/openubmc-candidate.tar.gz \
+  --expected-source-commit "$(git rev-parse HEAD)" \
+  --output .scratch/platform-acceptance/assessed.json
+```
+
+After the existing release-lock and formal evidence are ready, the local
+`scripts/release_gate.py` invocation adds `--platform-matrix`,
+`--candidate-archive` and `--candidate-qualification` to select this path. The
+other Release Gate checks still run. Do not mark an unfilled row as passed or
+reuse a matrix after changing the archive or source commit.
 
 For each command, `capture` writes private stdout/stderr logs with 0600 file
 modes on POSIX, captures their SHA-256 values, exit code, test counts, Git source/clean
