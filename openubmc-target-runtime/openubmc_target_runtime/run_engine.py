@@ -62,6 +62,7 @@ from .effect_runner import (
     LocalEffectRunner,
     PreparedEffect,
 )
+from .redaction import redact_effect_output
 from .capability import EffectClass
 from .comparison_receipt import COMPARISON_RECEIPT_SCHEMA
 from .diagnostic_receipt import (
@@ -91,6 +92,7 @@ from .workflow import (
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinitions,
 )
+from .tracing import RunTracer, TraceSettings
 from .validation_readiness import (
     BUILD_STATUSES,
     DEPENDENCY_RESOLUTIONS,
@@ -616,8 +618,9 @@ class RunTransition:
 class ObservationEngine:
     """Collect, automatically assure when useful, and persist one observation."""
 
-    def __init__(self, driver: ObservationDriver) -> None:
+    def __init__(self, driver: ObservationDriver, *, tracing: RunTracer | None = None) -> None:
         self.driver = driver
+        self.tracing = tracing or RunTracer(TraceSettings())
 
     @staticmethod
     def _needs_assurance(
@@ -682,6 +685,18 @@ class ObservationEngine:
         return combined
 
     def observe(
+        self,
+        query: ObservationQuery,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ObservationResult:
+        with self.tracing.span("runtime.observe", task_id=task_id):
+            return self._observe_untraced(
+                query, task_id=task_id, operation_id=operation_id,
+            )
+
+    def _observe_untraced(
         self,
         query: ObservationQuery,
         *,
@@ -822,6 +837,7 @@ class RunEngine:
             [Mapping[str, object]], tuple[Mapping[str, object], ...]
         ] | None = None,
         workflow_definitions: WorkflowDefinitions = DEFAULT_WORKFLOW_DEFINITIONS,
+        tracing: RunTracer | None = None,
     ) -> None:
         if run_store is None:
             raise ValueError("RunStore is required")
@@ -831,6 +847,7 @@ class RunEngine:
         self.effect_runner = effect_runner
         self.fact_projector = fact_projector
         self.workflow_definitions = workflow_definitions
+        self.tracing = tracing or RunTracer(TraceSettings())
         self._active_transaction: ContextVar[RunDecisionDraft | None] = (
             ContextVar(f"openubmc_run_decision_{id(self)}", default=None)
         )
@@ -2680,6 +2697,18 @@ class RunEngine:
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
+        with self.tracing.span("runtime.gate", task_id=task_id, run_id=command.run_id):
+            return self._submit_gate_untraced(
+                command, task_id=task_id, operation_id=operation_id,
+            )
+
+    def _submit_gate_untraced(
+        self,
+        command: SubmitGate,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> RunTurn:
         snapshot = self.driver.run_snapshot(command.run_id)
         _command_id, submission_digest = run_command_identity(
             command,
@@ -3437,7 +3466,9 @@ class RunEngine:
                     getattr(error, "mutation_effects_started", False)
                 ),
             }
-        input_digest = fingerprint(outcome_identity)
+        # The digest is durable. Scrub exception metadata and direct result
+        # values before hashing so it cannot become a guessable secret digest.
+        input_digest = fingerprint(redact_effect_output(outcome_identity))
         command_id = "effect-result-" + input_digest[:32]
         def build(transaction: RunDecisionDraft) -> RunDecision:
             current = _projection(self.driver.run_snapshot(intent.run_id))
@@ -3583,6 +3614,21 @@ class RunEngine:
         )
 
     def execute(
+        self,
+        command: RunCommand,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> RunTurn:
+        run_id = command.run_id if not isinstance(command, StartRun) else ""
+        with self.tracing.span("runtime.execute", task_id=task_id, run_id=run_id) as span:
+            turn = self._execute_untraced(
+                command, task_id=task_id, operation_id=operation_id,
+            )
+            span.bind_run(turn.run_id)
+            return turn
+
+    def _execute_untraced(
         self,
         command: RunCommand,
         *,

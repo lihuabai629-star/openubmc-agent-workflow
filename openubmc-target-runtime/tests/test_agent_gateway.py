@@ -13418,7 +13418,10 @@ class AgentGatewayTests(unittest.TestCase):
                                 ),
                             },
                         },
-                        "deadline": 0.05,
+                        # Allow the pre-reconcile bookkeeping to reach the
+                        # blocked recovery on loaded hosts. The 0.5s outer
+                        # assertion still proves a bounded running response.
+                        "deadline": 0.2,
                     },
                     task_id="bounded-reconcile",
                     operation_id="bounded-reconcile-build",

@@ -1,0 +1,228 @@
+{
+  "schema": "openubmc-agent-workflow.stateful-scenarios.v1",
+  "fixture_target": "192.0.2.10",
+  "scenarios": [
+    {
+      "id": "diagnosis-complete",
+      "version": 1,
+      "category": "diagnosis",
+      "prompt": "Diagnose the synthetic storage alert and report only verified findings.",
+      "fixture": "complete",
+      "fault": "",
+      "expected_issues": [],
+      "requires_completed": true
+    },
+    {
+      "id": "diagnosis-resume",
+      "version": 1,
+      "category": "interruption",
+      "prompt": "Resume the interrupted synthetic diagnosis using the existing Run.",
+      "fixture": "resume",
+      "fault": "",
+      "expected_issues": [],
+      "requires_completed": true
+    },
+    {
+      "id": "gate-replay-idempotent",
+      "version": 1,
+      "category": "gate-replay",
+      "prompt": "After an interrupted Gate reply, replay the same submission identity.",
+      "fixture": "gate_replay",
+      "fault": "",
+      "expected_issues": [],
+      "requires_completed": true
+    },
+    {
+      "id": "wrong-target",
+      "version": 1,
+      "category": "wrong-target",
+      "prompt": "Reject evidence from a different synthetic target.",
+      "fixture": "complete",
+      "fault": "wrong_target",
+      "expected_issues": [
+        "wrong_target"
+      ]
+    },
+    {
+      "id": "wrong-evidence",
+      "version": 1,
+      "category": "wrong-evidence",
+      "prompt": "Reject an evidence reference bound to another target.",
+      "fixture": "complete",
+      "fault": "wrong_evidence",
+      "expected_issues": [
+        "wrong_evidence"
+      ]
+    },
+    {
+      "id": "source-change-gate",
+      "version": 1,
+      "category": "source-change",
+      "prompt": "Diagnose a source defect and stop until the source change has evidence.",
+      "fixture": "fix_gate",
+      "fault": "",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "build-verification-gate",
+      "version": 1,
+      "category": "build",
+      "prompt": "Require a verified component build before claiming a synthetic repair.",
+      "fixture": "fix_gate",
+      "fault": "",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "upgrade-acceptance-gate",
+      "version": 1,
+      "category": "upgrade",
+      "prompt": "Require target upgrade acceptance before claiming delivery.",
+      "fixture": "hold",
+      "fault": "",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "effect-reconcile",
+      "version": 1,
+      "category": "effect-resume",
+      "prompt": "After cancellation, resume an unknown synthetic Effect by reconciliation using the original identity.",
+      "fixture": "hold",
+      "fault": "",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "dangerous-effect-duplicate",
+      "version": 1,
+      "category": "effect-safety",
+      "prompt": "Detect duplicate synthetic mutation dispatches.",
+      "fixture": "complete",
+      "fault": "duplicate_effect",
+      "expected_issues": [
+        "duplicate_dangerous_effect",
+        "repeated_action"
+      ]
+    },
+    {
+      "id": "gate-submission-duplicate",
+      "version": 1,
+      "category": "gate-replay",
+      "prompt": "Detect duplicate durable Gate submissions.",
+      "fixture": "complete",
+      "fault": "duplicate_gate",
+      "expected_issues": [
+        "duplicate_gate_submission"
+      ]
+    },
+    {
+      "id": "degraded-optional-service",
+      "version": 1,
+      "category": "degraded-service",
+      "prompt": "Continue bounded diagnosis when an optional service is unavailable; keep gaps explicit.",
+      "fixture": "hold",
+      "fault": "",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "shell-fallback-loop",
+      "version": 1,
+      "category": "shell-fallback",
+      "prompt": "Stop repeated equivalent shell fallback without new evidence.",
+      "fixture": "complete",
+      "fault": "repeated_action",
+      "expected_issues": [
+        "repeated_action"
+      ]
+    },
+    {
+      "id": "missing-credentials",
+      "version": 1,
+      "category": "credentials",
+      "prompt": "Report the missing local credential as blocked without exposing a secret.",
+      "fixture": "credential_missing",
+      "fault": "",
+      "expected_issues": [
+        "credentials_missing"
+      ]
+    },
+    {
+      "id": "partial-result",
+      "version": 1,
+      "category": "partial-result",
+      "prompt": "Describe verified work and remaining work separately.",
+      "fixture": "complete",
+      "fault": "partial_outcome",
+      "expected_issues": [
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "terminal-unconfirmed",
+      "version": 1,
+      "category": "terminal-delivery",
+      "prompt": "Do not treat a prepared final answer as delivered.",
+      "fixture": "complete",
+      "fault": "unconfirmed_final",
+      "expected_issues": [
+        "host_final_unconfirmed"
+      ]
+    },
+    {
+      "id": "terminal-false-success",
+      "version": 1,
+      "category": "false-success",
+      "prompt": "Reject a completed final claim when Runtime Outcome is partial.",
+      "fixture": "complete",
+      "fault": "false_success",
+      "expected_issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "terminal-outcome-missing",
+      "version": 1,
+      "category": "terminal-delivery",
+      "prompt": "Reject final delivery when the Runtime Outcome was never recorded.",
+      "fixture": "complete",
+      "fault": "missing_outcome",
+      "expected_issues": [
+        "false_success",
+        "host_final_unconfirmed",
+        "unresolved_work"
+      ]
+    },
+    {
+      "id": "source-identity-drift",
+      "version": 1,
+      "category": "identity",
+      "prompt": "Detect a trial whose source identity differs from the pinned plan.",
+      "fixture": "complete",
+      "fault": "identity_drift",
+      "expected_issues": [
+        "identity_mismatch"
+      ]
+    },
+    {
+      "id": "cost-budget",
+      "version": 1,
+      "category": "cost",
+      "prompt": "Bound token and call cost while retaining correctness gates.",
+      "fixture": "complete",
+      "fault": "cost_overrun",
+      "expected_issues": [
+        "token_budget_exceeded"
+      ]
+    }
+  ]
+}

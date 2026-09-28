@@ -1,31 +1,31 @@
 {
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
-  "release_version": "2.1.2",
-  "source_commit": "d7e256ed6b5d34671230483cbf584dacfd95319d",
+  "release_version": "2.1.3",
+  "source_commit": "f28b2cdf1248cadb4c43b1371927fe7fbdd39821",
   "source_commit_policy": "lock-finalization-parent-v1",
-  "workflow_digest": "sha256:5c8f10babe451a9802efedada4e873a64486729300c5fdd61b262fab43fb2419",
+  "workflow_digest": "sha256:f51abd6cf79758f3c92588bb49ee591212a7fec2a9b53092d54fa89260a545a1",
   "skills": [
     {
       "name": "openubmc-environment-setup",
       "path": "openubmc-environment-setup",
       "version": "2.6.0",
       "manifest_version": 1,
-      "digest": "sha256:5f2bf89557541e02b271f75732eb5c992d56fa986d1ac6530b708ee808156f04"
+      "digest": "sha256:1838d44402793fb015d67ac058f96e9ec60b1276a3c44f5f632118d679f2076b"
     },
     {
       "name": "openubmc-debug",
       "path": "openubmc-debug",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:aff865714502abb77584e854ea96441acb2beea3220e0c2dd40ac779bec980f8"
+      "digest": "sha256:741ba6f58024c23ee1ad399219811d5e0acf0fdbefc8fa893c4affdbe57a43ee"
     },
     {
       "name": "openubmc-log-analyzer",
       "path": "openubmc-log-analyzer",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:ddf84bac13b3ff3cea0d15e908dbfc2cb1bed1552b18cdee6a93f7d2d1d265c9"
+      "digest": "sha256:331fa45906e36d0b9195c3efcc7a3fc95c40d78fb359e7eb41bcb686aa738470"
     },
     {
       "name": "openubmc-developer",
@@ -100,7 +100,7 @@
   ],
   "runtime": {
     "api_version": "openubmc.target-runtime.v1",
-    "content_digest": "sha256:106755d81217636231ab0c1b7301c355806c6d21001d6deac4e71a798d235309"
+    "content_digest": "sha256:cb14cb28b1c19e796c5f8dc05e752f52af239d99b5800e171fc28bdbcd1568e9"
   },
   "schemas": {
     "workflow_schema": "openubmc-agent-workflow.v1",
@@ -210,6 +210,6 @@
       "openubmc-live-patch"
     ]
   },
-  "source_tree_digest": "sha256:760ace35cf51a4ae313e06bfd5465fbaf70943064ad103ecc135d114cba3cff4",
-  "lock_digest": "sha256:ccbc6bd4492e900c82741c12aefd4bbcc5033bc4ced469ffbfda0049fb646af8"
+  "source_tree_digest": "sha256:965a861621b74b4dd10b66b5776931404c68aefaf89fc7109a27afdfe42eeeac",
+  "lock_digest": "sha256:da1444fe62c345e85858fbab24201ba9a3685ce23fa1da6013f4896a0f5174e3"
 }

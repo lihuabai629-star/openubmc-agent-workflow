@@ -143,26 +143,34 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
         spec.loader.exec_module(module)
         plan = module.build_runtime_plan(root, root/'skills', source_commit=commit)
         plan['package_path'] = str(root/'skills/openubmc-target-runtime/openubmc_target_runtime')
-        launcher = module.render_runtime_launcher(plan)
-        replacements = {
-            'PACKAGE_ROOT': "Path(__file__).resolve().parents[1] / 'skills/openubmc-target-runtime/openubmc_target_runtime'",
-            'MCP_ENTRYPOINT': "Path(__file__).resolve().parents[1] / 'skills/openubmc-debug/scripts/target_runtime_mcp.py'",
-            'COMPOSITION_SOURCE': "Path(__file__).resolve().parents[1] / 'skills'",
-        }
-        for variable, expression in replacements.items():
-            lines = launcher.splitlines(keepends=True)
-            found = False
-            for index, line in enumerate(lines):
-                if line.startswith(f'{variable} = Path('):
-                    lines[index] = f'{variable} = {expression}\n'
-                    found = True
-                    break
-            if not found:
-                raise ValueError(f'launcher recipe no longer supports relocation: {variable}')
-            launcher = ''.join(lines)
-        if str(root) in launcher:
-            raise ValueError('launcher leaked a build path')
-        payload['scripts/launch_runtime.py'] = launcher.encode()
+        launchers = [('launch_runtime.py', 'target_runtime_mcp.py')]
+        # Keep immutable builds of older refs valid: they do not contain hooks.
+        if 'skills/openubmc-debug/scripts/host_continuity.py' in payload:
+            launchers.append(('launch_host_hook.py', 'host_continuity.py'))
+        for launcher_name, entrypoint_name in launchers:
+            entrypoint = root/'skills/openubmc-debug/scripts'/entrypoint_name
+            selected = dict(plan, mcp_entrypoint=str(entrypoint), mcp_entrypoint_digest=
+                            module.file_content_digest(entrypoint, domain=b'openubmc-mcp-entrypoint-v1\0'))
+            launcher = module.render_runtime_launcher(selected)
+            replacements = {
+                'PACKAGE_ROOT': "Path(__file__).resolve().parents[1] / 'skills/openubmc-target-runtime/openubmc_target_runtime'",
+                'MCP_ENTRYPOINT': f"Path(__file__).resolve().parents[1] / 'skills/openubmc-debug/scripts/{entrypoint_name}'",
+                'COMPOSITION_SOURCE': "Path(__file__).resolve().parents[1] / 'skills'",
+            }
+            for variable, expression in replacements.items():
+                lines = launcher.splitlines(keepends=True)
+                found = False
+                for index, line in enumerate(lines):
+                    if line.startswith(f'{variable} = Path('):
+                        lines[index] = f'{variable} = {expression}\n'
+                        found = True
+                        break
+                if not found:
+                    raise ValueError(f'launcher recipe no longer supports relocation: {variable}')
+                launcher = ''.join(lines)
+            if str(root) in launcher:
+                raise ValueError('launcher leaked a build path')
+            payload['scripts/'+launcher_name] = launcher.encode()
     inventory = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(payload.items())}
     lock = {'schema': 'openubmc.codex-plugin.v1', 'name': 'openubmc', 'version': workflow['version'],
             'source_commit': commit, 'skills': sorted(skill_names), 'files': inventory,

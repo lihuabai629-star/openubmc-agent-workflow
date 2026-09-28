@@ -714,6 +714,45 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             ):
                 validator.validate_roadmap_closeout()
 
+    def test_full_repository_verifies_available_historical_lock(self) -> None:
+        historical = json.loads(
+            (REPO_ROOT / "docs" / "roadmap-completion.json").read_text(encoding="utf-8")
+        )["release"]["superseded_candidate"]["lock_only_commit"]
+        present = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{historical}^{{commit}}"],
+            capture_output=True,
+        ).returncode == 0
+        if not present:
+            self.skipTest("historical detached object is absent from this checkout")
+        with mock.patch.object(validator, "ROOT", REPO_ROOT):
+            validator.validate_roadmap_closeout()
+
+    def test_branch_only_clone_accepts_missing_historical_lock_but_requires_published_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "branch-only"
+            subprocess.run(
+                ["git", "clone", "--quiet", "--no-local", "--single-branch", str(REPO_ROOT), str(root)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "fetch", "--quiet", "--tags", str(REPO_ROOT)],
+                check=True,
+            )
+            historical = json.loads(
+                (root / "docs" / "roadmap-completion.json").read_text(encoding="utf-8")
+            )["release"]["superseded_candidate"]["lock_only_commit"]
+            absent = subprocess.run(
+                ["git", "-C", str(root), "cat-file", "-e", f"{historical}^{{commit}}"],
+                capture_output=True,
+            )
+            self.assertNotEqual(absent.returncode, 0)
+            with mock.patch.object(validator, "ROOT", root):
+                validator.validate_roadmap_closeout()
+                subprocess.run(["git", "-C", str(root), "tag", "-d", "v2.0.0"],
+                               check=True, capture_output=True)
+                with self.assertRaisesRegex(SystemExit, "unresolvable roadmap completion commit|invalid published release tag"):
+                    validator.validate_roadmap_closeout()
+
 
 if __name__ == "__main__":
     unittest.main()

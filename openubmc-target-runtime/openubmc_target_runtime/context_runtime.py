@@ -367,7 +367,7 @@ def _sanitize(value: object) -> object:
                 except (TypeError, ValueError):
                     continue
                 continue
-            if is_secret_key(name):
+            if is_secret_key(name) or redact_text(name) != name:
                 continue
             sanitized[name] = _sanitize(item)
         return sanitized
@@ -5344,7 +5344,7 @@ class ContextRuntime:
             value = {
                 "ok": False,
                 "status": "failed",
-                "error": str(exc),
+                "error": redact_text(exc),
                 "canonical_error": error,
             }
             envelope = self._envelope(

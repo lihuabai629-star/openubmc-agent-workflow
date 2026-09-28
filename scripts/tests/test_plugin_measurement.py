@@ -73,6 +73,7 @@ if sys.argv[1]=='kb':Path(os.environ['FIXTURE_READY']).write_text('window')
                         try:os.kill(worker,signal.SIGKILL)
                         except ProcessLookupError:pass
 
+    @unittest.skipUnless(Path('/proc/sys/kernel/pid_max').is_file(), 'requires Linux procfs')
     def test_cancelled_preparation_retains_failure_and_reaps_separate_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);plugin=root/'plugin';(plugin/'scripts').mkdir(parents=True)

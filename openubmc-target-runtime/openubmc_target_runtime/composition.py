@@ -43,6 +43,7 @@ from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .run_store import EventRunStore
 from .runtime_adapter import RuntimeSemanticAdapter
 from .semantic_runtime import SemanticRuntimePort
+from .tracing import RunTracer
 from .workflow import (
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinitions,
@@ -76,6 +77,7 @@ class RuntimeCompositionOptions:
     orchestrated_backend: bool = False
     domain_pack_extensions: DomainPackExtensions | None = None
     artifact_store: LocalArtifactStore | None = None
+    tracing: RunTracer | None = None
 
 
 class _AgentRuntimePort:
@@ -800,8 +802,9 @@ def compose_runtime(
     effect_runner = LocalEffectRunner(
         semantic_adapter.execute_effect,
         semantic_adapter.recover_effect,
+        tracing=options.tracing,
     )
-    observation_engine = ObservationEngine(semantic_adapter)
+    observation_engine = ObservationEngine(semantic_adapter, tracing=options.tracing)
     run_engine = RunEngine(
         semantic_adapter,
         run_store=EventRunStore(
@@ -813,6 +816,7 @@ def compose_runtime(
         effect_runner=effect_runner,
         fact_projector=agent_projector.run_facts,
         workflow_definitions=workflow_definitions,
+        tracing=options.tracing,
     )
     semantic_runtime = SemanticRuntime(
         observation_engine,
@@ -822,6 +826,7 @@ def compose_runtime(
     agent_gateway = AgentGateway(
         semantic_runtime,
         projector=agent_projector,
+        tracing=options.tracing,
     )
     lifecycle = _RuntimeLifecyclePort(effect_runner)
     return _RuntimeComposition(

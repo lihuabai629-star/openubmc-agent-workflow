@@ -14,7 +14,7 @@ import time
 from typing import Protocol
 
 from .contracts import RUNTIME_API_VERSION
-from .redaction import redact_text
+from .redaction import redact_text, require_secret_free
 from .replay import CaseReplayBundle, CaseReplayService, redact_replay_value
 
 
@@ -163,6 +163,7 @@ class InMemorySessionOutcomeRepository:
             return self._records.get(outcome_id)
 
     def save(self, record: SessionOutcomeRecord) -> None:
+        require_secret_free(record.to_public_dict(), boundary="Session Outcome persistence")
         with self._lock:
             self._records[record.outcome_id] = record
 
@@ -209,7 +210,9 @@ class SQLiteSessionOutcomeRepository:
         )
 
     def save(self, record: SessionOutcomeRecord) -> None:
-        document = json.dumps(record.to_public_dict(), ensure_ascii=True, sort_keys=True)
+        public = record.to_public_dict()
+        require_secret_free(public, boundary="Session Outcome persistence")
+        document = json.dumps(public, ensure_ascii=True, sort_keys=True)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "INSERT INTO session_outcomes "

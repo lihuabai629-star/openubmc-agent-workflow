@@ -30,9 +30,8 @@ from openubmc_target_runtime.configuration import (
 )
 from openubmc_target_runtime.credential_file import (
     read_private_text,
-    parse_credentials_text,
-    selected_credential_value,
 )
+from openubmc_target_runtime.credential_memory import import_legacy_targets
 
 
 def _masked(config):
@@ -85,30 +84,6 @@ def _secret_edits(config, previous):
             else:
                 record[name] = ""
     return value
-
-
-def import_legacy_targets(text):
-    values = parse_credentials_text(text)
-    config = {"schema_version": 1, "credentials": {}, "defaults": {}}
-    for purpose, transport in (("bmc", "ssh"), ("bmc", "redfish"), ("os", "ssh")):
-        prefix = "OPENUBMC_" + ("OS_" if purpose == "os" else "") + transport.upper()
-        record = {}
-        for field in ("user", "password", "identity_file"):
-            names = [prefix + "_" + field.upper()]
-            if (
-                purpose == "bmc"
-                and transport == "redfish"
-                and field in {"user", "password"}
-            ):
-                names.append(
-                    "REDFISH_" + ("USERNAME" if field == "user" else "PASSWORD")
-                )
-            record[field] = selected_credential_value(values, names, environ={}) or ""
-        if any(record.values()):
-            name = next((name for name, existing in config["credentials"].items() if existing == record), purpose + "-" + transport)
-            config["credentials"][name] = record
-            config["defaults"].setdefault(purpose, {})[transport] = name
-    return config
 
 
 class PluginMaintenance:

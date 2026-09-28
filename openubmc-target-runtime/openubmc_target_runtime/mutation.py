@@ -16,6 +16,7 @@ import threading
 from typing import Callable, ClassVar, Generic, Iterator, TypeVar
 
 from .contracts import CredentialSelector, TargetIdentity, TargetSpec, _fingerprint
+from .redaction import require_secret_free
 
 
 MUTATION_JOURNAL_SCHEMA = "openubmc.target-runtime.v1/mutation-journal"
@@ -408,6 +409,7 @@ class MutationRequest:
         action: str,
         operation: Mapping[str, object],
     ) -> "MutationRequest":
+        require_secret_free(operation, boundary="MutationRequest identity")
         return cls(
             operation_id=operation_id,
             target=target,

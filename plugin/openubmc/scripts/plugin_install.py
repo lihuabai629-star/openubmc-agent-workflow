@@ -151,12 +151,13 @@ def recognized_override_servers(document: dict, codex_root: Path, target_plugin:
         if not path.is_absolute() and isinstance(cwd, str):
             path = Path(cwd)/path
         try:
-            relative = path.relative_to(cache)
+            relative = path.resolve().relative_to(cache.resolve())
         except ValueError:
             raise ValueError('MCP override is outside the selected plugin cache: ' + name) from None
         if len(relative.parts) != 3 or relative.parts[1:] != ('scripts', 'pluginctl.py') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', relative.parts[0]):
             raise ValueError('MCP override has an unrecognized version path: ' + name)
-        if cwd is not None and (not isinstance(cwd, str) or Path(cwd) != path.parent.parent):
+        if cwd is not None and (not isinstance(cwd, str)
+                                or Path(cwd).resolve() != path.parent.parent.resolve()):
             raise ValueError('MCP override has a custom working directory: ' + name)
         index = args.index(paths[0])
         flags = args[:index]
@@ -306,6 +307,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
     targets = set(state.get('codex_skill_center', {}).get('targets', []))
     if source:
         targets.update(str(Path(source)/name) for name in skill_paths)
+    # Filesystem identity can differ from the spelling saved in old config
+    # (for example macOS /var versus /private/var). Keep raw spellings for
+    # configuration removal, but compare links against canonical targets.
+    resolved_targets = {str(Path(target).resolve()) for target in targets}
     links = []
     exact_skill_files = set(actionable_loose_skill_overlaps(
         home, skill_paths, codex_root, skill_names=skill_names))
@@ -320,10 +325,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
             # Exact-name loose Skills compete with the marketplace Skill even
             # when an older installer left no usable ownership record.  A
             # config-only disable is reversible and does not claim the files.
-            if path.is_symlink() and str(path.resolve()) in targets:
+            if path.is_symlink() and str(path.resolve()) in resolved_targets:
                 links.append({'path': str(path), 'target': os.readlink(path)})
             elif mode == 'disable-only' and not exact_overlap and str(path) in state.get('links', {}):
-                if str(path.resolve()) not in targets:
+                if str(path.resolve()) not in resolved_targets:
                     raise ValueError('Skill installation ownership conflicts at: ' + str(path))
     changes = {'skills': [], 'mcp_servers': sorted(owned_servers), 'plugins': []}
     if mode == 'disable-only':
@@ -351,6 +356,7 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
 def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
          mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public',
          skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
+    home = home.resolve()
     return _plan(home, skill_paths, codex_home, mode=mode, target_plugin=target_plugin,
                  skill_names=skill_names)
 
@@ -359,6 +365,7 @@ def activation_plan(home: Path, skill_paths: list[str], codex_home: Path | None 
                     target_plugin: str = 'openubmc@openubmc-public',
                     skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
     """Compose legacy migration with recognized native-cache override repair."""
+    home = home.resolve()
     codex_root = (codex_home or home/'.codex').resolve()
     snapshot = load_plan_snapshot(home, codex_root)
     probe_document = copy.deepcopy(snapshot.document)

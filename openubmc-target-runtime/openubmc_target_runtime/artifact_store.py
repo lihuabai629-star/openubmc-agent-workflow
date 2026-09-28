@@ -813,6 +813,7 @@ class LocalArtifactStore:
                     else LocalArtifactStore._redact_value(member)
                 )
                 for key, member in value.items()
+                if redact_text(key) == str(key)
             }
         if isinstance(value, list):
             return [LocalArtifactStore._redact_value(member) for member in value]

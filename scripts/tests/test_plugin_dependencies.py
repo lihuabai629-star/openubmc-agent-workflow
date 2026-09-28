@@ -183,6 +183,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertFalse(report['capabilities']['runtime']['startup_ready'])
         self.assertFalse(report['mcp_health']['runtime']['ok'])
 
+    @unittest.skipUnless(sys.platform == 'linux', 'First-start preparation requires a live Linux parent')
     def test_first_start_prepares_dependencies_and_warm_start_does_not_download(self):
         argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
         first = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
@@ -211,6 +212,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertIn('inventory mismatch', result.stderr)
         self.assertFalse((self.root/'npm-args').exists())
 
+    @unittest.skipUnless(sys.platform == 'linux', 'First-start preparation requires a live Linux parent')
     def test_first_start_parent_loss_stops_downloader_and_releases_cache_lock(self):
         self.mode('hang')
         child_script = 'import subprocess,sys,time; subprocess.Popen(sys.argv[1:]); time.sleep(120)'
@@ -241,6 +243,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
                     parent.kill()
                 parent.wait()
 
+    @unittest.skipUnless(sys.platform == 'linux', 'First-start preparation requires a live Linux parent')
     def test_spawning_thread_exit_does_not_cancel_a_live_clients_startup(self):
         script = '''import os,subprocess,sys,threading,time
 from pathlib import Path

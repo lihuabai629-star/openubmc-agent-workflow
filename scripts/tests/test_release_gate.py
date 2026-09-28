@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stderr
+import hashlib
 import importlib.util
 import io
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import yaml
+from scripts.plugin_archive import canonical as canonical_plugin_archive
 
 from scripts.tests.codex_evidence_fixtures import direct_runtime_route_evidence
 
@@ -27,6 +30,53 @@ SOURCE_COMMIT = "a" * 40
 RELEASE_COMMIT = "b" * 40
 MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
 CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
+
+
+def write_candidate_archive(
+    path: Path, *, source_commit: str = SOURCE_COMMIT, version: str = "2.0.2"
+) -> tuple[str, str]:
+    manifest = canonical_plugin_archive({"name": "openubmc", "version": version})
+    lock = {
+        "schema": "openubmc.codex-plugin.v1", "name": "openubmc",
+        "version": version, "source_commit": source_commit,
+        "files": {".codex-plugin/plugin.json": hashlib.sha256(manifest).hexdigest()},
+        "manifest_digest": hashlib.sha256(manifest).hexdigest(),
+    }
+    lock["content_digest"] = hashlib.sha256(canonical_plugin_archive(lock)).hexdigest()
+    with tarfile.open(path, mode="w:gz") as bundle:
+        for name, content in (
+            (".codex-plugin/plugin.json", manifest),
+            ("plugin-lock.json", canonical_plugin_archive(lock)),
+        ):
+            item = tarfile.TarInfo("openubmc/" + name)
+            item.size = len(content)
+            bundle.addfile(item, io.BytesIO(content))
+    return hashlib.sha256(path.read_bytes()).hexdigest(), lock["content_digest"]
+
+
+def candidate_qualification_report(
+    *, archive_sha256: str, content_digest: str
+) -> dict[str, object]:
+    return {
+        "schema": "openubmc.codex-plugin.qualification.v1",
+        "source_commit": SOURCE_COMMIT, "archive_sha256": archive_sha256,
+        "content_digest": content_digest, "version": "2.0.2",
+        "codex": "codex-cli 0.153.4", "ok": True,
+        "deterministic_archive": True, "native_install": True,
+        "native_uninstall": True, "reinstall": True,
+        "external_state_preserved": True,
+        "mcp_health": {
+            "runtime": {"ok": True, "version_matches_package": True},
+            "kb": {"ok": True, "version_matches_package": True},
+        },
+        "bytecode_restart": {"generated_cache_count": 1, "verified_after_restart": True},
+        "native_codex_exec": {"invocations": 2, "restart_verified": True},
+        "native_thread_resume": {
+            "native_upgrade": True, "resume_error": None,
+            "old_cache_absent": True, "configuration_preserved": True,
+            "from_version": "2.0.1", "to_version": "2.0.2",
+        },
+    }
 
 
 def execute_release_gate(**kwargs: object) -> dict[str, object]:
@@ -540,6 +590,235 @@ class ReleaseGateTests(unittest.TestCase):
             {"model": MODEL_IDENTITY, "codex": CODEX_IDENTITY},
         )
         self.assertRegex(report["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_installed_candidate_release_uses_exact_source_and_archive_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            matrix = root / "matrix.json"
+            archive = root / "candidate.tar.gz"
+            matrix.write_text("{}", encoding="utf-8")
+            archive.write_bytes(b"candidate")
+            commands = release_gate.gate_commands(
+                current_ref=RELEASE_COMMIT,
+                previous_ref="v2.0.1",
+                clean_home=root / "clean",
+                lifecycle_home=root / "lifecycle",
+                source_commit=SOURCE_COMMIT,
+                model_identity=MODEL_IDENTITY,
+                codex_identity=CODEX_IDENTITY,
+                platform_matrix=matrix,
+                candidate_archive=archive,
+                candidate_qualification=root / "qualification.json",
+            )
+            first_name, first_commands = commands[0]
+            self.assertEqual(first_name, "installed_candidate")
+            command = first_commands[0]
+            self.assertIn("platform_acceptance.py", command[1])
+            self.assertEqual(command[command.index("--expected-source-commit") + 1], SOURCE_COMMIT)
+            self.assertEqual(command[command.index("--candidate-archive") + 1], str(archive))
+
+    def test_installed_candidate_requires_matrix_and_archive_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate("v2.0.2", release_version="2.0.2"):
+            with self.assertRaisesRegex(ValueError, "matrix, archive and qualification"):
+                execute_release_gate(
+                    current_ref="v2.0.2", previous_ref="v2.0.1",
+                    workspace=Path.cwd(), work_root=Path(directory),
+                    platform_matrix=Path(directory) / "matrix.json",
+                )
+
+    def test_installed_candidate_uses_published_marketplace_as_upgrade_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "v2.0.2", release_version="2.0.2"
+        ), patch.object(release_gate, "require_latest_published_release") as latest:
+            root = Path(directory)
+            for name in ("matrix.json", "candidate.tar.gz", "qualification.json"):
+                (root / name).write_bytes(b"candidate")
+            execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "gate",
+                platform_matrix=root / "matrix.json",
+                candidate_archive=root / "candidate.tar.gz",
+                candidate_qualification=root / "qualification.json",
+                executor=lambda command, *, cwd: subprocess.CompletedProcess(
+                    command, 1, "", "fixture stopped after baseline lookup"
+                ),
+            )
+            latest.assert_called_once_with(
+                "v2.0.1", "lihuabai629-star/openubmc-codex-plugins"
+            )
+
+    def test_release_report_accepts_only_one_explicit_validation_path(self) -> None:
+        def succeed(command, *, cwd):
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(codex_adoption_report()), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate("v2.0.2", release_version="2.0.2"):
+            report = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=Path(directory), executor=succeed,
+            )
+        report["validation_mode"] = "installed-candidate"
+        report["gates"][0]["name"] = "installed_candidate"
+        report["artifacts"]["platform_acceptance"] = {
+            "path": "/private/platform-acceptance.json", "sha256": "c" * 64, "size_bytes": 100,
+        }
+        report["artifacts"]["candidate_archive"] = {
+            "path": "/private/candidate.tar.gz", "sha256": "d" * 64, "size_bytes": 100,
+        }
+        report["artifacts"]["candidate_qualification"] = {
+            "path": "/private/qualification.json", "sha256": "e" * 64,
+            "size_bytes": 100, "source_commit": SOURCE_COMMIT,
+            "archive_sha256": "d" * 64, "qualified": True,
+        }
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+        release_gate.verify_release_gate_report(report, require_promotable=True)
+        del report["artifacts"]["candidate_archive"]
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+        with self.assertRaisesRegex(ValueError, "candidate_archive"):
+            release_gate.verify_release_gate_report(report, require_promotable=True)
+
+    def test_installed_candidate_release_gate_verifies_platform_report_from_archive(self) -> None:
+        from scripts.tests.test_platform_acceptance import passing_matrix
+
+        def execute(command, *, cwd):
+            if "platform_acceptance.py" in " ".join(command):
+                return subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(codex_adoption_report()), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate("v2.0.2", release_version="2.0.2"):
+            root = Path(directory)
+            archive = root / "candidate.tar.gz"
+            archive_sha, content_digest = write_candidate_archive(archive)
+            matrix = passing_matrix()
+            matrix["validation_mode"] = "installed-candidate"
+            matrix["candidate_archive_sha256"] = archive_sha
+            hosted = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
+            hosted.clear()
+            hosted.update({"id": "hosted-ci", "status": "untested", "reason": "No hosted execution"})
+            for row in matrix["rows"]:
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                    row["package_sha256"] = archive_sha
+                    row["artifacts"]["plugin_archive"] = archive_sha
+            source = root / "matrix.json"
+            source.write_text(json.dumps(matrix), encoding="utf-8")
+            qualification = root / "qualification.json"
+            qualification.write_text(json.dumps(candidate_qualification_report(
+                archive_sha256=archive_sha, content_digest=content_digest,
+            )), encoding="utf-8")
+            report = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertTrue(report["promotable"])
+            self.assertEqual(report["validation_mode"], "installed-candidate")
+            self.assertEqual(report["artifacts"]["candidate_archive"]["sha256"], archive_sha)
+            release_gate.verify_release_gate_report(report, require_promotable=True)
+
+            skeletal = candidate_qualification_report(
+                archive_sha256=archive_sha, content_digest=content_digest,
+            )
+            del skeletal["native_thread_resume"]
+            qualification.write_text(json.dumps(skeletal), encoding="utf-8")
+            incomplete = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "incomplete-gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(incomplete["promotable"])
+            self.assertEqual(incomplete["gates"][0]["status"], "failed")
+
+            wrong_sha, wrong_content_digest = write_candidate_archive(archive, source_commit="b" * 40)
+            matrix["candidate_archive_sha256"] = wrong_sha
+            for row in matrix["rows"]:
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                    row["package_sha256"] = wrong_sha
+                    row["artifacts"]["plugin_archive"] = wrong_sha
+            source.write_text(json.dumps(matrix), encoding="utf-8")
+            bad_qualification = json.loads(qualification.read_text())
+            bad_qualification["archive_sha256"] = wrong_sha
+            bad_qualification["content_digest"] = wrong_content_digest
+            qualification.write_text(json.dumps(bad_qualification), encoding="utf-8")
+            rejected = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "bad-gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(rejected["promotable"])
+            self.assertEqual(rejected["gates"][0]["status"], "failed")
+
+            wrong_version_sha, wrong_version_digest = write_candidate_archive(archive, version="2.0.3")
+            matrix["candidate_archive_sha256"] = wrong_version_sha
+            for row in matrix["rows"]:
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                    row["package_sha256"] = wrong_version_sha
+                    row["artifacts"]["plugin_archive"] = wrong_version_sha
+            source.write_text(json.dumps(matrix), encoding="utf-8")
+            bad_qualification.update(archive_sha256=wrong_version_sha,
+                                     content_digest=wrong_version_digest, version="2.0.3")
+            qualification.write_text(json.dumps(bad_qualification), encoding="utf-8")
+            wrong_version = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "wrong-version-gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(wrong_version["promotable"])
+            self.assertEqual(wrong_version["gates"][0]["status"], "failed")
+
+            archive.write_bytes(b"not a plugin archive")
+            invalid_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            matrix["candidate_archive_sha256"] = invalid_sha
+            for row in matrix["rows"]:
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                    row["package_sha256"] = invalid_sha
+                    row["artifacts"]["plugin_archive"] = invalid_sha
+            source.write_text(json.dumps(matrix), encoding="utf-8")
+            bad_qualification["archive_sha256"] = invalid_sha
+            qualification.write_text(json.dumps(bad_qualification), encoding="utf-8")
+            invalid = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "invalid-gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(invalid["promotable"])
+            self.assertEqual(invalid["gates"][0]["status"], "failed")
+
+    def test_success_code_without_installed_candidate_report_does_not_promote(self) -> None:
+        def succeed(command, *, cwd):
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate("v2.0.2", release_version="2.0.2"):
+            root = Path(directory)
+            matrix = root / "matrix.json"
+            archive = root / "candidate.tar.gz"
+            matrix.write_text("{}", encoding="utf-8")
+            archive.write_bytes(b"candidate")
+            qualification = root / "qualification.json"
+            qualification.write_text("{}", encoding="utf-8")
+            report = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "gate", executor=succeed,
+                platform_matrix=matrix, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(report["promotable"])
+            self.assertEqual(report["gates"][0]["status"], "failed")
 
     def test_failure_blocks_later_gates_and_promotion(self) -> None:
         call_count = 0

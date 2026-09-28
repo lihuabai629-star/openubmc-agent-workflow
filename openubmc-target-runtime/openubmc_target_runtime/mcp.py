@@ -20,6 +20,7 @@ from typing import Protocol, TypeVar
 import uuid
 
 from .configuration import configuration_request
+from .credential_memory import credential_memory_request
 from .contracts import (
     RUNTIME_API_VERSION,
     CredentialSelector,
@@ -33,6 +34,7 @@ from .agent_gateway import (
     agent_operation_descriptors,
     render_execute_turn_text,
 )
+from .agent_input import AgentInputAdapter
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
     AssuranceUnavailable,
@@ -61,6 +63,7 @@ from .compatibility import (
     CompatibilityTelemetryRepository,
 )
 from .composition import RuntimeCompositionOptions, compose_runtime
+from .tracing import RunTracer
 from .domain_runtime import (
     canonicalize_tool_arguments,
     validate_boolean_argument_types,
@@ -451,7 +454,7 @@ class _OrchestratedMcpTask:
                     self._last_persisted_digest = ""
                     self._last_persisted_at = 0.0
                     self._failed_persisted_digest = digest
-                    self._persistence_error = f"{type(exc).__name__}: {exc}"
+                    self._persistence_error = type(exc).__name__
                 return
             with self._lock:
                 self._last_persisted_digest = digest
@@ -482,7 +485,7 @@ class _OrchestratedMcpTask:
         try:
             raw = self._state_store.load(self.task_id)
         except Exception as exc:
-            self._persistence_error = f"{type(exc).__name__}: {exc}"
+            self._persistence_error = type(exc).__name__
             return
         if raw is None:
             return
@@ -592,7 +595,7 @@ class _OrchestratedMcpTask:
                 self._last_persisted_digest = self._context_digest(context)
                 self._last_persisted_at = time.monotonic()
         except Exception as exc:
-            self._persistence_error = f"{type(exc).__name__}: {exc}"
+            self._persistence_error = type(exc).__name__
             self._state_store.delete(self.task_id)
 
     @staticmethod
@@ -1503,13 +1506,16 @@ class _OrchestratedMcpTask:
             self._mutation_outcomes.clear()
             self._mutation_journal_identities.clear()
             self._target_arguments.clear()
-        for tool_name, resource in resources:
-            backend = self.tool_backends[tool_name]
-            key = id(backend)
-            if key in seen:
-                continue
-            seen.add(key)
-            backend.close_task(resource)
+        try:
+            for tool_name, resource in resources:
+                backend = self.tool_backends[tool_name]
+                key = id(backend)
+                if key in seen:
+                    continue
+                seen.add(key)
+                backend.close_task(resource)
+        finally:
+            self._credential_resolver.forget_task(self.task_id)
 
 
 class OrchestratedMcpBackend:
@@ -2166,12 +2172,19 @@ class RuntimeMcpService:
         ]
         | None = None,
         artifact_store: LocalArtifactStore | None = None,
+        credential_memory=None,
+        host_continuity=None,
+        tracing: RunTracer | None = None,
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
         if selected_context_mode not in {"authoritative", "shadow"}:
             raise ValueError("context_mode must be authoritative or shadow")
         self.backend = backend
+        self._agent_input = AgentInputAdapter()
+        self.credential_memory = credential_memory
+        self.host_continuity = host_continuity
+        self.tracing = tracing or RunTracer()
         self.context_mode = selected_context_mode
         self.registry: TaskRunRegistry[TaskT] = TaskRunRegistry(
             factory=backend.open_task,
@@ -2217,6 +2230,7 @@ class RuntimeMcpService:
                     artifact_store
                     or getattr(backend, "artifact_store", None)
                 ),
+                tracing=self.tracing,
             ),
         )
         bind_artifact_store = getattr(backend, "bind_artifact_store", None)
@@ -2288,9 +2302,7 @@ class RuntimeMcpService:
                 self._context_maintenance_last_error = ""
             except Exception as exc:
                 self._context_maintenance_failures += 1
-                self._context_maintenance_last_error = (
-                    f"{type(exc).__name__}: {exc}"
-                )[:2048]
+                self._context_maintenance_last_error = type(exc).__name__
             self._context_maintenance_attempts += 1
             self._last_context_maintenance_at = now
         finally:
@@ -3075,6 +3087,7 @@ class RuntimeMcpService:
 
     @configuration_request()
     @secret_redaction_request()
+    @credential_memory_request
     def call_exposed_tool(
         self,
         name: str,
@@ -3090,19 +3103,53 @@ class RuntimeMcpService:
         require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             bounded_request(arguments)
+            arguments = self._agent_input.normalize(
+                name, arguments, task_id=task_id
+            )
+            bounded_request(arguments)
+            require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             if name == "observe":
-                return self._runtime.agent.observe(
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
+                with self.tracing.span("mcp.observe", task_id=task_id):
+                    return self._runtime.agent.observe(
+                        arguments,
+                        task_id=task_id,
+                        operation_id=operation_id,
+                    )
             if name == "execute":
-                return self._runtime.agent.execute(
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
+                raw_run_id = arguments.get("run_id")
+                run_id = raw_run_id if isinstance(raw_run_id, str) else ""
+                with self.tracing.span("mcp.execute", task_id=task_id, run_id=run_id) as span:
+                    result = self._runtime.agent.execute(
+                        arguments,
+                        task_id=task_id,
+                        operation_id=operation_id,
+                    )
+                    if isinstance(result.get("run_id"), str):
+                        span.bind_run(result["run_id"])
+                self._agent_input.remember(task_id, result)
+                if self.host_continuity is not None:
+                    from .host_continuity import HostAnnotatedResult, SCHEMA
+
+                    try:
+                        with self.tracing.span(
+                            "host.capture", task_id=task_id,
+                            run_id=result.get("run_id", ""),
+                        ):
+                            metadata = self.host_continuity.capture(
+                                task_id, result,
+                                read_run=self._runtime.operator.read_case_projection,
+                            )
+                    except Exception as exc:
+                        # Host persistence cannot invalidate an already-executed Effect.
+                        # Do not leak the exception's arguments or encourage a new start.
+                        metadata = {"schema": SCHEMA, "status": "unavailable",
+                                    "error_type": type(exc).__name__,
+                                    "run_id": result.get("run_id", ""),
+                                    "next": "Preserve this Run identity; repair host storage. "
+                                            "Do not repeat the device operation."}
+                    return HostAnnotatedResult(result, metadata)
+                return result
             raise ValueError(f"unknown Agent operation: {name}")
         self.interface_catalog.validate_arguments(name, arguments)
         return self.call_tool(
@@ -3206,6 +3253,7 @@ class RuntimeMcpService:
 
     @configuration_request()
     @secret_redaction_request()
+    @credential_memory_request
     def call_tool(
         self,
         name: str,
@@ -3446,6 +3494,7 @@ class RuntimeMcpService:
         return self.registry.cancel_operation(task_id, operation_id)
 
     def complete_task(self, task_id: str) -> bool:
+        self._agent_input.forget(task_id)
         completed = self.registry.complete(task_id)
         if not completed:
             self._runtime.operator.unbind_task(task_id)
@@ -3461,6 +3510,12 @@ class RuntimeMcpService:
         operation_id: str,
     ) -> Mapping[str, object]:
         if name in {"observe", "execute"}:
+            try:
+                arguments = self._agent_input.normalize(
+                    name, arguments, task_id=task_id
+                )
+            except (TypeError, ValueError):
+                pass
             return self._runtime.agent.error(
                 name,
                 exc,
@@ -3475,8 +3530,10 @@ class RuntimeMcpService:
         )
 
     def close(self) -> None:
+        self._agent_input.clear()
         self._runtime.lifecycle.close()
         self.registry.close()
+        self.tracing.close()
 
 
 class JsonRpcMcpEndpoint:
@@ -3496,7 +3553,10 @@ class JsonRpcMcpEndpoint:
             return self.session_task_id
         metadata = params.get("_meta")
         if isinstance(metadata, Mapping):
-            for key in ("codex/taskId", "taskId", "task_id"):
+            # Native Codex 0.153.4 sends threadId on each tools/call. It does
+            # not export CODEX_THREAD_ID to its stdio MCP child. Bind the same
+            # identity used by SessionStart/Stop hooks; keep legacy aliases.
+            for key in ("codex/taskId", "taskId", "task_id", "threadId"):
                 value = metadata.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
@@ -3840,6 +3900,10 @@ class JsonRpcMcpEndpoint:
                 result["structuredContent"] = value.envelope
         elif isinstance(value, dict):
             result["structuredContent"] = value
+        from .host_continuity import HostAnnotatedResult, META_KEY
+
+        if isinstance(value, HostAnnotatedResult):
+            result["_meta"] = {META_KEY: value.host_metadata}
         return result
 
     def handle(self, message: Mapping[str, object]) -> dict[str, object] | None:
