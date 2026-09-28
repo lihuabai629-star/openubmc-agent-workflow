@@ -6,7 +6,9 @@ const crypto = require("crypto");
 
 const SCHEMA = "openubmc.execution-routing/v1";
 const RUNTIME_TOOLS = new Set(["observe", "execute"]);
-const MAX_MCP_LINE_BYTES = 256 * 1024;
+// The Runtime's 256 KiB budget applies to arguments.  JSON-RPC framing and
+// encoding whitespace need their own bounded allowance on the transport line.
+const MAX_MCP_LINE_BYTES = 512 * 1024;
 const MAX_ARGUMENT_BYTES = 256 * 1024;
 const MAX_ARGUMENT_NODES = 8192;
 const MAX_ARGUMENT_DEPTH = 32;
@@ -18,11 +20,15 @@ function canonicalArguments(value) {
   let nodes = 0;
   function visit(item, depth) {
     nodes += 1;
-    if (depth > MAX_ARGUMENT_DEPTH || nodes > MAX_ARGUMENT_NODES) {
+    if (nodes > MAX_ARGUMENT_NODES) {
       throw new Error("routing_request_too_large");
     }
-    if (Array.isArray(item)) return item.map((child) => visit(child, depth + 1));
+    if (Array.isArray(item)) {
+      if (depth > MAX_ARGUMENT_DEPTH) throw new Error("routing_request_too_large");
+      return item.map((child) => visit(child, depth + 1));
+    }
     if (item !== null && typeof item === "object") {
+      if (depth > MAX_ARGUMENT_DEPTH) throw new Error("routing_request_too_large");
       const canonical = Object.create(null);
       for (const key of Object.keys(item).sort()) canonical[key] = visit(item[key], depth + 1);
       return canonical;

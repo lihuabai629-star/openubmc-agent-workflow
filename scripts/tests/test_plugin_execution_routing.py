@@ -7,8 +7,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "openubmc-target-runtime"))
+from openubmc_target_runtime.semantic_runtime import bounded_request
 
 if __package__:
     from .plugin_fixture import package_fixture
@@ -158,6 +162,26 @@ for line in sys.stdin:
         replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
         self.assertEqual(replies[3]["result"]["structuredContent"], {"status": "fixture"})
         self.assertEqual(call_log.read_text(), "observe\n")
+
+    def test_runtime_accepted_argument_at_byte_limit_survives_json_rpc_envelope(self) -> None:
+        arguments = {"a": "x" * 131050, "b": "y" * 131050}
+        bounded_request(arguments)
+        result, call_log = self.invoke(windows=False, healthy=True, arguments=arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+        self.assertEqual(replies[3]["result"]["structuredContent"], {"status": "fixture"})
+        self.assertEqual(call_log.read_text(), "execute\n")
+
+    def test_runtime_accepted_depth_does_not_count_terminal_scalar(self) -> None:
+        arguments = {"leaf": "fixture"}
+        for _ in range(32):
+            arguments = {"next": arguments}
+        bounded_request(arguments)
+        result, call_log = self.invoke(windows=False, healthy=True, arguments=arguments)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+        self.assertEqual(replies[3]["result"]["structuredContent"], {"status": "fixture"})
+        self.assertEqual(call_log.read_text(), "execute\n")
 
     def test_unhealthy_protocol_blocks_runtime_call_before_backend(self) -> None:
         result, call_log = self.invoke(windows=False, healthy=False)
