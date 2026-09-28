@@ -97,7 +97,7 @@ def verify_private_path(path: Path, *, safe_parent: bool = False) -> None:
     owner = ctypes.c_void_p()
     dacl = ctypes.c_void_p()
     descriptor = ctypes.c_void_p()
-    result = advapi.GetNamedSecurityInfoW(str(path), 1, 0x00000001 | 0x00000004,
+    result = advapi.GetNamedSecurityInfoW(str(path), 1, 1 | 4,
                                           ctypes.byref(owner), None, ctypes.byref(dacl),
                                           None, ctypes.byref(descriptor))
     if result:
@@ -114,7 +114,8 @@ def verify_private_path(path: Path, *, safe_parent: bool = False) -> None:
         if not advapi.GetAclInformation(dacl, ctypes.byref(size), ctypes.sizeof(size), 2):
             raise WindowsPrivateError("Cannot inspect Windows access entries")
         trusted = {user_sid, "S-1-3-4", "S-1-5-18", "S-1-5-32-544"}  # Owner Rights, SYSTEM, Administrators.
-        unsafe_parent_rights = 0x10000000 | 0x40000000 | 0x000D0000 | 0x00000156
+        # Generic all/write, delete, ACL/owner changes, and directory writes.
+        unsafe_parent_rights = (1 << 28) | (1 << 30) | (13 << 16) | 342
         for index in range(size.ace_count):
             ace = ctypes.c_void_p()
             if not advapi.GetAce(dacl, index, ctypes.byref(ace)):
@@ -140,7 +141,7 @@ def _harden(path: Path, *, directory: bool) -> None:
         ["icacls.exe", str(path), "/inheritance:r", "/grant:r",
          f"*{sid}{suffix}", f"*S-1-5-18{suffix}", f"*S-1-5-32-544{suffix}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=0x08000000, timeout=10,
+        creationflags=1 << 27, timeout=10,  # CREATE_NO_WINDOW
     )
     if result.returncode:
         raise WindowsPrivateError("Cannot establish current-user Windows access")

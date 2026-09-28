@@ -26,7 +26,8 @@ def _windows_process_handle(process_id: int, *, terminate: bool = False):
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
-    access = 0x1000 | 0x00100000 | (0x0001 if terminate else 0)
+    # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_TERMINATE.
+    access = (1 << 12) | (1 << 20) | (1 if terminate else 0)
     return kernel, kernel.OpenProcess(access, False, process_id)
 
 
