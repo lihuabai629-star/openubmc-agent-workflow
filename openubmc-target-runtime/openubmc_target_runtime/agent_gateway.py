@@ -1934,6 +1934,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
         "required": ["target", "selectors"],
         "properties": {
             "target": {"type": "string", "minLength": 1, "maxLength": 512},
+            "ssh_port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 22},
             "selectors": {
                 "type": "array",
                 "minItems": 1,

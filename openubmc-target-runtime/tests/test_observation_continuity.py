@@ -63,6 +63,32 @@ def start(service, *, task="continuity", operation="start-1", target="192.0.2.90
 
 
 class ObservationContinuityTests(unittest.TestCase):
+    def test_observe_binds_nondefault_ssh_port_to_scope_and_runtime(self):
+        backend = ScopedBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.90",
+                    "ssh_port": 2222,
+                    "selectors": [
+                        {"id": "ssh", "kind": "capability", "names": ["ssh"]},
+                        {"id": "mdb", "kind": "mdb", "queries": ["lsprop Object0"]},
+                    ],
+                },
+                task_id="nondefault-ssh-port",
+                operation_id="observe-port-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["scope"]["ssh_port"], 2222)
+        self.assertEqual(
+            [arguments["ssh_port"] for name, arguments in backend.calls if name == "debug_collect"],
+            [2222],
+        )
+
     def test_start_discovers_ref_and_replay_keeps_original_caller_identity(self):
         backend = ScopedBackend()
         service = RuntimeMcpService(backend)

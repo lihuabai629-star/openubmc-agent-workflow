@@ -655,6 +655,7 @@ class ObservationQuery:
     freshness_mode: str = "live"
     max_age_seconds: int = 0
     deadline: float = 180.0
+    ssh_port: int = 22
 
     @classmethod
     def from_query(cls, query: Mapping[str, object]) -> "ObservationQuery":
@@ -664,6 +665,7 @@ class ObservationQuery:
             "selectors",
             "freshness",
             "deadline",
+            "ssh_port",
         }
         if unexpected:
             field = sorted(unexpected)[0]
@@ -672,7 +674,7 @@ class ObservationQuery:
                 + ", ".join(sorted(unexpected)),
                 reason=PreflightReason.UNDECLARED_FIELD,
                 field=field,
-                limit={"allowed_fields": ["target", "selectors", "freshness", "deadline"]},
+                limit={"allowed_fields": ["target", "selectors", "freshness", "deadline", "ssh_port"]},
             )
         raw_target = query.get("target")
         if not isinstance(raw_target, str):
@@ -818,12 +820,21 @@ class ObservationQuery:
                 field="deadline",
                 limit={"exclusive_minimum": 0},
             )
+        ssh_port = query.get("ssh_port", 22)
+        if type(ssh_port) is not int or not 1 <= ssh_port <= 65535:
+            raise AgentPreflightError(
+                "ssh_port must be an integer between 1 and 65535",
+                reason=PreflightReason.WRONG_TYPE,
+                field="ssh_port",
+                limit={"type": "integer", "minimum": 1, "maximum": 65535},
+            )
         contract = cls(
             target=target,
             selectors=selectors,
             freshness_mode=freshness_mode,
             max_age_seconds=max_age,
             deadline=numeric_deadline,
+            ssh_port=ssh_port,
         )
         return contract
 
@@ -841,6 +852,7 @@ class ObservationQuery:
                     "mode": self.freshness_mode,
                     "max_age_seconds": self.max_age_seconds,
                 },
+                **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
             }
 
         for selector in self.selectors:
@@ -880,6 +892,7 @@ class ObservationQuery:
                 freshness_mode=self.freshness_mode,
                 max_age_seconds=self.max_age_seconds,
                 deadline=self.deadline,
+                ssh_port=self.ssh_port,
             )
             for batch in batches
         )
@@ -894,6 +907,7 @@ class ObservationQuery:
         return {
             "ip": self.target,
             "deadline": self.deadline,
+            **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
             "mdb_queries": queries,
             "mdb_only": True,
             "_agent_capability_names": [
@@ -917,6 +931,7 @@ class ObservationQuery:
                 "mode": self.freshness_mode,
                 "max_age_seconds": self.max_age_seconds,
             },
+            **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
         }
 
 
