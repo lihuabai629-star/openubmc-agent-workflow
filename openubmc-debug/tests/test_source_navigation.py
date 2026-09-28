@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -134,6 +135,19 @@ class SourceNavigationTests(unittest.TestCase):
         self.assertFalse(any(item.get("source", {}).get("applicability") == "product_source_candidate"
                              for item in fused["results"] if item["kind"] == "knowledge_candidate"))
 
+    def test_kb_fusion_respects_small_budget_and_keeps_a_local_source(self):
+        self.fixtures()
+        receipt = {"result": {"references": [
+            {"reference_id": "one", "file_path": "kb/one.md"},
+            {"reference_id": "two", "file_path": "kb/two.md"},
+        ]}}
+        one = self.navigate("Drive update error", kb_receipt=receipt, max_results=1)
+        self.assertEqual(len(one["results"]), 1)
+        self.assertEqual(one["source_count"], 1)
+        two = self.navigate("Drive update error", kb_receipt=receipt, max_results=2)
+        self.assertEqual(len(two["results"]), 2)
+        self.assertEqual((two["source_count"], two["knowledge_count"]), (1, 1))
+
     def test_index_outage_uses_existing_search_with_provenance(self):
         self.fixtures()
         result = navigate_source(str(self.root), "0xE001", index_path=str(self.root), timeout=10)
@@ -160,6 +174,31 @@ class SourceNavigationTests(unittest.TestCase):
         self.fixtures()
         self.navigate("0xE001")
         self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
+
+    def test_unchanged_truncated_file_keeps_index_partial_until_reindexed(self):
+        repo = self.repository("product", {"long.lua": "local value = 1\n" * 20001})
+        first = self.navigate("value")
+        second = self.navigate("value")
+        self.assertEqual(first["index"]["warnings"], ["file_line_limit"])
+        self.assertEqual(second["index"]["updated_files"], 0)
+        self.assertEqual(second["index"]["status"], "partial")
+        self.assertIn("file_line_limit", second["index"]["warnings"])
+        (repo / "long.lua").write_text("local value = 1\n")
+        repaired = self.navigate("value")
+        self.assertEqual(repaired["index"]["updated_files"], 1)
+        self.assertEqual(repaired["index"]["status"], "ready")
+
+    def test_v1_cache_is_reindexed_before_claiming_complete_source(self):
+        self.repository("product", {"long.lua": "local value = 1\n" * 20001})
+        first = self.navigate("value")
+        self.assertEqual(first["index"]["status"], "partial")
+        with sqlite3.connect(self.index) as connection:
+            connection.execute("UPDATE index_meta SET value='1' WHERE key='version'")
+            connection.execute("UPDATE index_files SET warnings='[]'")
+        migrated = self.navigate("value")
+        self.assertEqual(migrated["index"]["updated_files"], 1)
+        self.assertEqual(migrated["index"]["status"], "partial")
+        self.assertIn("file_line_limit", migrated["index"]["warnings"])
 
     def test_fixed_fixture_improves_correct_top_source_over_baseline(self):
         self.fixtures()

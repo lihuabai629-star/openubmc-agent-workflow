@@ -552,7 +552,7 @@ def search_source_terms(
 # The index is a disposable local cache. SourceCatalog is deliberately consulted
 # after every query: branch, commit, catalog selection and matched-file dirty
 # state must describe the current checkout, not the last indexing pass.
-_INDEX_VERSION = "1"
+_INDEX_VERSION = "2"
 _INDEX_SUFFIXES = {
     ".lua", ".c", ".cc", ".cpp", ".h", ".hpp", ".json", ".yaml",
     ".yml", ".xml", ".ini", ".conf", ".toml",
@@ -604,7 +604,8 @@ def _index_connection(root: Path, index_path: Path) -> sqlite3.Connection:
     connection.executescript("""
         CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS index_files (
-            path TEXT PRIMARY KEY, digest TEXT NOT NULL, indexed_at TEXT NOT NULL
+            path TEXT PRIMARY KEY, digest TEXT NOT NULL, indexed_at TEXT NOT NULL,
+            warnings TEXT NOT NULL DEFAULT '[]'
         );
         CREATE TABLE IF NOT EXISTS index_lines (
             path TEXT NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL,
@@ -617,11 +618,20 @@ def _index_connection(root: Path, index_path: Path) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS index_tokens_path ON index_tokens(path);
     """)
     metadata = dict(connection.execute("SELECT key, value FROM index_meta"))
-    if metadata and metadata != {"version": _INDEX_VERSION, "root": str(root)}:
+    if metadata and (metadata.get("root") != str(root)
+                     or metadata.get("version") not in {"1", _INDEX_VERSION}):
         connection.close()
         raise SourceIndexUnavailable("index_identity_mismatch")
-    if not metadata:
-        with connection:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(index_files)")}
+    with connection:
+        if "warnings" not in columns:
+            connection.execute("ALTER TABLE index_files ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]'")
+        if metadata.get("version") == "1":
+            # A v1 cache did not retain its incomplete-file warnings. Reindex
+            # those files before it can claim a complete result again.
+            connection.execute("UPDATE index_files SET digest='' ")
+            connection.execute("UPDATE index_meta SET value=? WHERE key='version'", (_INDEX_VERSION,))
+        if not metadata:
             connection.executemany("INSERT INTO index_meta(key, value) VALUES (?, ?)",
                                    [("version", _INDEX_VERSION), ("root", str(root))])
     return connection
@@ -680,19 +690,30 @@ def _sync_source_index(
                     if bytes_read > 64 * 1024 * 1024:
                         raise SourceIndexUnavailable("index_total_byte_limit")
                     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-                    previous = connection.execute("SELECT digest FROM index_files WHERE path=?", (relative,)).fetchone()
+                    previous = connection.execute(
+                        "SELECT digest, warnings FROM index_files WHERE path=?", (relative,)
+                    ).fetchone()
                     if previous and previous[0] == digest:
+                        try:
+                            cached_warnings = json.loads(previous[1])
+                        except (TypeError, ValueError) as exc:
+                            raise SourceIndexUnavailable("invalid_cached_warnings") from exc
+                        if (not isinstance(cached_warnings, list)
+                                or not all(isinstance(value, str) for value in cached_warnings)):
+                            raise SourceIndexUnavailable("invalid_cached_warnings")
+                        warnings.update(cached_warnings)
                         unchanged += 1
                         continue
                     _remove_index_file(connection, relative)
                     text = raw.decode("utf-8", errors="replace")
                     lines = []
                     tokens = []
+                    file_warnings: set[str] = set()
                     for number, line in enumerate(text.splitlines(), 1):
                         if number % 1024 == 0 and time.monotonic() >= deadline:
                             raise SourceIndexUnavailable("index_time_limit")
                         if number > 20000:
-                            warnings.add("file_line_limit")
+                            file_warnings.add("file_line_limit")
                             break
                         lines.append((relative, number, line[:_SOURCE_LINE_LIMIT]))
                         unique = set()
@@ -704,12 +725,15 @@ def _sync_source_index(
                             unique.update(part for part in re.split(r":{2}|[.:/]", token)
                                           if len(part) >= 3)
                         if len(unique) > 256:
-                            warnings.add("line_token_limit")
+                            file_warnings.add("line_token_limit")
                         tokens.extend((token, relative, number) for token in sorted(unique)[:256])
                     connection.executemany("INSERT INTO index_lines(path, line, text) VALUES (?, ?, ?)", lines)
                     connection.executemany("INSERT INTO index_tokens(token, path, line) VALUES (?, ?, ?)", tokens)
-                    connection.execute("INSERT INTO index_files(path, digest, indexed_at) VALUES (?, ?, ?)",
-                                       (relative, digest, _utc_now()))
+                    connection.execute(
+                        "INSERT INTO index_files(path, digest, indexed_at, warnings) VALUES (?, ?, ?, ?)",
+                        (relative, digest, _utc_now(), json.dumps(sorted(file_warnings))),
+                    )
+                    warnings.update(file_warnings)
                     updated += 1
             for (relative,) in connection.execute("SELECT path FROM index_files").fetchall():
                 if relative not in seen:
@@ -919,7 +943,8 @@ def navigate_source(
         index_status["fallback_method"] = search.get("method")
         index_status["fallback_code"] = search.get("code")
     ranked = _rank_source_matches(matches, query)
-    reserve_kb = min(2, len(knowledge)) if not _query_tokens(query)[1] else 0
+    reserve_kb = (min(2, len(knowledge), max_results - (1 if ranked else 0))
+                  if not _query_tokens(query)[1] else 0)
     selected = ranked[:max_results - reserve_kb]
     remaining = max_results - len(selected)
     selected.extend(knowledge[:remaining])

@@ -16,7 +16,10 @@ from typing import Mapping
 
 BATCH_SCHEMA = "openubmc-debug.evidence-batch.v1"
 MAX_EVENTS = 2048
-_LOG_TIME = re.compile(r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:Z|[+-]\d\d:?\d\d)?")
+_LOG_TIME = re.compile(
+    r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d"
+    r"(?:\.\d{1,6})?(?:Z|[+-]\d\d:?\d\d)?(?=$|\s)"
+)
 
 
 def _result(value: Mapping[str, object]) -> Mapping[str, object]:
@@ -162,6 +165,11 @@ def summarize_captured_snapshot(
             })
     groups = _collapse(items)
     uncertainties: set[str] = set()
+    captured_targets = (alarms.get("ip"), logs.get("ip"))
+    if any(not isinstance(value, str) or not value.strip() for value in captured_targets):
+        uncertainties.add("target_source_unknown")
+    elif not target or any(value != target for value in captured_targets):
+        uncertainties.add("target_source_conflict")
     if offset_conflict:
         uncertainties.add("timezone_offset_conflict")
     elif offset is not None and not offset_valid:
@@ -183,7 +191,9 @@ def summarize_captured_snapshot(
         "schema": BATCH_SCHEMA,
         "target": target, "source_version": source_version, "target_epoch": target_epoch,
         "utc_offset_minutes": offset if offset_valid else None,
-        "collection_complete": "partial_collection" not in uncertainties,
+        "collection_complete": not bool(uncertainties & {
+            "partial_collection", "target_source_unknown", "target_source_conflict",
+        }),
         "counts": {"raw": len(items), "unique": len(groups),
                    "duplicates_collapsed": len(items) - len(groups)},
         "uncertainties": sorted(uncertainties), "groups": groups,
@@ -211,6 +221,9 @@ def compare_snapshots(before: Mapping[str, object], after: Mapping[str, object])
             reasons.append(conflict)
     if before.get("collection_complete") is not True or after.get("collection_complete") is not True:
         reasons.append("partial_collection")
+    for reason in ("target_source_unknown", "target_source_conflict"):
+        if reason in before.get("uncertainties", []) or reason in after.get("uncertainties", []):
+            reasons.append(reason)
     result: dict[str, object] = {"comparable": not reasons, "status": "comparable" if not reasons else "incomparable",
                                  "reasons": reasons, "added": [], "removed": [], "changed": None}
     if reasons:

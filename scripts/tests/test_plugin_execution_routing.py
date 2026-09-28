@@ -82,6 +82,7 @@ for line in sys.stdin:
     def invoke(
         self, *, windows: bool, healthy: bool, doctor_tools: list[str] | None = None,
         arguments: dict | None = None, raw_input: str | None = None,
+        tool_name: str = "execute",
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         call_log = self.root / f"calls-{'windows' if windows else 'linux'}-{'healthy' if healthy else 'unhealthy'}"
         call_log.unlink(missing_ok=True)
@@ -103,7 +104,7 @@ for line in sys.stdin:
              "params": {"protocolVersion": "2024-11-05"}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-             "params": {"name": "execute", "arguments": arguments if arguments is not None else {
+             "params": {"name": tool_name, "arguments": arguments if arguments is not None else {
                  "kind": "start", "intent": "diagnosis-only", "target": "fixture.invalid"}}},
         ]
         if not healthy:
@@ -144,6 +145,19 @@ for line in sys.stdin:
         self.assertEqual(audit["execution_host"], "wsl")
         self.assertEqual(audit["selected_wsl"], "Ubuntu-24.04")
         self.assertEqual(audit["protocol"]["probe"], "initialize/tools/list")
+
+    def test_runtime_accepted_wide_read_only_observation_reaches_installed_backend(self) -> None:
+        selectors = [{"id": f"mdb-{index}", "kind": "mdb", "queries": [
+            f"lsprop Object{index}_{query}_" + "x" * 145 for query in range(32)
+        ]} for index in range(16)]
+        arguments = {"target": "192.0.2.10", "selectors": selectors}
+        self.assertGreater(len(json.dumps(arguments).encode()), 64 * 1024)
+        result, call_log = self.invoke(windows=False, healthy=True, arguments=arguments,
+                                       tool_name="observe")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+        self.assertEqual(replies[3]["result"]["structuredContent"], {"status": "fixture"})
+        self.assertEqual(call_log.read_text(), "observe\n")
 
     def test_unhealthy_protocol_blocks_runtime_call_before_backend(self) -> None:
         result, call_log = self.invoke(windows=False, healthy=False)
@@ -194,7 +208,7 @@ for line in sys.stdin:
         self.assertFalse(call_log.exists())
 
         too_large = {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                     "params": {"name": "execute", "arguments": {"password": "x" * (130 * 1024)}}}
+                     "params": {"name": "execute", "arguments": {"password": "x" * (300 * 1024)}}}
         oversized, call_log = self.invoke(windows=False, healthy=True,
                                           raw_input=json.dumps(too_large) + "\n")
         self.assertEqual(oversized.returncode, 0, oversized.stderr)
@@ -204,10 +218,10 @@ for line in sys.stdin:
         self.assertNotIn("openubmc-routing ", oversized.stderr)
 
     def test_argument_size_and_depth_limits_block_before_forwarding(self) -> None:
-        arguments = {"payload": "x" * (65 * 1024)}
+        arguments = {"payload": "x" * (260 * 1024)}
         oversized, call_log = self.invoke(windows=False, healthy=True, arguments=arguments)
-        replies = {item["id"]: item for item in map(json.loads, oversized.stdout.splitlines())}
-        self.assertEqual(replies[3]["error"]["message"], "routing_request_too_large")
+        replies = list(map(json.loads, oversized.stdout.splitlines()))
+        self.assertEqual(replies[0]["error"]["message"], "routing_request_too_large")
         self.assertFalse(call_log.exists())
         nested = {"leaf": "fixture"}
         for _ in range(34):

@@ -109,6 +109,24 @@ class EvidenceBatchTests(unittest.TestCase):
         self.assertIn("timezone_offset_conflict", conflicted["uncertainties"])
         self.assertIn("time_timezone_unknown", conflicted["uncertainties"])
 
+    def test_explicit_fractional_timestamp_preserves_precision_and_offset(self):
+        observed = normalize_timestamp("2026-09-08T09:00:00.123+08:00 EventDemo", 0)
+        self.assertEqual(observed["status"], "known")
+        self.assertEqual(observed["utc"], "2026-09-08T01:00:00.123000+00:00")
+        self.assertEqual(observed["raw"], "2026-09-08T09:00:00.123+08:00")
+
+    def test_cross_target_captured_results_cannot_form_comparable_snapshot(self):
+        alarms, logs = captured(lines=[LINE])
+        correct = batch(alarms, logs)
+        logs["ip"] = "target-b"
+        mixed = batch(alarms, logs)
+        self.assertIn("target_source_conflict", mixed["uncertainties"])
+        self.assertFalse(mixed["collection_complete"])
+        compared = compare_snapshots(correct, mixed)
+        self.assertFalse(compared["comparable"])
+        self.assertIsNone(compared["changed"])
+        self.assertIn("target_source_conflict", compared["reasons"])
+
     def test_comparison_rejects_incompatible_snapshots_and_preserves_change_refs(self):
         alarms, logs = captured(lines=[LINE])
         before = batch(alarms, logs)

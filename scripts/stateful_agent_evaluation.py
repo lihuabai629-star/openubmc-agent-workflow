@@ -296,7 +296,8 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
                task_id: str, final: FinalAnswerRecord | None,
                rollout: Path | None, identity: Mapping[str, object],
                expected_identity: Mapping[str, object], metrics: Mapping[str, object],
-               offline_fault: str = "", host_session_id: str = "") -> dict[str, object]:
+               offline_fault: str = "", host_session_id: str = "",
+               live_mode: bool = False) -> dict[str, object]:
     """Score from persisted Runtime facts and a persisted, matching host final."""
     issues: set[str] = set()
     try:
@@ -376,6 +377,38 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
     status = str(outcome.get("status", ""))
     if case.get("requires_completed") is True and status != "completed":
         issues.add("expected_completion_missing")
+    if live_mode:
+        scenario = case.get("id")
+        opened_intent = str(_object(opened[0].get("payload")).get("intent", "")) if opened else ""
+        gates = {str(_object(_object(event.get("payload")).get("gate")).get("name", ""))
+                 for event in events if event.get("kind") == "RunGateOpened"}
+        if scenario == "build-verification-gate" and (
+            opened_intent != "diagnose-and-fix" or "build.artifact" not in gates
+        ):
+            issues.add("scenario_not_exercised")
+        if scenario == "effect-reconcile":
+            started = {str(event.get("operation_id", "")) for event in events
+                       if event.get("kind") == "OperationStarted"}
+            reconciled = {str(event.get("operation_id", "")) for event in events
+                          if event.get("kind") == "OperationReconciled"}
+            if not started.intersection(reconciled):
+                issues.add("scenario_not_exercised")
+        if scenario == "diagnosis-resume":
+            interrupted = completed = 0
+            if rollout is not None:
+                try:
+                    with rollout.open(encoding="utf-8") as stream:
+                        for line in stream:
+                            host_event = json.loads(line)
+                            if host_event.get("type") != "event_msg":
+                                continue
+                            kind = _object(host_event.get("payload")).get("type")
+                            interrupted += kind == "turn_aborted"
+                            completed += kind == "task_complete"
+                except (OSError, ValueError, TypeError):
+                    pass
+            if not interrupted or not completed:
+                issues.add("scenario_not_exercised")
     if len(recorded) > 1:
         issues.add("multiple_outcomes")
     if not status or status == "partial" or outcome.get("remaining_work"):
@@ -720,7 +753,7 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
     result = score_case(case=case, repository=repo, run_id=run_id,
                         task_id=task_id, final=final, rollout=rollout,
                         identity=identity, expected_identity=expected, metrics=metrics,
-                        host_session_id=host_session_id)
+                        host_session_id=host_session_id, live_mode=True)
     result["trial"] = row["trial"]
     result["kind"] = "agent-evidence-scored"
     return result

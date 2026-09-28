@@ -6,9 +6,9 @@ const crypto = require("crypto");
 
 const SCHEMA = "openubmc.execution-routing/v1";
 const RUNTIME_TOOLS = new Set(["observe", "execute"]);
-const MAX_MCP_LINE_BYTES = 128 * 1024;
-const MAX_ARGUMENT_BYTES = 64 * 1024;
-const MAX_ARGUMENT_NODES = 4096;
+const MAX_MCP_LINE_BYTES = 256 * 1024;
+const MAX_ARGUMENT_BYTES = 256 * 1024;
+const MAX_ARGUMENT_NODES = 8192;
 const MAX_ARGUMENT_DEPTH = 32;
 // Never serialize this key. A process-local MAC cannot be used for an offline
 // password guess after a routing receipt is logged or persisted by the Host.

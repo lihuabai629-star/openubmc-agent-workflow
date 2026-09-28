@@ -11,7 +11,9 @@ import sqlite3
 import time
 
 from .semantic_runtime import bounded_request, is_safe_runtime_id, project_run_turn
-from .terminal_delivery import TerminalAnswerStore, render_final_answer
+from .terminal_delivery import (
+    TerminalAnswerError, TerminalAnswerStore, audit_rollout_final, render_final_answer,
+)
 from .delivery_stage import DELIVERY_STAGES
 from .redaction import require_secret_free
 
@@ -247,9 +249,36 @@ class HostContinuity:
         if not outcome:
             raise ValueError("Runtime terminal Outcome unavailable")
         stage = self._facts(projection, run_id)["delivery_stage"]
+        handoff = self.handoff(task_id, read_run=read_run)
+        answers = [run["terminal_answer"] for run in handoff["runs"]
+                   if run.get("terminal_answer")]
+        requested = next((answer for answer in answers if answer["run_id"] == run_id), None)
+        if requested is None:
+            raise TerminalAnswerError("terminal answer is not available in task handoff")
+        pending = [answer for answer in answers if not answer["delivery_confirmed"]]
+        candidate_texts = list(dict.fromkeys((
+            "\n\n".join(answer["text"] for answer in answers),
+            "\n\n".join(answer["text"] for answer in pending),
+        )))
+        final = None
+        for text in candidate_texts:
+            if not text or (requested not in pending and text != candidate_texts[0]):
+                continue
+            try:
+                final = audit_rollout_final(
+                    path, task_id=task_id, prepared_at=requested["prepared_at"],
+                    expected_text=text,
+                )
+                break
+            except TerminalAnswerError:
+                continue
+        if final is None:
+            raise TerminalAnswerError("rollout final event is missing or interrupted")
         with self._database():
-            return self._answers(task_id, run_id).acknowledge_rollout(
-                path, task_id=task_id, run_id=run_id, outcome=outcome, delivery_stage=stage,
+            return self._answers(task_id, run_id).acknowledge(
+                task_id=task_id, run_id=run_id, outcome=outcome, delivery_stage=stage,
+                text=requested["text"], host_event_id=final[0], observed_at=final[2],
+                delivery_source="codex-rollout-v1",
             ).to_public_dict()
 
     def handle_hook(self, event: Mapping[str, object], *, read_run) -> dict[str, object]:

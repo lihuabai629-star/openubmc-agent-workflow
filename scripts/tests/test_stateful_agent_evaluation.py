@@ -276,6 +276,23 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
             self.assertEqual(result["issues"], [])
             self.assertTrue(result["host_final_confirmed"])
             self.assertEqual(result["runtime_status"], "completed")
+            for scenario_id in ("build-verification-gate", "effect-reconcile", "diagnosis-resume"):
+                with self.subTest(scenario_id=scenario_id):
+                    other_case = next(item for item in self.manifest["scenarios"]
+                                      if item["id"] == scenario_id)
+                    negative = evaluation.score_case(
+                        case=other_case, repository=evaluation.ReadOnlyTrialRepository(db),
+                        run_id=run_id, task_id=task_id, final=store.get(task_id),
+                        rollout=rollout,
+                        identity={**trial["identity"],
+                                  "fixture_target": self.manifest["fixture_target"]},
+                        expected_identity={**trial["identity"],
+                                           "fixture_target": self.manifest["fixture_target"]},
+                        metrics={"elapsed_seconds": 1.25, "input_tokens": 120,
+                                 "output_tokens": 30, "tool_calls": 2},
+                        live_mode=True,
+                    )
+                    self.assertIn("scenario_not_exercised", negative["issues"])
             no_usage_events = [item for item in events if item.get("payload", {}).get("type") != "token_count"]
             rollout.write_text("\n".join(json.dumps(item) for item in no_usage_events) + "\n")
             no_usage = evaluation.score_live_trial(

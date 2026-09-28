@@ -71,6 +71,58 @@ class HostContinuityTests(unittest.TestCase):
         ids = [run["terminal_answer"]["delivery_id"] for run in first["runs"] + second["runs"]]
         self.assertEqual(len(set(ids)), 3)
 
+    def test_combined_completed_final_confirms_each_ordered_run(self):
+        self.terminal()
+        for run in ("one", "two"):
+            self.capture(run)
+        handoff = self.store.handoff("task", read_run=self.read)
+        combined = "\n\n".join(run["terminal_answer"]["text"] for run in handoff["runs"])
+        self.assertEqual(self.store.handle_hook({"session_id": "task", "hook_event_name": "Stop",
+            "last_assistant_message": combined}, read_run=self.read), {})
+        timestamp = (datetime.fromisoformat(handoff["runs"][0]["terminal_answer"]["prepared_at"])
+                     + timedelta(seconds=1)).isoformat()
+        rollout = self.root / "combined-rollout.jsonl"
+        events = [
+            {"type": "session_meta", "payload": {"id": "task"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+            {"type": "response_item", "timestamp": timestamp, "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                "content": [{"type": "output_text", "text": combined}],
+            }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "turn"}},
+        ]
+        rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+        for run in ("one", "two"):
+            self.store.acknowledge_rollout("task", run, rollout, read_run=self.read)
+        self.assertTrue(all(run["terminal_answer"]["delivery_confirmed"] for run in
+                            self.store.handoff("task", read_run=self.read)["runs"]))
+
+    def test_multi_run_final_rejects_omitted_or_reordered_answers(self):
+        self.terminal()
+        for run in ("one", "two"):
+            self.capture(run)
+        answers = [run["terminal_answer"] for run in
+                   self.store.handoff("task", read_run=self.read)["runs"]]
+        timestamp = (datetime.fromisoformat(answers[0]["prepared_at"])
+                     + timedelta(seconds=1)).isoformat()
+        rollout = self.root / "incomplete-rollout.jsonl"
+        for text in (answers[0]["text"],
+                     "\n\n".join(answer["text"] for answer in reversed(answers))):
+            events = [
+                {"type": "session_meta", "payload": {"id": "task"}},
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+                {"type": "response_item", "timestamp": timestamp, "payload": {
+                    "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                    "content": [{"type": "output_text", "text": text}],
+                }},
+                {"type": "event_msg", "timestamp": timestamp,
+                 "payload": {"type": "task_complete", "turn_id": "turn"}},
+            ]
+            rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.store.acknowledge_rollout("task", "one", rollout, read_run=self.read)
+
     def test_repeated_capture_keeps_prepared_answer_identity(self):
         self.terminal("partial")
         self.projection["run_outcome"]["remaining_work"] = [{"summary": "build not verified"}]
