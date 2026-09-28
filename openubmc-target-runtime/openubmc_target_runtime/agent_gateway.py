@@ -2083,6 +2083,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "ssh_port": {"type": "integer", "minimum": 1, "maximum": 65535},
                     "telnet_port": {"type": "integer", "minimum": 1, "maximum": 65535},
                     "redfish_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "allow_insecure_tls": {"type": "boolean"},
                     "intent": {"type": "string", "minLength": 1},
                     "entry_operation": {"type": "string", "minLength": 1, "maxLength": 128},
                     "entry_arguments": {

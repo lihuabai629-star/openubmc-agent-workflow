@@ -214,6 +214,8 @@ class RuntimeSemanticAdapter:
         ):
             if port != default:
                 arguments[name] = port
+        if not command.allow_insecure_tls:
+            arguments["allow_insecure_tls"] = False
         selected_entry = command.entry_operation
         if command.intent == "upgrade-and-verify" and len(command.targets) > 1:
             if selected_entry not in {"", "upgrade_run", "upgrade_batch"}:

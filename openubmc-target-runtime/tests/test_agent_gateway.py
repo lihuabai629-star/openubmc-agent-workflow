@@ -2723,6 +2723,35 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(upgrade["redfish_port"], 8443)
         self.assertEqual(verification["ssh_port"], 2222)
 
+    def test_upgrade_start_can_require_tls_certificate_validation(self) -> None:
+        artifact = self.artifact_root / "tls-verified-fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "allow_insecure_tls": False,
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                },
+            },
+            task_id="upgrade-strict-tls",
+            operation_id="upgrade-strict-tls-start",
+        )
+        for index in range(8):
+            if any(name == "upgrade_run" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-strict-tls",
+                operation_id=f"upgrade-strict-tls-resume-{index}",
+            )
+        upgrade = next(arguments for name, arguments in self.backend.calls if name == "upgrade_run")
+        self.assertIs(upgrade["allow_insecure_tls"], False)
+
     def test_upgrade_start_legacy_entry_ports_reach_fresh_verification(self) -> None:
         artifact = self.artifact_root / "fixture.hpm"
         artifact.write_bytes(b"synthetic firmware")
@@ -2808,6 +2837,15 @@ class AgentGatewayTests(unittest.TestCase):
                     "target_epoch": 9,
                 },
                 "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "upgrade-and-verify",
+                    "allow_insecure_tls": "false",
+                },
+                "allow_insecure_tls must be a boolean",
             ),
             (
                 {

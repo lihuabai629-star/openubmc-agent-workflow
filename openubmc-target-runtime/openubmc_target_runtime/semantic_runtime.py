@@ -122,6 +122,7 @@ EXECUTE_ACTION_FIELD_TYPES = {
         "ssh_port": "integer",
         "telnet_port": "integer",
         "redfish_port": "integer",
+        "allow_insecure_tls": "boolean",
         "intent": "string",
         "entry_operation": "string",
         "entry_arguments": "object",
@@ -1141,6 +1142,7 @@ class StartRun:
     ssh_port: int = 22
     telnet_port: int = 23
     redfish_port: int = 443
+    allow_insecure_tls: bool = True
     targets: tuple[RunTarget, ...] = ()
     observation_ref: ObservationRef | None = None
     caller_deadline: float = 120.0
@@ -1323,6 +1325,7 @@ def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         **({"ssh_port": command.ssh_port} if command.ssh_port != 22 else {}),
         **({"telnet_port": command.telnet_port} if command.telnet_port != 23 else {}),
         **({"redfish_port": command.redfish_port} if command.redfish_port != 443 else {}),
+        **({"allow_insecure_tls": False} if not command.allow_insecure_tls else {}),
         "purpose": command.purpose,
         "delivery_strategy": command.delivery_strategy,
         "observation_ref": (
@@ -1573,6 +1576,8 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
             if expected == "object"
             else isinstance(value, list)
             if expected == "array"
+            else isinstance(value, bool)
+            if expected == "boolean"
             else isinstance(value, int) and not isinstance(value, bool)
             if expected == "integer"
             else isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -1823,6 +1828,7 @@ def decode_run_command(
             ssh_port=ports["ssh_port"],
             telnet_port=ports["telnet_port"],
             redfish_port=ports["redfish_port"],
+            allow_insecure_tls=action.get("allow_insecure_tls", True),
             targets=targets,
             observation_ref=observation_ref,
             caller_deadline=caller_deadline,
