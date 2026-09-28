@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -136,7 +137,10 @@ class MutationRecoveryTests(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
                 process.communicate(timeout=1)
-                self.assertLess(process.returncode, 0)
+                if os.name == "nt":
+                    self.assertNotEqual(process.returncode, 0)
+                else:
+                    self.assertLess(process.returncode, 0)
 
                 store = MutationJournalStore(root / "journals")
                 journal = store.load("crash-task", "crash-effect-1")

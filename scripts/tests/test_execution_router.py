@@ -17,7 +17,7 @@ from scripts.execution_router import (  # noqa: E402
 )
 
 
-def healthy(host: str = "wsl") -> ProtocolProbe:
+def healthy(host: str = "windows-native") -> ProtocolProbe:
     return probe_protocol(
         "diagnose", host=host,
         initialize=lambda: {"protocolVersion": "2025-03-26"},
@@ -26,7 +26,7 @@ def healthy(host: str = "wsl") -> ProtocolProbe:
 
 
 class ExecutionRouterTests(unittest.TestCase):
-    def test_windows_client_routes_supported_operations_to_healthy_wsl_runtime(self) -> None:
+    def test_windows_client_routes_supported_operations_to_healthy_native_runtime(self) -> None:
         for operation in ("diagnose", "build", "upgrade", "evidence", "rollback"):
             with self.subTest(operation=operation):
                 router = ExecutionRouter(environment="windows")
@@ -35,20 +35,20 @@ class ExecutionRouterTests(unittest.TestCase):
                     evidence_boundary="fresh Runtime request",
                 )
                 self.assertEqual(receipt["path"], "structured-runtime-mcp")
-                self.assertEqual(receipt["execution_host"], "wsl")
+                self.assertEqual(receipt["execution_host"], "windows-native")
                 self.assertEqual(router.metrics()["structured_calls"], 0)
                 call = router.record_structured_call(
                     record=receipt, tool="observe" if operation in ("diagnose", "evidence") else "execute"
                 )
-                self.assertEqual(call["execution_host"], "wsl")
+                self.assertEqual(call["execution_host"], "windows-native")
                 self.assertEqual(router.metrics()["structured_calls"], 1)
                 with self.assertRaises(RoutingError):
                     router.admit_shell(["ssh", "fixture.invalid", "uptime"], record=receipt,
-                                       observed_host="wsl")
+                                       observed_host="windows-native")
 
     def test_tool_names_without_initialize_are_not_health(self) -> None:
         probe = probe_protocol(
-            "diagnose", host="wsl",
+            "diagnose", host="windows-native",
             list_tools=lambda: {"tools": [{"name": "observe"}, {"name": "execute"}]},
         )
         self.assertFalse(probe.ready)
@@ -136,7 +136,7 @@ class ExecutionRouterTests(unittest.TestCase):
 
     def test_healthy_probe_on_wrong_host_cannot_route_structured(self) -> None:
         router = ExecutionRouter(environment="windows")
-        receipt = router.choose("diagnose", probe=healthy("windows-native"),
+        receipt = router.choose("diagnose", probe=healthy("wsl"),
                                 shell_host="wsl", requested_scope="fixture",
                                 evidence_boundary="stdout only")
         self.assertEqual(receipt["path"], "shell-fallback")

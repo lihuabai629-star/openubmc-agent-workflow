@@ -20,6 +20,48 @@ from urllib.parse import urlsplit
 CATALOG_PATH = ".openubmc/source-catalog.json"
 
 
+def _is_reparse_path(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _read_regular_file(path: Path, limit: int) -> bytes:
+    """Read only the same regular file inspected at this path before and after open.
+
+    Windows has no O_NOFOLLOW. Comparing the opened file with both path
+    identities also rejects a link or replacement inserted around os.open.
+    """
+    before = path.lstat()
+    if _is_reparse_path(path) or not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+        raise ValueError("unsupported source file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > limit:
+            raise ValueError("unsupported source file")
+        content = stream.read(limit + 1)
+        after = path.lstat()
+        if (not before.st_ino or not opened.st_ino or not after.st_ino
+                or not os.path.samestat(before, opened)
+                or not os.path.samestat(opened, after)
+                or _is_reparse_path(path)):
+            raise ValueError("source file changed during read")
+    if len(content) > limit:
+        raise ValueError("source file limit")
+    return content
+
+
+def _contains_reparse_path(root: Path, path: Path) -> bool:
+    relative = path.relative_to(root)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if _is_reparse_path(current):
+            return True
+    return False
+
+
 def _remote_identity(raw: str) -> str | None:
     # Never return URL credentials, queries or local filesystem remote paths.
     if "://" not in raw and ":" in raw and not raw.startswith(("/", ".")):
@@ -57,16 +99,9 @@ class SourceCatalog:
             return
         self.catalog_present = True
         try:
-            if path.is_symlink() or path.parent.is_symlink():
+            if _is_reparse_path(path) or _is_reparse_path(path.parent):
                 raise ValueError("unsupported catalog file")
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, "rb") as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_size > 262144:
-                    raise ValueError("unsupported catalog file")
-                raw = stream.read(262145)
-            if len(raw) > 262144:
-                raise ValueError("catalog byte limit")
+            raw = _read_regular_file(path, 262144)
             data = json.loads(raw)
             if (not isinstance(data, dict) or type(data.get("schema_version")) is not int or data["schema_version"] != 1
                     or not isinstance(data.get("repositories"), list)
@@ -165,14 +200,7 @@ class SourceCatalog:
             self._warn("provenance_time_limit")
             return result
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, "rb") as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-                    raise ValueError("unsupported source file")
-                content = stream.read(1024 * 1024 + 1)
-            if len(content) > 1024 * 1024:
-                raise ValueError("source file limit")
+            content = _read_regular_file(path, 1024 * 1024)
             result["content_digest"] = "sha256:" + hashlib.sha256(content).hexdigest()
             if repo and commit:
                 relative = path.relative_to(repo).as_posix()
@@ -191,8 +219,14 @@ class SourceCatalog:
     def annotate(self, matches):
         for match in matches:
             try:
-                path = (self.root / str(match["path"])).resolve()
-                path.relative_to(self.root)
+                relative = Path(str(match["path"]))
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ValueError("source path is outside root")
+                path = self.root / relative
+                if _contains_reparse_path(self.root, path):
+                    match["source"] = {"applicability": "unknown", "reason": "source_reparse_path"}
+                    continue
+                path.resolve().relative_to(self.root)
             except (KeyError, ValueError, OSError):
                 match["source"] = {"applicability": "unknown", "reason": "path_outside_source_root"}
                 continue

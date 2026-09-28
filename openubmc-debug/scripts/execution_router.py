@@ -203,8 +203,7 @@ class ExecutionRouter:
 
     @property
     def expected_host(self) -> str:
-        # Windows is the client; the selected packaged Runtime runs in WSL.
-        return "wsl" if self.environment == "windows" else self.environment
+        return "windows-native" if self.environment == "windows" else self.environment
 
     def _checked_receipt(self, record: Mapping[str, object], path: str) -> dict[str, object]:
         if not isinstance(record, Mapping):

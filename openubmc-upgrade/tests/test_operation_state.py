@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import stat
 import sys
 import tempfile
@@ -37,12 +38,17 @@ class UpgradeOperationStateStoreTests(unittest.TestCase):
                 },
             )
             loaded = store.load("task-1", "operation-1")
-            mode = stat.S_IMODE(store.root.stat().st_mode)
 
             self.assertEqual(updated, loaded)
             self.assertEqual(loaded["protocol"], "webui")
             self.assertTrue(loaded["upload_accepted"])
-            self.assertEqual(mode & 0o077, 0)
+            if os.name == "nt":
+                from openubmc_target_runtime.windows_private import verify_private_path
+                verify_private_path(store.root)
+                verify_private_path(store._path("task-1", "operation-1"))
+            else:
+                mode = stat.S_IMODE(store.root.stat().st_mode)
+                self.assertEqual(mode & 0o077, 0)
             with self.assertRaisesRegex(RuntimeError, "immutable field protocol"):
                 store.update(
                     task_id="task-1",

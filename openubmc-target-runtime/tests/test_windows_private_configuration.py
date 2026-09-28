@@ -130,6 +130,70 @@ class WindowsPrivateConfigurationTests(unittest.TestCase):
             self.assertEqual(store.status()["active_revision"], first["revision"])
             self.assertEqual(store.read_active(), original)
 
+    def test_mutation_journal_rejects_a_permissive_windows_access_list(self):
+        from openubmc_target_runtime.mutation import MutationJournal, MutationJournalCorrupt, MutationJournalStore
+        from openubmc_target_runtime.windows_private import verify_private_path
+
+        with tempfile.TemporaryDirectory(dir=Path.home()) as raw:
+            store = MutationJournalStore(Path(raw)/"journals")
+            journal = MutationJournal(
+                task_id="fixture-task", operation_id="fixture-effect",
+                operation_fingerprint="a" * 64, action="live_patch",
+                original_intent="live-patch", target_fingerprint="b" * 64,
+                target_identity=None, epoch_before=0, stage="planned",
+                effects_started=False,
+            )
+            store.create(journal)
+            path = store._path(journal.task_id, journal.operation_id)
+            verify_private_path(store.root)
+            verify_private_path(path)
+            changed = subprocess.run(["icacls.exe", str(path), "/grant", "*S-1-5-32-545:(R)"],
+                                     capture_output=True, text=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            with self.assertRaises(MutationJournalCorrupt):
+                store.load(journal.task_id, journal.operation_id)
+
+    def test_run_and_host_state_reject_permissive_windows_access_lists(self):
+        from openubmc_target_runtime.context_runtime import SQLiteRuntimeRepository
+        from openubmc_target_runtime.host_continuity import HostContinuity
+        from openubmc_target_runtime.terminal_delivery import TerminalAnswerError, TerminalAnswerStore
+        from openubmc_target_runtime.windows_private import WindowsPrivateError, verify_private_path
+
+        with tempfile.TemporaryDirectory(dir=Path.home()) as raw:
+            root = Path(raw)
+            run_path = root/"run"/"runtime.sqlite3"
+            repository = SQLiteRuntimeRepository(run_path)
+            verify_private_path(run_path)
+            changed = subprocess.run(["icacls.exe", str(run_path), "/grant", "*S-1-5-32-545:(R)"],
+                                     capture_output=True, text=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            with self.assertRaises(WindowsPrivateError):
+                repository.current_revision("fixture-run")
+
+            host = HostContinuity(root/"host")
+            with host._database():
+                pass
+            host_path = host.root/"bookmarks.sqlite3"
+            verify_private_path(host_path)
+            changed = subprocess.run(["icacls.exe", str(host_path), "/grant", "*S-1-5-32-545:(R)"],
+                                     capture_output=True, text=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            with self.assertRaises(WindowsPrivateError):
+                with host._database():
+                    pass
+
+            answer_path = root/"answer"/"delivery.json"
+            answers = TerminalAnswerStore(answer_path)
+            answers.prepare(task_id="fixture-task", run_id="fixture-run",
+                            outcome={"status": "completed", "summary": "fixture"},
+                            delivery_stage="unverified", text="fixture result")
+            verify_private_path(answer_path)
+            changed = subprocess.run(["icacls.exe", str(answer_path), "/grant", "*S-1-5-32-545:(R)"],
+                                     capture_output=True, text=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            with self.assertRaises(TerminalAnswerError):
+                answers.get("fixture-task")
+
 
 if __name__ == "__main__":
     unittest.main()

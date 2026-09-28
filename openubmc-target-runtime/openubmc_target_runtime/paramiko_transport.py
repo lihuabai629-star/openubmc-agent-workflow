@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import socket
 import subprocess
+import tempfile
 import time
 
 from .contracts import TargetSpec
@@ -213,14 +214,88 @@ class ParamikoSshTransport:
         timeout = float(kwargs.get("timeout", 1800))
         try:
             sftp = master.client.open_sftp()
-            try:
-                sftp.get_channel().settimeout(timeout)
-                sftp.get(remote_path, local_path)
-            finally:
-                sftp.close()
+        except Exception:
+            return self._scp_download_file(master, remote_path, local_path, timeout=timeout)
+        try:
+            sftp.get_channel().settimeout(timeout)
+            sftp.get(remote_path, local_path)
             return self._completed(master, args, 0)
         except (OSError, EOFError, socket.timeout):
             return self._completed(master, args, 255, stderr="SSH download failed")
+        finally:
+            sftp.close()
+
+    def _scp_download_file(self, master: ParamikoMaster, remote_path: str,
+                           local_path: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
+        command = f"scp -f -- {shlex.quote(remote_path)}"
+        args = self._safe_command(master, command)
+        channel = None
+        temporary = None
+        try:
+            transport = master.client.get_transport()
+            if transport is None or not transport.is_active():
+                return self._completed(master, args, 255, stderr="SSH connection lost")
+            channel = transport.open_session(timeout=timeout)
+            channel.settimeout(timeout)
+            channel.exec_command(command)
+            channel.sendall(b"\0")
+
+            def line() -> bytes:
+                value = bytearray()
+                while len(value) < 4096:
+                    byte = channel.recv(1)
+                    if not byte:
+                        raise EOFError("SCP stream ended")
+                    if byte == b"\n":
+                        return bytes(value)
+                    value.extend(byte)
+                raise ValueError("SCP header is too large")
+
+            marker = channel.recv(1)
+            while marker == b"T":
+                line()
+                channel.sendall(b"\0")
+                marker = channel.recv(1)
+            if marker in {b"\1", b"\2"}:
+                line()
+                return self._completed(master, args, 1, stderr="SCP source rejected the download")
+            if marker != b"C":
+                raise ValueError("Invalid SCP file header")
+            fields = line().split(b" ", 2)
+            if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+                raise ValueError("Invalid SCP file header")
+            size = int(fields[1])
+            if size > 1 << 40:
+                raise ValueError("SCP file is too large")
+            destination = Path(local_path)
+            with tempfile.NamedTemporaryFile(mode="wb", prefix=".openubmc-download-",
+                                             dir=destination.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                channel.sendall(b"\0")
+                remaining = size
+                while remaining:
+                    chunk = channel.recv(min(65536, remaining))
+                    if not chunk:
+                        raise EOFError("SCP file is incomplete")
+                    stream.write(chunk)
+                    remaining -= len(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if channel.recv(1) != b"\0":
+                raise ValueError("SCP source did not complete the file")
+            channel.sendall(b"\0")
+            if channel.recv_exit_status() != 0:
+                raise ValueError("SCP source failed")
+            os.replace(temporary, destination)
+            temporary = None
+            return self._completed(master, args, 0)
+        except (OSError, EOFError, socket.timeout, ValueError):
+            return self._completed(master, args, 255, stderr="SSH download failed")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if channel is not None:
+                channel.close()
 
     def upload_file(self, master: ParamikoMaster, local_path: str, remote_path: str,
                     **kwargs: object) -> subprocess.CompletedProcess[str]:
