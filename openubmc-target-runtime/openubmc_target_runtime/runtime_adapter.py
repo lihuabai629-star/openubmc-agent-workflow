@@ -207,6 +207,13 @@ class RuntimeSemanticAdapter:
             ]
         else:
             arguments["ip"] = command.target
+        for name, port, default in (
+            ("ssh_port", command.ssh_port, 22),
+            ("telnet_port", command.telnet_port, 23),
+            ("redfish_port", command.redfish_port, 443),
+        ):
+            if port != default:
+                arguments[name] = port
         selected_entry = command.entry_operation
         if command.intent == "upgrade-and-verify" and len(command.targets) > 1:
             if selected_entry not in {"", "upgrade_run", "upgrade_batch"}:

@@ -119,6 +119,9 @@ EXECUTE_ACTION_FIELD_TYPES = {
         "kind": "string",
         "target": "string",
         "targets": "array",
+        "ssh_port": "integer",
+        "telnet_port": "integer",
+        "redfish_port": "integer",
         "intent": "string",
         "entry_operation": "string",
         "entry_arguments": "object",
@@ -239,6 +242,7 @@ class PreflightContext:
     run_id: str = ""
     target: str = ""
     targets: tuple[Mapping[str, object], ...] = ()
+    target_ports: Mapping[str, int] = field(default_factory=dict)
     intent: str = ""
     purpose: str = ""
     delivery_strategy: str = ""
@@ -1134,6 +1138,9 @@ class StartRun:
     input_digest: str
     entry_operation: str = ""
     entry_arguments: Mapping[str, object] | None = None
+    ssh_port: int = 22
+    telnet_port: int = 23
+    redfish_port: int = 443
     targets: tuple[RunTarget, ...] = ()
     observation_ref: ObservationRef | None = None
     caller_deadline: float = 120.0
@@ -1313,6 +1320,9 @@ def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         "intent": command.intent,
         "entry_operation": command.entry_operation,
         "entry_arguments": dict(command.entry_arguments or {}),
+        **({"ssh_port": command.ssh_port} if command.ssh_port != 22 else {}),
+        **({"telnet_port": command.telnet_port} if command.telnet_port != 23 else {}),
+        **({"redfish_port": command.redfish_port} if command.redfish_port != 443 else {}),
         "purpose": command.purpose,
         "delivery_strategy": command.delivery_strategy,
         "observation_ref": (
@@ -1416,6 +1426,12 @@ def _action_preflight_context(action: Mapping[str, object]) -> PreflightContext:
             )
             if isinstance(item, Mapping)
         ),
+        target_ports={
+            name: value
+            for name in ("ssh_port", "telnet_port", "redfish_port")
+            if (value := action.get(name)) is not None
+            and type(value) is int and 1 <= value <= 65535
+        },
         intent=_text(action.get("intent")),
         purpose=_text(action.get("purpose")),
         delivery_strategy=_text(action.get("delivery_strategy")),
@@ -1760,6 +1776,15 @@ def decode_run_command(
             raise AgentGatewayError(
                 "entry_arguments requires entry_operation"
             )
+        ports = {
+            name: action.get(name, entry_arguments.get(name, default))
+            for name, default in (("ssh_port", 22), ("telnet_port", 23), ("redfish_port", 443))
+        }
+        for name, port in ports.items():
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise AgentGatewayError(f"{name} must be an integer between 1 and 65535")
+            if name in action and name in entry_arguments and entry_arguments[name] != port:
+                raise AgentGatewayError(f"entry_arguments.{name} conflicts with {name}")
         _bounded_diagnostic_scope(
             intent=intent,
             arguments=entry_arguments,
@@ -1795,6 +1820,9 @@ def decode_run_command(
             input_digest="",
             entry_operation=entry_operation,
             entry_arguments=entry_arguments,
+            ssh_port=ports["ssh_port"],
+            telnet_port=ports["telnet_port"],
+            redfish_port=ports["redfish_port"],
             targets=targets,
             observation_ref=observation_ref,
             caller_deadline=caller_deadline,

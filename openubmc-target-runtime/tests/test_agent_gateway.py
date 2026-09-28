@@ -2598,6 +2598,7 @@ class AgentGatewayTests(unittest.TestCase):
             "mdbctl",
             capability_item["description"],
         )
+
         self.assertIn("response_required", definitions[1]["description"])
         self.assertIn("sole structured reusable action", definitions[1]["description"])
         action_shapes = {
@@ -2634,6 +2635,68 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertIn("oneOf", action_shapes["control"])
         self.assertNotIn("max_steps", json.dumps(execute_schema))
+
+    def test_upgrade_start_keeps_target_ports_for_upgrade_and_fresh_verification(self) -> None:
+        artifact = self.artifact_root / "fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "ssh_port": 2222, "redfish_port": 8443,
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                },
+            },
+            task_id="upgrade-target-ports",
+            operation_id="upgrade-target-ports-start",
+        )
+        for index in range(8):
+            if any(name == "debug_collect" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-target-ports",
+                operation_id=f"upgrade-target-ports-resume-{index}",
+            )
+
+        upgrade = next(arguments for name, arguments in self.backend.calls if name == "upgrade_run")
+        verification = next(arguments for name, arguments in self.backend.calls if name == "debug_collect")
+        self.assertEqual(upgrade["redfish_port"], 8443)
+        self.assertEqual(verification["ssh_port"], 2222)
+
+    def test_upgrade_start_legacy_entry_ports_reach_fresh_verification(self) -> None:
+        artifact = self.artifact_root / "fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                    "ssh_port": 2222, "redfish_port": 8443,
+                },
+            },
+            task_id="upgrade-legacy-ports",
+            operation_id="upgrade-legacy-ports-start",
+        )
+        for index in range(8):
+            if any(name == "debug_collect" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-legacy-ports",
+                operation_id=f"upgrade-legacy-ports-resume-{index}",
+            )
+
+        verification = next(arguments for name, arguments in self.backend.calls if name == "debug_collect")
+        self.assertEqual(verification["ssh_port"], 2222)
 
     def test_execute_rejects_invalid_action_shapes_before_dispatch(self) -> None:
         runtime = RejectDispatchRuntime()
@@ -3347,6 +3410,8 @@ class AgentGatewayTests(unittest.TestCase):
                     "arguments": {
                         "kind": "start",
                         "target": target,
+                        "ssh_port": 2222,
+                        "redfish_port": 8443,
                         "intent": "x" * (128 * 1024),
                         "deadline": 121,
                     },
@@ -3361,6 +3426,8 @@ class AgentGatewayTests(unittest.TestCase):
             TURN_MAX_BYTES,
         )
         self.assertEqual(example["target"], target)
+        self.assertEqual(example["ssh_port"], 2222)
+        self.assertEqual(example["redfish_port"], 8443)
         self.assertEqual(example["intent"], "x" * (128 * 1024))
         self.assertEqual(example["deadline"], 120)
         self.assertFalse(structured["projection_compacted"])
