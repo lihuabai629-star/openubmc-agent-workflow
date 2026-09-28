@@ -1,6 +1,6 @@
 # ADR-0008: Local setup plane and cross-platform bootstrap
 
-- Status: Accepted
+- Status: Superseded for Windows device execution by [ADR-0009](0009-native-windows-device-backend.md)
 - Date: 2026-09-24
 - Decision owners: openUBMC Agent Workflow maintainers
 

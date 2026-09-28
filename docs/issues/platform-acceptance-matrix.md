@@ -1,3 +1,5 @@
+Status: Superseded for Windows device execution by [ADR-0009](../adr/0009-native-windows-device-backend.md) and the [native Windows specification](../specs/native-windows-device-execution.md). The scope below records the original #284 plan.
+
 Part of #278, roadmap item 20. Coordinates with the separate Desktop item 18.
 
 ## Problem

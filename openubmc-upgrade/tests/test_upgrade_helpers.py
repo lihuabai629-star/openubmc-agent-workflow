@@ -157,7 +157,14 @@ class UpgradeHelperTests(unittest.TestCase):
             self.assertNotIn("not-for-output", result.stdout)
             self.assertTrue(json.loads(result.stdout)["password_present"])
 
-            credentials.chmod(0o644)
+            if sys.platform == "win32":
+                exposed = subprocess.run(
+                    ["icacls.exe", str(credentials), "/grant", "*S-1-1-0:R"],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(exposed.returncode, 0, exposed.stderr)
+            else:
+                credentials.chmod(0o644)
             rejected = run(
                 str(SCRIPTS / "redfish_credentials.py"),
                 "--target",

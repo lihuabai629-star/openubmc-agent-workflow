@@ -31,7 +31,7 @@ def passing_matrix() -> dict[str, object]:
     matrix = acceptance.initial_report(SOURCE)
     for row in matrix["rows"]:
         row_id = row["id"]
-        if row_id == "macos-arm64-local":
+        if row_id in {"macos-arm64-local", "windows-wsl-runtime"}:
             continue
         row.update({
             "status": "passed", "reason": "", "source_commit": SOURCE,
@@ -62,13 +62,15 @@ def passing_matrix() -> dict[str, object]:
                                 "exit_code": 0, "stdout_sha256": HASH, "stderr_sha256": HASH}]
             row["artifacts"]["plugin_archive"] = HASH
             row["hosts"] = [host("client", "Windows", "x86_64", "native-windows")]
-        elif row_id == "windows-wsl-runtime":
+        elif row_id == "windows-native-device":
             row["artifacts"]["plugin_archive"] = HASH
             row["hosts"] = [host("client", "Windows", "x86_64", "native-windows"),
-                            host("runtime", "Linux", "x86_64", "wsl2"),
+                            host("runtime", "Windows", "x86_64", "native-windows"),
                             host("target", "Synthetic", "none", "fixture")]
             row["routing"] = {
-                "selected_wsl": "Ubuntu-24.04",
+                "execution_host": "windows-native",
+                "selected_wsl": None,
+                "backend_pid": 1234,
                 "credential_revision_before": "fixture-revision-1",
                 "credential_revision_after": "fixture-revision-1",
                 "run_id_before": "run-one", "run_id_after": "run-one",
@@ -196,11 +198,26 @@ class PlatformAcceptanceTests(unittest.TestCase):
         self.assertFalse(report["release_ready"])
         self.assertTrue(any("complete validation" in item for item in report["blockers"]))
 
-    def test_wsl_identity_or_second_effect_blocks_release(self) -> None:
+    def test_native_runtime_identity_or_second_effect_blocks_release(self) -> None:
         matrix = passing_matrix()
-        route = next(row for row in matrix["rows"] if row["id"] == "windows-wsl-runtime")
+        route = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
         route["routing"]["effect_count_after"] = 2
         route["routing"]["credential_revision_after"] = "different"
+        self.assertFalse(acceptance.assess(matrix)["release_ready"])
+
+    def test_wsl_evidence_cannot_replace_the_native_windows_device_row(self) -> None:
+        matrix = passing_matrix()
+        native = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
+        native.update(status="untested", reason="Native device workflow not yet qualified")
+        self.assertFalse(acceptance.assess(matrix)["release_ready"])
+        self.assertTrue(any("windows-native-device" in item for item in acceptance.assess(matrix)["blockers"]))
+
+    def test_wsl_row_is_optional_and_native_route_must_stay_on_windows(self) -> None:
+        matrix = passing_matrix()
+        self.assertTrue(acceptance.assess(matrix)["release_ready"])
+        native = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
+        native["hosts"][1] = host("runtime", "Linux", "x86_64", "wsl2")
+        native["routing"]["selected_wsl"] = "Ubuntu-24.04"
         self.assertFalse(acceptance.assess(matrix)["release_ready"])
 
     def test_desktop_outcome_must_match_the_plugin_run(self) -> None:

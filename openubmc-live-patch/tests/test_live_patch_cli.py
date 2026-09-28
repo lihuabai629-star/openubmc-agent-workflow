@@ -464,6 +464,7 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(json.loads(result.stdout)["ok"])
 
+    @unittest.skipIf(os.name == "nt", "BMC POSIX shell fixture")
     def test_deploy_symlink_guard_blocks_external_target_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -498,6 +499,7 @@ class LivePatchCliTests(unittest.TestCase):
             self.assertTrue(target.is_symlink())
             self.assertEqual(outside.read_text(encoding="utf-8"), "outside-original")
 
+    @unittest.skipIf(os.name == "nt", "BMC POSIX shell fixture")
     def test_parent_symlink_escape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -525,6 +527,7 @@ class LivePatchCliTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertFalse((outside / "unit.lua").exists())
 
+    @unittest.skipIf(os.name == "nt", "BMC POSIX shell fixture")
     def test_atomic_backups_are_unique_and_do_not_overwrite_prior_content(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -627,6 +630,7 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertFalse(ssh_log_exists)
         self.assertFalse(any("echo deploy_ok" in command for command in commands))
 
+    @unittest.skipIf(os.name == "nt", "POSIX sshpass fixture")
     def test_apply_uses_internal_development_ssh_and_restores_mount(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
@@ -693,6 +697,7 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertFalse(sshpass["sspass_present"])
         self.assertFalse(sshpass["unrelated_passwords_present"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX sshpass fixture")
     def test_generated_rollback_inherits_transport_selectors_and_no_remount(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
@@ -1351,6 +1356,7 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertTrue(any("mount -o remount,ro /" in command for command in commands))
         self.assertFalse(any("killall" in command for command in commands))
 
+    @unittest.skipIf(os.name == "nt", "BMC POSIX shell fixture")
     def test_rollback_symlink_guard_blocks_external_target_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

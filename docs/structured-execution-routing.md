@@ -14,14 +14,13 @@ the router also rejects a late response. A process ID, port, configured server
 name, or cached tool menu is insufficient. Errors become stable reason codes
 without exception text.
 
-On a Windows client, the packaged Runtime backend is in the selected WSL
-distribution. A healthy native Windows endpoint cannot stand in for the WSL
-backend. The Local Setup Plane chooses that distribution. Native Windows
-Runtime execution is not claimed by this route.
+On a Windows client, the packaged Runtime and KB backends run on Windows.
+The Local Setup Plane reports the native backend's protocol health. WSL may
+be selected separately for builds, but is not the device execution host.
 
 | Client | Structured execution host | Permitted shell origin |
 | --- | --- | --- |
-| Windows | WSL | Explicit `windows-native` or `wsl` |
+| Windows | Windows | Explicit `windows-native` or `wsl` for a separately selected build shell |
 | WSL | WSL | WSL |
 | Linux | Linux | Linux |
 
@@ -57,7 +56,7 @@ Before proxying the Runtime, it uses `pluginctl doctor`'s bounded MCP
 `initialize`/`tools/list` probe and requires Runtime protocol health. Before
 forwarding each `observe` or `execute` call, it applies
 `openubmc-execution-routing.js` and writes an `openubmc-routing` receipt to MCP
-stderr. The receipt binds the selected WSL distribution or POSIX host, tool,
+stderr. The receipt binds the native Windows or POSIX host, tool,
 semantic operation when present, a process-keyed HMAC of bounded canonical
 request arguments, and the typed Runtime result boundary. The key never
 enters a receipt or log. Malformed, oversized, or deeply nested requests are
@@ -109,7 +108,8 @@ command, then passes it through `admit_shell` before execution. A field or
 marker controlled by the model in the command string cannot serve as that
 binding. Plugin hooks also require user trust and some specialized tool paths
 can opt out, so a hook alone is not a complete enforcement boundary.
-Until the Host binding and native Windows/WSL coverage are verified, the Python
+Until the Host binding and native Windows device coverage are verified, the Python
 router and Skill instruction govern only callers that use them; no global
 shell-budget enforcement is claimed. Installed MCP tests use controlled Linux
-and WSL adapters. Native Windows execution remains unverified here.
+and Windows adapters. Native Windows device workflows need their own installed
+candidate evidence before release.
