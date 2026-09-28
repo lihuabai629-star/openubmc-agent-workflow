@@ -94,6 +94,9 @@ class HostContinuityTests(unittest.TestCase):
              "payload": {"type": "task_complete", "turn_id": "turn"}},
         ]
         rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+        # Re-observing an existing Run must not reorder its already prepared
+        # answer after the Host has emitted the combined final.
+        self.capture("one")
         for run in ("one", "two"):
             self.store.acknowledge_rollout("task", run, rollout, read_run=self.read)
         self.assertTrue(all(run["terminal_answer"]["delivery_confirmed"] for run in

@@ -144,9 +144,11 @@ class HostContinuity:
                 ).fetchone()[0]
                 if count >= 4096 or task_count >= 128:
                     raise ValueError("host bookmark capacity reached")
+            # Preserve first-bookmark order. A repeated readback of one Run
+            # must not reorder a combined final already emitted by the Host.
             connection.execute(
-                "INSERT INTO runs VALUES (?, ?, ?) ON CONFLICT(task_id, run_id) "
-                "DO UPDATE SET updated_at=excluded.updated_at", (task_id, run_id, time.time()),
+                "INSERT OR IGNORE INTO runs VALUES (?, ?, ?)",
+                (task_id, run_id, time.time()),
             )
         current = self._read(task_id, run_id, read_run)
         return {"schema": SCHEMA, "status": "saved", "task_id": task_id,
