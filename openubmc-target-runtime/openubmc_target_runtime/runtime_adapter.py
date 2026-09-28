@@ -223,6 +223,24 @@ class RuntimeSemanticAdapter:
         if selected_entry:
             arguments["_context_entry_operation"] = selected_entry
             arguments["entry_arguments"] = dict(command.entry_arguments or {})
+            if command.intent in {"live-patch", "rollback"}:
+                checks = arguments["entry_arguments"].get("verification_checks")
+                if checks is not None:
+                    if (
+                        not isinstance(checks, list)
+                        or len(checks) > 16
+                        or any(
+                            not isinstance(item, str)
+                            or not item.strip()
+                            or len(item.encode("utf-8")) > 512
+                            for item in checks
+                        )
+                    ):
+                        raise ValueError(
+                            "verification_checks must be at most 16 non-empty "
+                            "checks of at most 512 bytes"
+                        )
+                    arguments["verification_checks"] = list(checks)
         if command.delivery_strategy:
             arguments["delivery_strategy"] = command.delivery_strategy
         seeded_raw: Mapping[str, object] | None = None

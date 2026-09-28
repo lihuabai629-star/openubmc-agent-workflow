@@ -1183,6 +1183,61 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
         }
 
 
+class IntegrityOnlyLivePatchBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("business_acceptance", None)
+        return value
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().live_patch_run(task, arguments, context)
+        metadata = {"mode": "644", "uid": 0, "gid": 0}
+        value["mutation"]["remote_after_metadata"] = metadata
+        value["verification"]["remote_metadata"] = metadata
+        return value
+
+
+class RemovedFileRollbackBackend(IntegrityOnlyLivePatchBackend):
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("live_patch_run", dict(arguments)))
+        return {
+            "ok": True,
+            "summary": "created file removed and absence verified",
+            "target_epoch": 1,
+            "mutation": {
+                "remote_after_sha256": "",
+                "remote_removed": True,
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_removed": True,
+                "target_epoch": 1,
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "rollback_verified",
+                "action": "rollback",
+                "expected_missing": True,
+                "expected_checksum": "",
+                "observed_checksum": "",
+                "root_mount_restored": True,
+            },
+        }
+
+
+class ContradictoryRemovedFileRollbackBackend(RemovedFileRollbackBackend):
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().live_patch_run(task, arguments, context)
+        value["mutation"]["remote_removed"] = False
+        value["mutation"]["remote_after_sha256"] = "a" * 64
+        value["verification"]["remote_removed"] = False
+        value["verification"]["remote_sha256"] = "a" * 64
+        value["journal"]["expected_checksum"] = "a" * 64
+        value["journal"]["observed_checksum"] = "a" * 64
+        return value
+
+
 class ConflictingAcceptanceSemanticBackend(SemanticBackend):
     def debug_collect(self, task, arguments, context) -> dict[str, object]:
         value = super().debug_collect(task, arguments, context)
@@ -12548,6 +12603,161 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_direct_live_patch_without_extra_business_checks_closes_after_fresh_verification(self) -> None:
+        backend = IntegrityOnlyLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        artifact = self.artifact_root / "direct-live-patch.lua"
+        artifact.write_bytes(b"return 'synthetic patch'\n")
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.73", "intent": "live-patch",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "local_path": str(artifact),
+                        "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                        "remote_path": "/tmp/direct-live-patch.lua",
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="direct-live-patch-integrity",
+                operation_id="direct-live-patch-integrity-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-live-patch-integrity",
+                    operation_id=f"direct-live-patch-integrity-resume-{index}",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["outcome"]["status"], "completed")
+        self.assertEqual([name for name, _args in backend.calls], ["live_patch_run", "debug_collect"])
+
+    def test_direct_live_patch_with_declared_business_check_stays_unverified_without_result(self) -> None:
+        backend = IntegrityOnlyLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        artifact = self.artifact_root / "checked-live-patch.lua"
+        artifact.write_bytes(b"return 'synthetic patch'\n")
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.74", "intent": "live-patch",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "local_path": str(artifact),
+                        "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                        "remote_path": "/tmp/checked-live-patch.lua",
+                        "restart_scope": "none",
+                        "verification_checks": ["Redfish service returns the expected result"],
+                    },
+                },
+                task_id="direct-live-patch-business-check",
+                operation_id="direct-live-patch-business-check-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-live-patch-business-check",
+                    operation_id=f"direct-live-patch-business-check-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "unverified")
+
+    def test_direct_remove_created_rollback_closes_after_verified_absence(self) -> None:
+        backend = RemovedFileRollbackBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.75", "intent": "rollback",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "action": "rollback",
+                        "remote_path": "/tmp/created-by-live-patch.lua",
+                        "remove_created": True,
+                        "expected_current_sha256": "a" * 64,
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="direct-remove-created-rollback",
+                operation_id="direct-remove-created-rollback-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-remove-created-rollback",
+                    operation_id=f"direct-remove-created-rollback-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["outcome"]["status"], "completed")
+        self.assertEqual(projection["closeout"]["identity_status"], "matched")
+        integrity = next(
+            check for check in projection["closeout"]["checks"]
+            if check["requirement_id"] == "acceptance.live-patch.integrity"
+        )
+        self.assertEqual(integrity["status"], "passed")
+        self.assertEqual([name for name, _args in backend.calls], ["live_patch_run", "debug_collect"])
+
+    def test_remove_created_rollback_cannot_close_on_conflicting_checksum_evidence(self) -> None:
+        backend = ContradictoryRemovedFileRollbackBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.76", "intent": "rollback",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "action": "rollback",
+                        "remote_path": "/tmp/created-by-live-patch.lua",
+                        "remove_created": True,
+                        "expected_current_sha256": "a" * 64,
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="contradictory-remove-created-rollback",
+                operation_id="contradictory-remove-created-rollback-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="contradictory-remove-created-rollback",
+                    operation_id=f"contradictory-remove-created-rollback-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "failed")
+        self.assertNotEqual(projection["closeout"]["identity_status"], "matched")
+        integrity = next(
+            check for check in projection["closeout"]["checks"]
+            if check["requirement_id"] == "acceptance.live-patch.integrity"
+        )
+        self.assertEqual(integrity["status"], "failed")
 
     def test_incomplete_live_patch_acceptance_cannot_report_completed_success(self) -> None:
         backend = IncompleteAcceptanceSemanticBackend()
