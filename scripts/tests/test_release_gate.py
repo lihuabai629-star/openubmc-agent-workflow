@@ -54,6 +54,31 @@ def write_candidate_archive(
     return hashlib.sha256(path.read_bytes()).hexdigest(), lock["content_digest"]
 
 
+def candidate_qualification_report(
+    *, archive_sha256: str, content_digest: str
+) -> dict[str, object]:
+    return {
+        "schema": "openubmc.codex-plugin.qualification.v1",
+        "source_commit": SOURCE_COMMIT, "archive_sha256": archive_sha256,
+        "content_digest": content_digest, "version": "2.0.2",
+        "codex": "codex-cli 0.153.4", "ok": True,
+        "deterministic_archive": True, "native_install": True,
+        "native_uninstall": True, "reinstall": True,
+        "external_state_preserved": True,
+        "mcp_health": {
+            "runtime": {"ok": True, "version_matches_package": True},
+            "kb": {"ok": True, "version_matches_package": True},
+        },
+        "bytecode_restart": {"generated_cache_count": 1, "verified_after_restart": True},
+        "native_codex_exec": {"invocations": 2, "restart_verified": True},
+        "native_thread_resume": {
+            "native_upgrade": True, "resume_error": None,
+            "old_cache_absent": True, "configuration_preserved": True,
+            "from_version": "2.0.1", "to_version": "2.0.2",
+        },
+    }
+
+
 def execute_release_gate(**kwargs: object) -> dict[str, object]:
     return release_gate.execute_release_gate(
         model_identity=MODEL_IDENTITY,
@@ -667,13 +692,9 @@ class ReleaseGateTests(unittest.TestCase):
             source = root / "matrix.json"
             source.write_text(json.dumps(matrix), encoding="utf-8")
             qualification = root / "qualification.json"
-            qualification.write_text(json.dumps({
-                "schema": "openubmc.codex-plugin.qualification.v1",
-                "source_commit": SOURCE_COMMIT, "archive_sha256": archive_sha,
-                "content_digest": content_digest,
-                "version": "2.0.2",
-                "ok": True, "deterministic_archive": True, "native_install": True,
-            }), encoding="utf-8")
+            qualification.write_text(json.dumps(candidate_qualification_report(
+                archive_sha256=archive_sha, content_digest=content_digest,
+            )), encoding="utf-8")
             report = execute_release_gate(
                 current_ref="v2.0.2", previous_ref="v2.0.1",
                 workspace=Path.cwd(), work_root=root / "gate", executor=execute,
@@ -684,6 +705,20 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertEqual(report["validation_mode"], "installed-candidate")
             self.assertEqual(report["artifacts"]["candidate_archive"]["sha256"], archive_sha)
             release_gate.verify_release_gate_report(report, require_promotable=True)
+
+            skeletal = candidate_qualification_report(
+                archive_sha256=archive_sha, content_digest=content_digest,
+            )
+            del skeletal["native_thread_resume"]
+            qualification.write_text(json.dumps(skeletal), encoding="utf-8")
+            incomplete = execute_release_gate(
+                current_ref="v2.0.2", previous_ref="v2.0.1",
+                workspace=Path.cwd(), work_root=root / "incomplete-gate", executor=execute,
+                platform_matrix=source, candidate_archive=archive,
+                candidate_qualification=qualification,
+            )
+            self.assertFalse(incomplete["promotable"])
+            self.assertEqual(incomplete["gates"][0]["status"], "failed")
 
             wrong_sha, wrong_content_digest = write_candidate_archive(archive, source_commit="b" * 40)
             matrix["candidate_archive_sha256"] = wrong_sha

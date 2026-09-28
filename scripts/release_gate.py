@@ -159,7 +159,8 @@ def _load_codex_adoption_evidence(
 
 
 def _load_candidate_qualification(
-    path: Path, *, source_commit: str, release_version: str, archive: Path
+    path: Path, *, source_commit: str, release_version: str,
+    previous_version: str, archive: Path,
 ) -> dict[str, object]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -188,10 +189,43 @@ def _load_candidate_qualification(
         or document.get("ok") is not True
         or document.get("deterministic_archive") is not True
         or document.get("native_install") is not True
+        or document.get("native_uninstall") is not True
+        or document.get("reinstall") is not True
+        or document.get("external_state_preserved") is not True
+        or document.get("codex") != "codex-cli 0.153.4"
     ):
         raise ValueError(
             "candidate plugin qualification does not match source and archive"
         )
+    mcp = document.get("mcp_health")
+    restart = document.get("bytecode_restart")
+    native_exec = document.get("native_codex_exec")
+    resume = document.get("native_thread_resume")
+    if (
+        not isinstance(mcp, dict)
+        or any(
+            not isinstance(mcp.get(name), dict)
+            or mcp[name].get("ok") is not True
+            or mcp[name].get("version_matches_package") is not True
+            for name in ("runtime", "kb")
+        )
+        or not isinstance(restart, dict)
+        or restart.get("verified_after_restart") is not True
+        or type(restart.get("generated_cache_count")) is not int
+        or restart["generated_cache_count"] < 1
+        or not isinstance(native_exec, dict)
+        or native_exec.get("restart_verified") is not True
+        or type(native_exec.get("invocations")) is not int
+        or native_exec["invocations"] < 2
+        or not isinstance(resume, dict)
+        or resume.get("native_upgrade") is not True
+        or resume.get("resume_error") is not None
+        or resume.get("old_cache_absent") is not True
+        or resume.get("configuration_preserved") is not True
+        or resume.get("from_version") != previous_version
+        or resume.get("to_version") != release_version
+    ):
+        raise ValueError("candidate plugin lifecycle qualification is incomplete")
     return document
 
 
@@ -670,6 +704,7 @@ def execute_release_gate(
                     candidate_qualification,
                     source_commit=resolved_source_commit,
                     release_version=candidate.release_version,
+                    previous_version=previous_ref.removeprefix("v"),
                     archive=candidate_archive,
                 )
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:

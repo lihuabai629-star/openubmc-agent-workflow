@@ -9,7 +9,7 @@ the hosted-CI row remains untested with a reason. See
 [installed candidate qualification](specs/installed-candidate-qualification.md).
 The macOS row is useful local evidence but cannot replace any required row.
 
-## Current observation (2026-09-27, Asia/Shanghai)
+## Current observation (2026-09-28, Asia/Shanghai)
 
 | Row | Host and package identity | Result and reason |
 | --- | --- | --- |
