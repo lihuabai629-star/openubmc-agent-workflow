@@ -1216,7 +1216,7 @@ class RemovedFileRollbackBackend(IntegrityOnlyLivePatchBackend):
             },
             "journal": {
                 "operation_id": context.operation_id,
-                "stage": "rollback_verified",
+                "stage": "verified",
                 "action": "rollback",
                 "expected_missing": True,
                 "expected_checksum": "",

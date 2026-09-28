@@ -856,7 +856,7 @@ def _selected_facts(
             mutation = _mapping(value.get("mutation"))
             verified_absence = (
                 journal.get("action") == "rollback"
-                and journal.get("stage") == "rollback_verified"
+                and journal.get("stage") in {"verified", "rollback_verified"}
                 and journal.get("expected_missing") is True
                 and mutation.get("remote_removed") is True
                 and verification.get("remote_removed") is True
