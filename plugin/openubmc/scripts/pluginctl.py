@@ -177,6 +177,9 @@ def dependency_root(content: dict[str, bytes], capability: str) -> Path:
         raise ValueError('Unknown dependency capability')
     key = hashlib.sha256(canonical(identity)).hexdigest()
     data = local_data_home('data')
+    if sys.platform == 'win32':
+        # The Windows path budget also includes deep npm package members.
+        return data/'openubmc/d'/capability/key[:32]
     return data/'openubmc/plugin-dependencies'/capability/key
 
 
@@ -249,8 +252,7 @@ def npm_command() -> list[str]:
         print(json.dumps({'stage': 'npm', 'status': 'failed', 'error_code': 'npm_unavailable'},
                          sort_keys=True), file=sys.stderr, flush=True)
         raise DependencyPreparationError('npm_unavailable', 'Node.js and npm are required')
-    # npm.cmd can return before its Node descendant has finished writing the
-    # dependency tree. Own the actual installer process before sealing a receipt.
+    # Own the actual installer process before sealing the dependency receipt.
     return [node, str(cli)]
 
 
@@ -317,8 +319,9 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool, *, capability:
                 if (sys.platform != 'win32' and exc.errno != errno.EWOULDBLOCK) or time.monotonic() >= deadline:
                     raise ValueError('Dependency cache lock timed out') from exc
                 time.sleep(0.05)
-        staging = root.parent / (root.name + '.staging')
-        backup = root.parent / (root.name + '.previous')
+        short_name = root.name[:16] if sys.platform == 'win32' else root.name
+        staging = root.parent / (short_name + '.staging')
+        backup = root.parent / (short_name + '.previous')
         for path in (root, staging, backup):
             if path.is_symlink():
                 raise ValueError('Dependency cache must not be a symbolic link')
@@ -410,7 +413,9 @@ def execution_snapshot_plan(content: dict[str, bytes], lock: dict,
         expected[destination] = identity
         dependency_paths[destination] = name
     key = hashlib.sha256(canonical({'plugin': lock['content_digest'], 'files': expected})).hexdigest()
-    cache = local_data_home('cache')/'openubmc/plugin-executions'
+    cache = local_data_home('cache')/('openubmc/x' if sys.platform == 'win32' else 'openubmc/plugin-executions')
+    if sys.platform == 'win32':
+        key = key[:32]
     return expected, dependency_paths, cache, key
 
 
