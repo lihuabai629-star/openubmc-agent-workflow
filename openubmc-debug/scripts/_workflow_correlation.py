@@ -621,8 +621,24 @@ def build_correlation(
         # Local processing is auxiliary. Keep the original captured evidence.
         batch = {"status": "processor_failed", "error_type": type(exc).__name__,
                  "raw_evidence_preserved": True}
+    target = active_result.get("ip")
+    captured_targets = [target, alarm_logs_result.get("ip")]
+    if workflow_logs_result is not None:
+        captured_targets.append(workflow_logs_result.get("ip"))
+    if any(not isinstance(value, str) or not value.strip() for value in captured_targets):
+        correlation_blocked_by = ["target_source_unknown"]
+    elif any(value != target for value in captured_targets):
+        correlation_blocked_by = ["target_source_conflict"]
+    else:
+        correlation_blocked_by = []
+    if correlation_blocked_by:
+        # Raw references remain inspectable, but mixed-device lines cannot
+        # establish temporal, instance, or workflow relationships.
+        correlations = []
+        keyword_refs = []
     return {
         "batch": batch,
+        "correlation_blocked_by": correlation_blocked_by,
         "source_search": source_search,
         "since_boot": since_boot,
         "alarm_log_search": {
@@ -636,7 +652,7 @@ def build_correlation(
             "workflow_log_lines": workflow_line_records,
             "alarm_log_utc_offset_minutes": utc_offset_minutes,
         },
-        "records_considered": len(records),
+        "records_considered": len(records) if not correlation_blocked_by else 0,
         "records": correlations,
         "workflow_keyword": workflow_keyword,
         "workflow_keyword_refs": keyword_refs,

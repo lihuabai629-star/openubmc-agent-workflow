@@ -12,7 +12,8 @@ import time
 
 from .semantic_runtime import bounded_request, is_safe_runtime_id, project_run_turn
 from .terminal_delivery import (
-    TerminalAnswerError, TerminalAnswerStore, audit_rollout_final, render_final_answer,
+    TerminalAnswerError, TerminalAnswerStore, audit_rollout_final, outcome_fingerprint,
+    render_final_answer,
 )
 from .delivery_stage import DELIVERY_STAGES
 from .redaction import require_secret_free
@@ -70,7 +71,10 @@ class HostContinuity:
     def _database(self):
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self.root / "bookmarks.sqlite3"
-        connection = sqlite3.connect(path, timeout=0.25)
+        # Parallel MCP processes may serialize short bookmark writes.  A
+        # quarter-second timeout turned ordinary startup contention into a
+        # lost host handoff even though the Runtime operation had completed.
+        connection = sqlite3.connect(path, timeout=5.0)
         try:
             path.chmod(0o600)
             connection.row_factory = sqlite3.Row
@@ -274,7 +278,29 @@ class HostContinuity:
                 continue
         if final is None:
             raise TerminalAnswerError("rollout final event is missing or interrupted")
-        with self._database():
+        with self._database() as connection:
+            current_runs = [row["run_id"] for row in connection.execute(
+                "SELECT run_id FROM runs WHERE task_id=? ORDER BY updated_at, run_id",
+                (task_id,),
+            ).fetchall()]
+            if current_runs != [run["run_id"] for run in handoff["runs"]]:
+                raise TerminalAnswerError("task handoff changed during final audit")
+            for run in handoff["runs"]:
+                current_run_id = run["run_id"]
+                fresh_projection = read_run(current_run_id)
+                if not isinstance(fresh_projection, Mapping):
+                    raise TerminalAnswerError("Runtime Outcome changed during final audit")
+                fresh_outcome = _mapping(fresh_projection.get("run_outcome"))
+                prepared = run.get("terminal_answer")
+                if not prepared:
+                    if fresh_outcome:
+                        raise TerminalAnswerError("Runtime Outcome changed during final audit")
+                    continue
+                if not fresh_outcome:
+                    raise TerminalAnswerError("Runtime Outcome changed during final audit")
+                fresh_stage = self._facts(fresh_projection, current_run_id)["delivery_stage"]
+                if outcome_fingerprint(fresh_outcome, delivery_stage=fresh_stage) != prepared["outcome_fingerprint"]:
+                    raise TerminalAnswerError("Runtime Outcome changed during final audit")
             return self._answers(task_id, run_id).acknowledge(
                 task_id=task_id, run_id=run_id, outcome=outcome, delivery_stage=stage,
                 text=requested["text"], host_event_id=final[0], observed_at=final[2],

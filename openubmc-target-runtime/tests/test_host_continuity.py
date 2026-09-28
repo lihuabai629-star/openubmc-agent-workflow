@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import copy
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
@@ -122,6 +123,115 @@ class HostContinuityTests(unittest.TestCase):
             rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n")
             with self.subTest(text=text), self.assertRaises(ValueError):
                 self.store.acknowledge_rollout("task", "one", rollout, read_run=self.read)
+
+    def test_multi_run_final_rejects_new_run_bookmarked_during_audit(self):
+        self.terminal()
+        self.capture("one")
+        self.capture("two")
+        answers = [run["terminal_answer"] for run in
+                   self.store.handoff("task", read_run=self.read)["runs"]]
+        combined = "\n\n".join(answer["text"] for answer in answers)
+        timestamp = (datetime.fromisoformat(answers[0]["prepared_at"])
+                     + timedelta(seconds=1)).isoformat()
+        rollout = self.root / "concurrent-rollout.jsonl"
+        rollout.write_text("\n".join(json.dumps(event) for event in [
+            {"type": "session_meta", "payload": {"id": "task"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+            {"type": "response_item", "timestamp": timestamp, "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                "content": [{"type": "output_text", "text": combined}],
+            }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "turn"}},
+        ]) + "\n")
+        from openubmc_target_runtime import host_continuity
+        actual_audit = host_continuity.audit_rollout_final
+
+        def add_run_during_audit(*args, **kwargs):
+            self.capture("three")
+            return actual_audit(*args, **kwargs)
+
+        with patch.object(host_continuity, "audit_rollout_final",
+                          side_effect=add_run_during_audit):
+            with self.assertRaisesRegex(ValueError, "task handoff changed"):
+                self.store.acknowledge_rollout(
+                    "task", "one", rollout, read_run=self.read,
+                )
+
+    def test_final_rechecks_runtime_outcome_after_rollout_audit(self):
+        self.terminal()
+        self.capture()
+        answer = self.store.handoff("task", read_run=self.read)["runs"][0]["terminal_answer"]
+        timestamp = (datetime.fromisoformat(answer["prepared_at"])
+                     + timedelta(seconds=1)).isoformat()
+        rollout = self.root / "changed-outcome-rollout.jsonl"
+        rollout.write_text("\n".join(json.dumps(event) for event in [
+            {"type": "session_meta", "payload": {"id": "task"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+            {"type": "response_item", "timestamp": timestamp, "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                "content": [{"type": "output_text", "text": answer["text"]}],
+            }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "turn"}},
+        ]) + "\n")
+        from openubmc_target_runtime import host_continuity
+        actual_audit = host_continuity.audit_rollout_final
+
+        def change_outcome_during_audit(*args, **kwargs):
+            final = actual_audit(*args, **kwargs)
+            self.projection["run_outcome"]["summary"] = "changed after final"
+            return final
+
+        with patch.object(host_continuity, "audit_rollout_final",
+                          side_effect=change_outcome_during_audit):
+            with self.assertRaisesRegex(ValueError, "Runtime Outcome changed"):
+                self.store.acknowledge_rollout(
+                    "task", "run", rollout,
+                    read_run=lambda run_id: copy.deepcopy(self.read(run_id)),
+                )
+
+    def test_composite_final_rechecks_every_included_run(self):
+        self.terminal()
+        projections = {
+            run_id: {**copy.deepcopy(self.projection),
+                     "run_outcome": {**self.projection["run_outcome"], "summary": run_id}}
+            for run_id in ("one", "two")
+        }
+
+        def read(run_id):
+            return copy.deepcopy(projections[run_id])
+
+        for run_id in projections:
+            self.store.capture("task", {"run_id": run_id}, read_run=read)
+        answers = [run["terminal_answer"] for run in
+                   self.store.handoff("task", read_run=read)["runs"]]
+        combined = "\n\n".join(answer["text"] for answer in answers)
+        timestamp = (datetime.fromisoformat(answers[0]["prepared_at"])
+                     + timedelta(seconds=1)).isoformat()
+        rollout = self.root / "stale-composite-rollout.jsonl"
+        rollout.write_text("\n".join(json.dumps(event) for event in [
+            {"type": "session_meta", "payload": {"id": "task"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+            {"type": "response_item", "timestamp": timestamp, "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer", "id": "final",
+                "content": [{"type": "output_text", "text": combined}],
+            }},
+            {"type": "event_msg", "timestamp": timestamp,
+             "payload": {"type": "task_complete", "turn_id": "turn"}},
+        ]) + "\n")
+        from openubmc_target_runtime import host_continuity
+        actual_audit = host_continuity.audit_rollout_final
+
+        def change_other_run_during_audit(*args, **kwargs):
+            final = actual_audit(*args, **kwargs)
+            projections["two"]["run_outcome"]["summary"] = "changed after final"
+            return final
+
+        with patch.object(host_continuity, "audit_rollout_final",
+                          side_effect=change_other_run_during_audit):
+            with self.assertRaisesRegex(ValueError, "Runtime Outcome changed"):
+                self.store.acknowledge_rollout("task", "one", rollout, read_run=read)
 
     def test_repeated_capture_keeps_prepared_answer_identity(self):
         self.terminal("partial")

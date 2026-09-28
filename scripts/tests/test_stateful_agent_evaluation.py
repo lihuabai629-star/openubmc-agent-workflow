@@ -273,13 +273,13 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
                 elapsed_seconds=1.25,
             )
             self.assertEqual(db.stat().st_mtime_ns, before)
-            self.assertEqual(result["issues"], [])
-            self.assertTrue(result["host_final_confirmed"])
+            self.assertIn("native_host_unconfirmed", result["issues"])
+            self.assertFalse(result["host_final_confirmed"])
             self.assertEqual(result["runtime_status"], "completed")
-            for scenario_id in ("build-verification-gate", "effect-reconcile", "diagnosis-resume"):
-                with self.subTest(scenario_id=scenario_id):
-                    other_case = next(item for item in self.manifest["scenarios"]
-                                      if item["id"] == scenario_id)
+            for other_case in self.manifest["scenarios"]:
+                if other_case["id"] == "diagnosis-complete":
+                    continue
+                with self.subTest(scenario_id=other_case["id"]):
                     negative = evaluation.score_case(
                         case=other_case, repository=evaluation.ReadOnlyTrialRepository(db),
                         run_id=run_id, task_id=task_id, final=store.get(task_id),
@@ -329,6 +329,7 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
                 elapsed_seconds=1.25,
             )
             self.assertTrue(native_result["host_final_confirmed"])
+            self.assertEqual(native_result["issues"], [])
             trace.write_text(json.dumps({
                 "task_id": task_id, "host_session_id": "other-session",
                 "tool": "execute", "response_received": True,

@@ -379,6 +379,12 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
         issues.add("expected_completion_missing")
     if live_mode:
         scenario = case.get("id")
+        # Only scenarios with an explicit Runtime/Host process check may pass.
+        # The remaining manifest rows still have offline fixtures, but their
+        # native Host adapters and scenario-specific checks are not available.
+        if scenario not in {"diagnosis-complete", "diagnosis-resume",
+                            "build-verification-gate", "effect-reconcile"}:
+            issues.add("scenario_not_exercised")
         opened_intent = str(_object(opened[0].get("payload")).get("intent", "")) if opened else ""
         gates = {str(_object(_object(event.get("payload")).get("gate")).get("name", ""))
                  for event in events if event.get("kind") == "RunGateOpened"}
@@ -754,6 +760,13 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
                         task_id=task_id, final=final, rollout=rollout,
                         identity=identity, expected_identity=expected, metrics=metrics,
                         host_session_id=host_session_id, live_mode=True)
+    if not host_session_id:
+        issues = set(result["issues"])
+        issues.add("native_host_unconfirmed")
+        result["issues"] = sorted(issues)[:12]
+        result["issue_count"] = int(result["issue_count"]) + 1
+        result["issues_truncated"] = bool(result["issue_count"] > 12)
+        result["host_final_confirmed"] = False
     result["trial"] = row["trial"]
     result["kind"] = "agent-evidence-scored"
     return result

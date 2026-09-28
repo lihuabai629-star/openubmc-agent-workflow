@@ -127,6 +127,33 @@ class EvidenceBatchTests(unittest.TestCase):
         self.assertIsNone(compared["changed"])
         self.assertIn("target_source_conflict", compared["reasons"])
 
+    def test_cross_target_logs_cannot_support_alarm_correlation(self):
+        alarms, logs = captured(lines=[LINE])
+        logs["ip"] = "target-b"
+        correlation = build_correlation(
+            alarms, logs, source_root="", max_matches=0, alarm_limit=2,
+            timeout=1, workflow_keyword="EventDemo", enabled=False,
+        )
+        self.assertEqual(correlation["correlation_blocked_by"], ["target_source_conflict"])
+        self.assertEqual(correlation["records"], [])
+        self.assertEqual(correlation["workflow_keyword_refs"], [])
+        self.assertEqual(len(correlation["evidence_pool"]["alarm_log_lines"]), 1)
+        self.assertEqual(correlation["evidence_pool"]["alarm_log_lines"][0]["target"], "target-b")
+
+    def test_separate_workflow_log_target_must_match_alarm_target(self):
+        alarms, logs = captured(lines=[LINE])
+        _, workflow_logs = captured(lines=[LINE])
+        workflow_logs["ip"] = "target-b"
+        correlation = build_correlation(
+            alarms, logs, source_root="", max_matches=0, alarm_limit=2,
+            timeout=1, workflow_keyword="EventDemo", enabled=False,
+            workflow_logs_result=workflow_logs,
+        )
+        self.assertEqual(correlation["correlation_blocked_by"], ["target_source_conflict"])
+        self.assertEqual(correlation["records"], [])
+        self.assertEqual(correlation["workflow_keyword_refs"], [])
+        self.assertEqual(len(correlation["evidence_pool"]["workflow_log_lines"]), 1)
+
     def test_comparison_rejects_incompatible_snapshots_and_preserves_change_refs(self):
         alarms, logs = captured(lines=[LINE])
         before = batch(alarms, logs)
