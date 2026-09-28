@@ -38,6 +38,21 @@ def local_data_home(kind: str) -> Path:
     return Path.home()/suffix
 
 
+def ensure_windows_private_roots(content: dict[str, bytes]) -> None:
+    if sys.platform != 'win32':
+        return
+    import types
+    module = types.ModuleType('_verified_openubmc_windows_private')
+    path = 'skills/openubmc-target-runtime/openubmc_target_runtime/windows_private.py'
+    exec(compile(content[path], '<verified-windows-private>', 'exec'), module.__dict__)
+    roots = {
+        *(local_data_home(kind)/'openubmc' for kind in ('data', 'cache', 'config')),
+        local_data_home('state')/'openubmc-agent-workflow',
+    }
+    for root in sorted(roots):
+        module.ensure_private_directory(root)
+
+
 def _acquire_cache_lock(stream, *, blocking: bool) -> None:
     if sys.platform == 'win32':
         import msvcrt
@@ -700,6 +715,8 @@ def main() -> int:
         started = time.monotonic()
         lock, content = verify()
         write_timing(args.timings, 'verify', started)
+        if args.command in {'prepare', 'runtime', 'kb', 'configure', 'host-hook'}:
+            ensure_windows_private_roots(content)
         knowledge_package = json.loads(content['openubmc-kb-mcp/package.json'])
         knowledge_mcp_version = knowledge_package.get('version')
         report = {'ok': True, 'source_commit': lock['source_commit'], 'version': lock['version'],
