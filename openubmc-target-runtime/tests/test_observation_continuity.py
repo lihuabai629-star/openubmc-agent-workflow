@@ -63,6 +63,30 @@ def start(service, *, task="continuity", operation="start-1", target="192.0.2.90
 
 
 class ObservationContinuityTests(unittest.TestCase):
+    def test_observe_uses_qualified_selector_completion_when_backend_omits_top_level_time(self):
+        class TimingOnlyBackend(ScopedBackend):
+            def observe_query(self, task, arguments, context):
+                result = super().observe_query(task, arguments, context)
+                result.pop("observed_at", None)
+                return result
+
+        service = RuntimeMcpService(TimingOnlyBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.90", "selectors": [
+                    {"id": "ssh", "kind": "capability", "names": ["ssh"]},
+                ]},
+                task_id="selector-completion-only",
+                operation_id="observe-selector-completion",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["freshness"]["observed_at"], "2026-09-05T00:00:01+00:00")
+        self.assertEqual(receipt["observation_ref"]["observed_at"], "2026-09-05T00:00:01+00:00")
+
     def test_observe_binds_nondefault_ssh_port_to_scope_and_runtime(self):
         backend = ScopedBackend()
         service = RuntimeMcpService(backend)
