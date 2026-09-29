@@ -692,7 +692,38 @@ function renderChecks() {
     row.className = "check-row" + (entry.verified ? " ok" : "");
   }
 }
+function renderStorageRecovery() {
+  const affected = state.storage?.roots?.find((root) => root.status !== "ready");
+  const blocked = Boolean(affected);
+  $("storage-recovery").hidden = !blocked;
+  for (const selector of ["aside", "#editor", "#remember", ".connection", "#config-location", "#plugin-maintenance"])
+    document.querySelector(selector).hidden = blocked;
+  if (!blocked) return false;
+  $("title").textContent = "本机目录需要修复";
+  $("subtitle").textContent = "修复后会继续打开原来的配置页面。";
+  $("saved-state").textContent = "需要修复";
+  $("storage-path").textContent = affected.path;
+  $("storage-message").textContent = affected.status === "repairable"
+    ? "此目录继承了额外读取权限。修复只调整目录权限，保留已有配置。"
+    : "此目录无法自动修复，请检查目录所有者、链接和访问权限。";
+  $("storage-repair").hidden = affected.status !== "repairable";
+  $("storage-repair").onclick = () => action(async () => {
+    await api("/api/plugin", { action: "repair-storage", root_id: affected.root_id,
+      snapshot_token: affected.snapshot_token });
+    state = await api("/api/state");
+    if (renderStorageRecovery()) {
+      notice("目录已修复，请继续处理列出的目录。", false);
+      return;
+    }
+    kind = state.page_session?.kind || "targets";
+    expertTargets = separateBmcAccounts(state.targets.config);
+    render();
+    notice("本机目录已修复，原有配置已保留。");
+  });
+  return true;
+}
 function render() {
+  if (renderStorageRecovery()) return;
   dirty = false;
   const current = state[kind];
   $("fields").replaceChildren();
@@ -796,7 +827,7 @@ document.querySelectorAll("[data-tab]").forEach(
 action(async () => {
   state = await api("/api/state");
   kind = state.page_session?.kind || "targets";
-  expertTargets = separateBmcAccounts(state.targets.config);
+  expertTargets = state.targets ? separateBmcAccounts(state.targets.config) : false;
   $("environment").textContent =
     `${state.environment.platform} / ${state.environment.hostname}`;
   $("location").textContent = state.environment.config_home;

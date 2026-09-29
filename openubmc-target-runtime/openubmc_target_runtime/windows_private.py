@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -131,6 +132,110 @@ def verify_private_path(path: Path, *, safe_parent: bool = False) -> None:
                 raise WindowsPrivateError("Windows private path grants access to another user")
     finally:
         kernel.LocalFree(descriptor)
+
+
+def _inherited_read_snapshot(path: Path) -> str:
+    """Identify the one existing ACL shape that setup can repair explicitly."""
+    path = Path(path)
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        raise WindowsPrivateError("private_root_reparse_link")
+    if not path.is_dir():
+        raise WindowsPrivateError("private_root_not_directory")
+    advapi, kernel, wintypes = _apis()
+    user_sid, user_buffer = _current_user_sid(advapi, kernel, wintypes)
+    del user_buffer
+    owner = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    result = advapi.GetNamedSecurityInfoW(str(path), 1, 1 | 4,
+                                          ctypes.byref(owner), None, ctypes.byref(dacl),
+                                          None, ctypes.byref(descriptor))
+    if result:
+        raise WindowsPrivateError("private_root_inspection_failed")
+    try:
+        if not owner.value or _sid_text(advapi, kernel, owner) != user_sid or not dacl.value:
+            raise WindowsPrivateError("private_root_unsafe_owner")
+
+        class AclSize(ctypes.Structure):
+            _fields_ = [("ace_count", wintypes.DWORD), ("bytes_in_use", wintypes.DWORD),
+                        ("bytes_free", wintypes.DWORD)]
+
+        size = AclSize()
+        if not advapi.GetAclInformation(dacl, ctypes.byref(size), ctypes.sizeof(size), 2):
+            raise WindowsPrivateError("private_root_inspection_failed")
+        trusted = {user_sid, "S-1-3-4", "S-1-5-18", "S-1-5-32-544"}
+        read_only = 0x80000000 | 0x20000000 | 0x001200A9
+        inherited_outside_read = False
+        for index in range(size.ace_count):
+            ace = ctypes.c_void_p()
+            if not advapi.GetAce(dacl, index, ctypes.byref(ace)):
+                raise WindowsPrivateError("private_root_inspection_failed")
+            kind = ctypes.c_ubyte.from_address(ace.value).value
+            flags = ctypes.c_ubyte.from_address(ace.value + 1).value
+            if kind == 1:
+                continue
+            if kind != 0:
+                raise WindowsPrivateError("private_root_unsupported_access")
+            mask = ctypes.c_uint32.from_address(ace.value + 4).value
+            sid = _sid_text(advapi, kernel, ace.value + 8)
+            if sid in trusted or not mask:
+                continue
+            if not flags & 0x10:
+                raise WindowsPrivateError("private_root_explicit_outside_access")
+            if mask & ~read_only:
+                raise WindowsPrivateError("private_root_outside_write_access")
+            inherited_outside_read = True
+        if not inherited_outside_read:
+            raise WindowsPrivateError("private_root_not_repairable")
+        advapi.GetSecurityDescriptorLength.argtypes = [ctypes.c_void_p]
+        advapi.GetSecurityDescriptorLength.restype = wintypes.DWORD
+        length = advapi.GetSecurityDescriptorLength(descriptor)
+        if not length:
+            raise WindowsPrivateError("private_root_inspection_failed")
+        identity = path.stat()
+        digest = hashlib.sha256()
+        digest.update(str(path.absolute()).casefold().encode("utf-8"))
+        digest.update(str((identity.st_dev, identity.st_ino)).encode("ascii"))
+        digest.update(ctypes.string_at(descriptor, length))
+        return digest.hexdigest()
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+def private_directory_recovery_status(path: Path) -> dict[str, str]:
+    path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        return {"status": "ready"}
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+        return {"status": "blocked", "reason_code": "private_root_reparse_link"}
+    if not path.is_dir():
+        return {"status": "blocked", "reason_code": "private_root_not_directory"}
+    try:
+        verify_private_path(path)
+        return {"status": "ready"}
+    except (WindowsPrivateError, OSError):
+        pass
+    try:
+        return {"status": "repairable", "snapshot_token": _inherited_read_snapshot(path)}
+    except (WindowsPrivateError, OSError) as error:
+        code = str(error) if str(error).startswith("private_root_") else "private_root_inspection_failed"
+        return {"status": "blocked", "reason_code": code}
+
+
+def repair_inherited_read_directory(path: Path, *, expected_token: str) -> None:
+    path = Path(path)
+    if not isinstance(expected_token, str) or len(expected_token) != 64:
+        raise WindowsPrivateError("private_root_changed")
+    before = path.stat(follow_symlinks=False)
+    if _inherited_read_snapshot(path) != expected_token:
+        raise WindowsPrivateError("private_root_changed")
+    if path.stat(follow_symlinks=False) != before:
+        raise WindowsPrivateError("private_root_changed")
+    _harden(path, directory=True)
+    after = path.stat(follow_symlinks=False)
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise WindowsPrivateError("private_root_changed")
+    verify_private_path(path)
 
 
 def _harden(path: Path, *, directory: bool) -> None:

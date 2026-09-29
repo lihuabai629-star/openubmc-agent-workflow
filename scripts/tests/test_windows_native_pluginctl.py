@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,12 +12,121 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @unittest.skipUnless(sys.platform == "win32", "requires native Windows")
 class WindowsNativePluginCliTests(unittest.TestCase):
+    def test_inherited_read_only_root_requires_explicit_snapshot_bound_repair(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as raw:
+            root = Path(raw)
+            plugin = root / "plugin"
+            files = {
+                ".codex-plugin/plugin.json": b'{"name":"openubmc","version":"0.0.0"}',
+                "openubmc-kb-mcp/package.json": b'{"name":"openubmc-kb-mcp","version":"0.0.0"}',
+                "scripts/pluginctl.py": (ROOT / "plugin/openubmc/scripts/pluginctl.py").read_bytes(),
+                "skills/openubmc-target-runtime/openubmc_target_runtime/windows_private.py":
+                    (ROOT / "openubmc-target-runtime/openubmc_target_runtime/windows_private.py").read_bytes(),
+            }
+            for name, data in files.items():
+                path = plugin / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            canonical = lambda value: (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode()
+            unsigned = {
+                "schema": "openubmc.codex-plugin.v1", "name": "openubmc", "version": "0.0.0",
+                "source_commit": "a" * 40,
+                "manifest_digest": hashlib.sha256(files[".codex-plugin/plugin.json"]).hexdigest(),
+                "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+                "skills": [],
+            }
+            (plugin / "plugin-lock.json").write_bytes(canonical({
+                **unsigned, "content_digest": hashlib.sha256(canonical(unsigned)).hexdigest(),
+            }))
+            appdata = root / "local"
+            appdata.mkdir()
+            subprocess.run(["icacls.exe", str(appdata), "/grant", "*S-1-1-0:(OI)(CI)RX"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            affected = appdata / "openubmc"
+            affected.mkdir()
+            retained = affected / "retained.json"
+            retained.write_bytes(b'{"fixture":"unchanged"}')
+            private = runpy.run_path(str(ROOT / "openubmc-target-runtime/openubmc_target_runtime/windows_private.py"))
+            private["harden_new_file"](retained)
+            environment = dict(os.environ, LOCALAPPDATA=str(appdata))
+            for name in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"):
+                environment.pop(name, None)
+            def cli(*args):
+                return subprocess.run([sys.executable, "-I", "-B", str(plugin / "scripts/pluginctl.py"), *args],
+                                      env=environment, capture_output=True, text=True, timeout=20)
+
+            blocked = cli("storage-status")
+            self.assertEqual(blocked.returncode, 2, blocked.stderr)
+            conflict = json.loads(blocked.stdout)
+            self.assertEqual(conflict["error_code"], "windows_private_root_conflict")
+            self.assertEqual(json.loads(cli("doctor").stdout)["error_code"], "windows_private_root_conflict")
+            self.assertEqual(json.loads(cli("prepare", "--capability", "runtime", "--offline").stderr)["error_code"],
+                             "windows_private_root_conflict")
+            selected = next(item for item in conflict["roots"] if item["root_id"] == "data")
+            self.assertEqual(selected["status"], "repairable")
+            self.assertTrue(selected["snapshot_token"])
+            self.assertEqual(cli("repair-storage", "--root-id", "data", "--expected-token", "stale").returncode, 2)
+            with self.assertRaises(private["WindowsPrivateError"]):
+                private["verify_private_path"](affected)
+            repaired = cli("repair-storage", "--root-id", "data", "--expected-token", selected["snapshot_token"])
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertEqual(json.loads(repaired.stdout)["status"], "repaired")
+            private["verify_private_path"](affected)
+            self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
+            self.assertTrue(json.loads(cli("storage-status").stdout)["ok"])
+
+            subprocess.run(["icacls.exe", str(affected), "/inheritance:e"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            spec = importlib.util.spec_from_file_location(
+                "native_recovery_page", ROOT / "openubmc-environment-setup/scripts/config_page.py")
+            page = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(page)
+            maintenance = page.PluginMaintenance(plugin, environment=environment)
+            with page.LocalConfigurationServer(appdata, kind="kb", maintenance=maintenance) as server:
+                headers = {"X-OpenUBMC-Session": server.session_token, "Origin": server.origin,
+                           "Content-Type": "application/json"}
+                def state():
+                    with urlopen(Request(server.origin + "/api/state", headers=headers), timeout=5) as response:
+                        return json.load(response)
+                def repair(root_id, token):
+                    request = Request(server.origin + "/api/plugin", data=json.dumps({
+                        "action": "repair-storage", "root_id": root_id, "snapshot_token": token,
+                    }).encode(), headers=headers)
+                    with urlopen(request, timeout=5) as response:
+                        return json.load(response)
+                pending = state()
+                self.assertEqual(pending["storage"]["error_code"], "windows_private_root_conflict")
+                self.assertEqual(pending["page_session"]["kind"], "kb")
+                selected = next(item for item in pending["storage"]["roots"] if item["root_id"] == "data")
+                self.assertEqual(repair("data", selected["snapshot_token"])["status"], "repaired")
+                resumed = state()
+                self.assertTrue(resumed["storage"]["ok"])
+                self.assertEqual(resumed["page_session"]["kind"], "kb")
+                self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
+
+            subprocess.run(["icacls.exe", str(affected), "/grant", "*S-1-1-0:R"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            explicit = json.loads(cli("storage-status").stdout)
+            self.assertEqual(explicit["roots"][0]["status"], "blocked")
+            self.assertEqual(explicit["roots"][0]["reason_code"], "private_root_explicit_outside_access")
+            subprocess.run(["icacls.exe", str(affected), "/remove:g", "*S-1-1-0"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            subprocess.run(["icacls.exe", str(appdata), "/grant", "*S-1-1-0:(OI)(CI)M"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            subprocess.run(["icacls.exe", str(affected), "/inheritance:e"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            inherited_write = json.loads(cli("storage-status").stdout)
+            self.assertEqual(inherited_write["roots"][0]["status"], "blocked")
+            self.assertEqual(inherited_write["roots"][0]["reason_code"], "private_root_outside_write_access")
+            self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
+
     def test_verified_installed_inventory_starts_without_posix_modules(self):
         with tempfile.TemporaryDirectory(dir=Path.home()) as raw:
             plugin = Path(raw) / "openubmc"

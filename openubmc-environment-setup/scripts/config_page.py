@@ -157,6 +157,15 @@ class PluginMaintenance:
 
     def dispatch(self, data):
         action = data.get("action")
+        if action == "repair-storage":
+            root_id, token = data.get("root_id"), data.get("snapshot_token")
+            if root_id not in {"data", "cache", "config", "state"} or not isinstance(token, str):
+                raise ConfigurationError("Select a current private-root snapshot")
+            report = self.command("repair-storage", "--root-id", root_id,
+                                  "--expected-token", token)
+            if not report.get("ok"):
+                raise ConfigurationConflict("Private-root snapshot changed")
+            return {"status": report["status"], "root_id": root_id}
         if action == "status":
             report = self.command("doctor")
             config = report.get("codex_configuration", {})
@@ -491,11 +500,25 @@ class LocalConfigurationServer:
 
     def state(self):
         with self._lock:
+            storage = (self.maintenance.command("storage-status")
+                       if self.maintenance is not None and sys.platform == "win32"
+                       else {"ok": True, "roots": []})
+            if not storage.get("ok"):
+                return {
+                    "storage": storage,
+                    "environment": {
+                        "platform": _platform_label(),
+                        "hostname": socket.gethostname(),
+                        "config_home": str(self.config_home),
+                    },
+                    "page_session": self.page_session,
+                }
             selected = self.view(self.page_session["kind"])
             configured = bool(selected["active_revision"]) and bool(selected["readiness"]) and all(
                 item["configured"] for item in selected["readiness"]
             )
             return {
+                "storage": storage,
                 **{kind: self.view(kind) for kind in self.stores},
                 "environment": {
                     "platform": _platform_label(),
@@ -763,8 +786,14 @@ def main():
     from config_checks import BoundedConfigurationChecker
     from openubmc_target_runtime.credentials import LocalCredentialSource
 
+    plugin_root = Path(__file__).resolve().parents[3]
+    maintenance = (PluginMaintenance(plugin_root)
+                   if (plugin_root/"plugin-lock.json").is_file() else None)
+    storage_ready = (maintenance is None or sys.platform != "win32"
+                     or maintenance.command("storage-status").get("ok") is True)
+
     selected = (
-        LocalCredentialSource().select_path() if args.config_home is None else None
+        LocalCredentialSource().select_path() if args.config_home is None and storage_ready else None
     )
     sources = {}
     if selected is not None:
@@ -793,8 +822,7 @@ def main():
             (targets[0]["ip"] if targets and args.purpose == "bmc" else None),
         wait_for_save=args.wait_for_save,
         purpose=args.purpose, transport=args.transport,
-        maintenance=PluginMaintenance(Path(__file__).resolve().parents[3])
-        if (Path(__file__).resolve().parents[3]/"plugin-lock.json").is_file() else None,
+        maintenance=maintenance,
     ) as server:
         print(server.url, flush=True)
         if args.open_browser and not args.no_browser:

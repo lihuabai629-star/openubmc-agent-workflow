@@ -92,6 +92,37 @@ test("a discovered target source does not replace the requested KB page", { time
   assert.equal(await page.getByLabel("openUBMC 账号", { exact: true }).isVisible(), true);
 });
 
+test("a private-root conflict offers one local repair and resumes the requested page", { timeout: 30000 }, async (t) => {
+  const { page, url } = await configurationPage(t, ["--kind", "kb"]);
+  let blocked = true;
+  const calls = [];
+  await page.route("**/api/state", async (route) => {
+    if (!blocked) return route.continue();
+    return route.fulfill({ json: {
+      storage: { ok: false, error_code: "windows_private_root_conflict", roots: [{
+        root_id: "data", capabilities: ["data", "cache", "config"],
+        path: "C:\\Users\\fixture\\AppData\\Local\\openubmc",
+        status: "repairable", snapshot_token: "a".repeat(64),
+      }] },
+      environment: { platform: "Windows", hostname: "fixture", config_home: "C:\\Users\\fixture\\AppData\\Local" },
+      page_session: { kind: "kb" },
+    } });
+  });
+  await page.route("**/api/plugin", async (route) => {
+    const data = route.request().postDataJSON();
+    calls.push(data);
+    blocked = false;
+    await route.fulfill({ json: { status: "repaired", root_id: "data" } });
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "修复本机目录", exact: true }).waitFor();
+  assert.equal(await page.locator("#editor").isVisible(), false);
+  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
+  await page.getByLabel("openUBMC 账号", { exact: true }).waitFor();
+  assert.deepEqual(calls, [{ action: "repair-storage", root_id: "data", snapshot_token: "a".repeat(64) }]);
+  assert.equal(await page.locator("#editor").isVisible(), true);
+});
+
 test("a focused page saves the requested account and signals completion without a chat reply", { timeout: 30000 }, async (t) => {
   const { page, url, completion } = await configurationPage(t, ["--kind", "kb", "--wait-for-save"]);
   await page.goto(url);

@@ -38,18 +38,57 @@ def local_data_home(kind: str) -> Path:
     return Path.home()/suffix
 
 
-def ensure_windows_private_roots(content: dict[str, bytes]) -> None:
-    if sys.platform != 'win32':
-        return
+def verified_windows_private(content: dict[str, bytes]):
     import types
     module = types.ModuleType('_verified_openubmc_windows_private')
     path = 'skills/openubmc-target-runtime/openubmc_target_runtime/windows_private.py'
     exec(compile(content[path], '<verified-windows-private>', 'exec'), module.__dict__)
-    roots = {
-        *(local_data_home(kind)/'openubmc' for kind in ('data', 'cache', 'config')),
-        local_data_home('state')/'openubmc-agent-workflow',
+    return module
+
+
+def windows_private_roots() -> dict[str, Path]:
+    return {
+        'data': local_data_home('data')/'openubmc',
+        'cache': local_data_home('cache')/'openubmc',
+        'config': local_data_home('config')/'openubmc',
+        'state': local_data_home('state')/'openubmc-agent-workflow',
     }
-    for root in sorted(roots):
+
+
+def windows_storage_status(content: dict[str, bytes]) -> dict[str, object]:
+    if sys.platform != 'win32':
+        return {'ok': True, 'roots': []}
+    module = verified_windows_private(content)
+    grouped = {}
+    for root_id, path in windows_private_roots().items():
+        key = os.path.normcase(os.path.abspath(path))
+        if key in grouped:
+            grouped[key]['capabilities'].append(root_id)
+            continue
+        grouped[key] = {'root_id': root_id, 'capabilities': [root_id], 'path': str(path),
+                        **module.private_directory_recovery_status(path)}
+    roots = list(grouped.values())
+    ok = all(root['status'] == 'ready' for root in roots)
+    return {'ok': ok, 'error_code': None if ok else 'windows_private_root_conflict',
+            'recovery_action': None if ok else 'Open the local openUBMC configuration page to repair the listed current-user directory.',
+            'roots': roots}
+
+
+def repair_windows_storage(content: dict[str, bytes], root_id: str, expected_token: str) -> dict[str, object]:
+    if sys.platform != 'win32' or root_id not in windows_private_roots():
+        raise ValueError('private_root_unknown')
+    module = verified_windows_private(content)
+    root = windows_private_roots()[root_id]
+    module.repair_inherited_read_directory(root, expected_token=expected_token)
+    return {'ok': True, 'status': 'repaired', 'root_id': root_id,
+            'private_roots': windows_storage_status(content)}
+
+
+def ensure_windows_private_roots(content: dict[str, bytes]) -> None:
+    if sys.platform != 'win32':
+        return
+    module = verified_windows_private(content)
+    for root in sorted(set(windows_private_roots().values())):
         module.ensure_private_directory(root)
 
 
@@ -680,7 +719,7 @@ def positive_timeout(value: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'host-hook', 'configure', 'migrate', 'repair-overrides', 'restore-legacy', 'cleanup-retired'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'host-hook', 'configure', 'migrate', 'repair-overrides', 'restore-legacy', 'cleanup-retired', 'storage-status', 'repair-storage'])
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path, default=Path(os.environ['CODEX_HOME']) if os.environ.get('CODEX_HOME') else None)
     parser.add_argument('--transaction', default='')
@@ -690,6 +729,8 @@ def main() -> int:
     migration_mode.add_argument('--remove', dest='migration_mode', action='store_const', const='remove', help='Remove owned legacy registrations and Skill links')
     parser.add_argument('--preview', action='store_true', help='Inspect migration without changing files')
     parser.add_argument('--target-plugin', default='openubmc@openubmc-public', help='Plugin registration to preserve during migration')
+    parser.add_argument('--root-id', choices=['data', 'cache', 'config', 'state'])
+    parser.add_argument('--expected-token')
     parser.add_argument('--no-browser', action='store_true')
     parser.add_argument('--kind', choices=['targets', 'kb', 'conan'], default='targets')
     parser.add_argument('--focus-target')
@@ -715,7 +756,22 @@ def main() -> int:
         started = time.monotonic()
         lock, content = verify()
         write_timing(args.timings, 'verify', started)
-        if args.command in {'prepare', 'runtime', 'kb', 'configure', 'host-hook'}:
+        if args.command == 'storage-status':
+            storage = windows_storage_status(content)
+            print(json.dumps(storage, sort_keys=True))
+            return 0 if storage['ok'] else 2
+        if args.command == 'repair-storage':
+            if not args.root_id or not args.expected_token:
+                raise ValueError('private_root_repair_requires_snapshot')
+            print(json.dumps(repair_windows_storage(content, args.root_id, args.expected_token), sort_keys=True))
+            return 0
+        if args.command in {'prepare', 'runtime', 'kb', 'host-hook', 'doctor'}:
+            storage = windows_storage_status(content)
+            if not storage['ok']:
+                print(json.dumps(storage, sort_keys=True),
+                      file=sys.stdout if args.command == 'doctor' else sys.stderr)
+                return 2
+        if args.command in {'prepare', 'runtime', 'kb', 'host-hook'}:
             ensure_windows_private_roots(content)
         knowledge_package = json.loads(content['openubmc-kb-mcp/package.json'])
         knowledge_mcp_version = knowledge_package.get('version')

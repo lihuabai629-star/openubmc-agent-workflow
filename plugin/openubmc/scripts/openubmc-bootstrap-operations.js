@@ -12,6 +12,7 @@ const recoveryActions = Object.freeze({
   dependency_hash_mismatch: "Use packages matching the release lock hashes, then retry preparation.",
   dependency_prepare_failed: "Review local package-manager connectivity and retry preparation.",
   mcp_protocol_unhealthy: "Restart the task after checking the Runtime MCP initialize and tools/list probe.",
+  windows_private_root_conflict: "Use openubmc_setup_open_configuration to open the local page and repair the listed Windows directory, then retry setup.",
 });
 
 function parseJsonOutput(adapter, buffer) {
@@ -86,7 +87,8 @@ function createSetupOperations(adapter, capability) {
     }
     const rawError = String(selected?.error || "").toLowerCase();
     let reason = "dependency_preflight_failed";
-    if (rawError.includes("not prepared")) reason = "dependencies_not_prepared";
+    if (report?.error_code === "windows_private_root_conflict") reason = "windows_private_root_conflict";
+    else if (rawError.includes("not prepared")) reason = "dependencies_not_prepared";
     else if (rawError.includes("cache drift")) reason = "dependency_cache_drift";
     else if (rawError.includes("node 20")) reason = "node_unavailable";
     else if (selected?.startup_ready && report?.mcp_health?.[capability]?.ok !== true) reason = "mcp_protocol_unhealthy";
@@ -105,6 +107,8 @@ function createSetupOperations(adapter, capability) {
       capability,
       host: adapter.hostPlatform === "win32" ? "windows" : "linux",
       reason: failure.reason,
+      affected_roots: (report.roots || []).filter((root) => root.status !== "ready")
+        .map((root) => ({ root_id: root.root_id, capabilities: root.capabilities, status: root.status })),
       recovery_action: failure.recovery_action || recoveryActions[failure.reason]
         || "Use the openUBMC setup tools to repair the reported local prerequisite.",
       next_action: adapter.hostPlatform === "win32"
