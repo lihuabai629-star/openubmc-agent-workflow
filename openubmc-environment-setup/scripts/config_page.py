@@ -279,8 +279,8 @@ class LocalConfigurationServer:
                 self.config_home / "openubmc" / "kb-mcp.json", kind="kb"
             ),
         }
-        for kind, path in (sources or {}).items():
-            self.stores[kind] = LocalConfigurationStore(path, kind=kind)
+        for source_kind, path in (sources or {}).items():
+            self.stores[source_kind] = LocalConfigurationStore(path, kind=source_kind)
         self.maintenance = maintenance
         if kind not in self.stores:
             raise ConfigurationError("Unknown configuration kind")
