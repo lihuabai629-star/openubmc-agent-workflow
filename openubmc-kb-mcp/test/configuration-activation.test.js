@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -16,8 +16,10 @@ const windows = process.platform === 'win32';
 function setupWindowsHelper() {
   if (!windows) return;
   if (!process.env.OPENUBMC_WINDOWS_PYTHON) {
-    process.env.OPENUBMC_WINDOWS_PYTHON = execFileSync('py', ['-3.12', '-c',
-      'import sys; print(sys.executable)'], { encoding: 'utf8' }).trim();
+    const selected = spawnSync('py', ['-3.12', '-c', 'import sys; print(sys.executable)'],
+      { encoding: 'utf8', windowsHide: true });
+    process.env.OPENUBMC_WINDOWS_PYTHON = selected.status === 0
+      ? selected.stdout.trim() : 'python';
   }
   process.env.OPENUBMC_WINDOWS_HELPER ||= resolve('../openubmc-target-runtime/tools/windows_platform_helper.py');
 }
