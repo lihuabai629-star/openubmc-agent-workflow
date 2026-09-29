@@ -163,12 +163,15 @@ class WindowsPrivateConfigurationTests(unittest.TestCase):
             root = Path(raw)
             run_path = root/"run"/"runtime.sqlite3"
             repository = SQLiteRuntimeRepository(run_path)
-            verify_private_path(run_path)
-            changed = subprocess.run(["icacls.exe", str(run_path), "/grant", "*S-1-5-32-545:(R)"],
-                                     capture_output=True, text=True)
-            self.assertEqual(changed.returncode, 0, changed.stderr)
-            with self.assertRaises(WindowsPrivateError):
-                repository.current_revision("fixture-run")
+            try:
+                verify_private_path(run_path)
+                changed = subprocess.run(["icacls.exe", str(run_path), "/grant", "*S-1-5-32-545:(R)"],
+                                         capture_output=True, text=True)
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                with self.assertRaises(WindowsPrivateError):
+                    repository.current_revision("fixture-run")
+            finally:
+                repository.close()
 
             host = HostContinuity(root/"host")
             with host._database():

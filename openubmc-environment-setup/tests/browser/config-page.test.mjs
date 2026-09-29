@@ -130,6 +130,58 @@ test("a private-root conflict offers one local repair and resumes the requested 
   assert.deepEqual(calls.at(-1), { action: "undo-storage" });
 });
 
+test("each repaired private root remains undoable while another root is blocked", { timeout: 30000 }, async (t) => {
+  const { page, url } = await configurationPage(t, ["--kind", "kb"]);
+  const roots = ["data", "state"];
+  const repaired = new Set();
+  const transactions = [];
+  const calls = [];
+  await page.route("**/api/state", async (route) => {
+    const pending = roots.filter((root) => !repaired.has(root));
+    if (!pending.length) {
+      const response = await route.fetch();
+      return route.fulfill({ json: { ...(await response.json()), storage_repair: transactions.length > 0 } });
+    }
+    return route.fulfill({ json: {
+      storage: { ok: false, error_code: "windows_private_root_conflict", roots: pending.map((root_id) => ({
+        root_id, path: `C:\\fixture\\${root_id}`, status: "repairable", snapshot_token: "a".repeat(64),
+      })) },
+      storage_repair: transactions.length > 0,
+      environment: { platform: "Windows", hostname: "fixture", config_home: "C:\\fixture" },
+      page_session: { kind: "kb" },
+    } });
+  });
+  await page.route("**/api/plugin", async (route) => {
+    const data = route.request().postDataJSON();
+    calls.push(data);
+    if (data.action === "repair-storage") {
+      repaired.add(data.root_id);
+      transactions.push(data.root_id);
+      return route.fulfill({ json: { status: "repaired", root_id: data.root_id } });
+    }
+    const root_id = transactions.pop();
+    repaired.delete(root_id);
+    return route.fulfill({ json: { status: "restored", root_id } });
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
+  await page.locator("#storage-path").getByText("C:\\fixture\\state", { exact: true }).waitFor();
+  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\state");
+  assert.equal(await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).isVisible(), true);
+  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
+  await page.locator("#plugin-maintenance summary").click();
+  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
+  await page.locator("#storage-path").getByText("C:\\fixture\\state", { exact: true }).waitFor();
+  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\state");
+  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
+  await page.locator("#storage-path").getByText("C:\\fixture\\data", { exact: true }).waitFor();
+  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\data");
+  assert.deepEqual(calls.map(({ action, root_id }) => [action, root_id]), [
+    ["repair-storage", "data"], ["repair-storage", "state"],
+    ["undo-storage", undefined], ["undo-storage", undefined],
+  ]);
+});
+
 test("a focused page saves the requested account and signals completion without a chat reply", { timeout: 30000 }, async (t) => {
   const { page, url, completion } = await configurationPage(t, ["--kind", "kb", "--wait-for-save"]);
   await page.goto(url);

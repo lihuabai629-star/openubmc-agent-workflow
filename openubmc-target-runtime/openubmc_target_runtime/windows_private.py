@@ -369,6 +369,8 @@ def repair_inherited_read_directory(path: Path, *, expected_token: str) -> str:
         _write_recovery_record(record_path, record, create=True)
         changed = False
         try:
+            if _directory_acl_state(path, handle, identity, advapi, kernel, wintypes)["token"] != plan["token"]:
+                raise WindowsPrivateError("private_root_changed")
             _set_directory_acl(handle, advapi, new_acl, protected=True)
             changed = True
             verify_private_path(path)

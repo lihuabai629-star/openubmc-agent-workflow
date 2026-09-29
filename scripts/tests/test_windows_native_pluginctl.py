@@ -73,6 +73,13 @@ class WindowsNativePluginCliTests(unittest.TestCase):
             self.assertEqual(selected["status"], "repairable")
             self.assertTrue(selected["snapshot_token"])
             self.assertEqual(cli("repair-storage", "--root-id", "data", "--expected-token", "stale").returncode, 2)
+            subprocess.run(["icacls.exe", str(affected), "/grant", "*S-1-5-18:(RX)"],
+                           check=True, capture_output=True, text=True, timeout=10)
+            stale = cli("repair-storage", "--root-id", "data", "--expected-token", selected["snapshot_token"])
+            self.assertEqual(stale.returncode, 2)
+            self.assertEqual(json.loads(stale.stderr)["error"], "private_root_changed")
+            selected = next(item for item in json.loads(cli("storage-status").stdout)["roots"]
+                            if item["root_id"] == "data")
             with self.assertRaises(private["WindowsPrivateError"]):
                 private["verify_private_path"](affected)
             repaired = cli("repair-storage", "--root-id", "data", "--expected-token", selected["snapshot_token"])
@@ -93,6 +100,11 @@ class WindowsNativePluginCliTests(unittest.TestCase):
 
             subprocess.run(["icacls.exe", str(affected), "/inheritance:e"],
                            check=True, capture_output=True, text=True, timeout=10)
+            state_root = appdata / "openubmc-agent-workflow"
+            state_root.mkdir()
+            state_file = state_root / "retained.json"
+            state_file.write_bytes(b'{"state":"unchanged"}')
+            private["harden_new_file"](state_file)
             spec = importlib.util.spec_from_file_location(
                 "native_recovery_page", ROOT / "openubmc-environment-setup/scripts/config_page.py")
             page = importlib.util.module_from_spec(spec)
@@ -119,15 +131,29 @@ class WindowsNativePluginCliTests(unittest.TestCase):
                 self.assertEqual(pending["page_session"]["kind"], "kb")
                 selected = next(item for item in pending["storage"]["roots"] if item["root_id"] == "data")
                 self.assertEqual(repair("data", selected["snapshot_token"])["status"], "repaired")
+                pending_state = state()
+                self.assertTrue(pending_state["storage_repair"])
+                selected_state = next(item for item in pending_state["storage"]["roots"] if item["root_id"] == "state")
+                self.assertEqual(selected_state["status"], "repairable")
+                self.assertEqual(repair("state", selected_state["snapshot_token"])["status"], "repaired")
                 resumed = state()
                 self.assertTrue(resumed["storage"]["ok"])
                 self.assertEqual(resumed["page_session"]["kind"], "kb")
                 self.assertTrue(resumed["storage_repair"])
                 self.assertEqual(undo()["status"], "restored")
+                restored_state = state()
+                self.assertTrue(restored_state["storage_repair"])
+                self.assertEqual(next(item for item in restored_state["storage"]["roots"]
+                                      if item["root_id"] == "state")["status"], "repairable")
+                self.assertEqual(undo()["status"], "restored")
                 restored = state()
-                self.assertEqual(restored["storage"]["roots"][0]["status"], "repairable")
-                self.assertEqual(repair("data", restored["storage"]["roots"][0]["snapshot_token"])["status"], "repaired")
+                self.assertFalse(restored["storage_repair"])
+                for root_id in ("data", "state"):
+                    selected = next(item for item in restored["storage"]["roots"] if item["root_id"] == root_id)
+                    self.assertEqual(selected["status"], "repairable")
+                    self.assertEqual(repair(root_id, selected["snapshot_token"])["status"], "repaired")
                 self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
+                self.assertEqual(state_file.read_bytes(), b'{"state":"unchanged"}')
 
             subprocess.run(["icacls.exe", str(affected), "/grant", "*S-1-1-0:R"],
                            check=True, capture_output=True, text=True, timeout=10)

@@ -1,19 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { privateFixtureDirectory, writePrivateFixture } from "../test-support/private-fixture.js";
 
 for (const mode of ["timeout", "cancel-before-stop", "cancel-during-stop"]) {
-  test(`stdio SIGTERM drains authentication: ${mode}`, async t => {
+  test(`stdio SIGTERM drains authentication: ${mode}`,
+    { skip: process.platform === "win32" }, async t => {
     const cancelRequest = mode !== "timeout";
-    const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-deadline-"));
+    const dir = await privateFixtureDirectory("openubmc-stdio-deadline-");
     t.after(() => rm(dir, { recursive: true, force: true }));
     let started;
     const requestStarted = new Promise(resolveStarted => { started = resolveStarted; });
@@ -30,7 +31,7 @@ for (const mode of ["timeout", "cancel-before-stop", "cancel-during-stop"]) {
     t.after(() => { http.closeAllConnections(); http.close(); });
     const base = `http://127.0.0.1:${http.address().port}`;
     const configPath = join(dir, "config.json");
-    await writeFile(configPath, JSON.stringify({
+    await writePrivateFixture(configPath, JSON.stringify({
       lightragUrl: base, userCenterUrl: base, oauthBaseUrl: base,
       username: "fixture-user", password: "fixture-password", clientSecret: "fixture-secret",
       requestTimeoutMs: mode === "cancel-during-stop" ? 1200 : 100
@@ -76,9 +77,9 @@ for (const mode of ["timeout", "cancel-before-stop", "cancel-during-stop"]) {
 }
 
 test("stdio server initializes and lists all tools without authenticating", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-");
   const configPath = join(dir, "config.json");
-  await writeFile(configPath, JSON.stringify({
+  await writePrivateFixture(configPath, JSON.stringify({
     lightragUrl: "https://kb.example.com",
     userCenterUrl: "https://usercenter.example.com",
     oauthBaseUrl: "https://oauth.example.com",
@@ -120,7 +121,7 @@ test("stdio server initializes and lists all tools without authenticating", asyn
 });
 
 test("stdio server starts without a credential file and reports unconfigured status", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-unconfigured-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-unconfigured-");
   const configPath = join(dir, "missing.json");
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -146,7 +147,7 @@ test("stdio server starts without a credential file and reports unconfigured sta
 });
 
 test("stdio server records task-scoped lifecycle ownership", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-lifecycle-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-lifecycle-");
   const lifecycleRoot = join(dir, "processes");
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -196,9 +197,9 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
 });
 
 test("stdio server exits after its recorded parent is gone", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-orphan-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-orphan-");
   const lifecycleRoot = join(dir, "processes");
-  const missingParentPid = Number(
+  const missingParentPid = process.platform === "win32" ? 0x7fffffff : Number(
     (await readFile("/proc/sys/kernel/pid_max", "utf8")).trim()
   ) + 1;
   const child = spawn(process.execPath, [
@@ -244,7 +245,7 @@ test("stdio server exits after its recorded parent is gone", async () => {
 });
 
 test("stdio server recognizes explicit task closeout notification", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-task-closeout-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-task-closeout-");
   const lifecycleRoot = join(dir, "processes");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),
@@ -279,7 +280,7 @@ test("stdio server recognizes explicit task closeout notification", async () => 
   const returnCode = await new Promise((resolveExit, rejectExit) => {
     const timeout = setTimeout(
       () => rejectExit(new Error("task closeout did not stop KB MCP")),
-      3000
+      process.platform === "win32" ? 10000 : 3000
     );
     child.once("exit", code => {
       clearTimeout(timeout);
@@ -303,7 +304,7 @@ test("stdio server recognizes explicit task closeout notification", async () => 
 });
 
 test("stdio server exits when stdin closes before initialization", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-empty-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-empty-");
   const lifecycleRoot = join(dir, "processes");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),
@@ -336,10 +337,10 @@ test("stdio server exits when stdin closes before initialization", async () => {
 });
 
 test("stdio server records startup failure after lifecycle creation", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-startup-failure-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-startup-failure-");
   const lifecycleRoot = join(dir, "processes");
   const configPath = join(dir, "invalid.json");
-  await writeFile(configPath, "{not-json");
+  await writePrivateFixture(configPath, "{not-json");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),
     "--config",
@@ -373,7 +374,7 @@ test("stdio server records invalid lifecycle environment as startup-error", asyn
     ["OPENUBMC_MCP_PARENT_PID", "1e3"],
     ["OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS", "not-a-number"]
   ]) {
-    const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-invalid-env-"));
+    const dir = await privateFixtureDirectory("openubmc-stdio-invalid-env-");
     const lifecycleRoot = join(dir, "processes");
     const child = spawn(process.execPath, [
       resolve("src/server.js"),
@@ -406,7 +407,7 @@ test("stdio server records invalid lifecycle environment as startup-error", asyn
 });
 
 test("stdio server records invalid identity environment as startup-error", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-invalid-identity-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-invalid-identity-");
   const lifecycleRoot = join(dir, "processes");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),
@@ -440,7 +441,7 @@ test("stdio server records invalid identity environment as startup-error", async
 });
 
 test("formal stdio server rejects missing model and Codex identity", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-identity-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-formal-identity-");
   const lifecycleRoot = join(dir, "processes");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),
@@ -475,7 +476,7 @@ test("formal stdio server rejects missing model and Codex identity", async () =>
 });
 
 test("formal stdio server rejects a live non-parent owner", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-parent-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-formal-parent-");
   const lifecycleRoot = join(dir, "processes");
   const unrelated = spawn(
     process.execPath,
@@ -527,7 +528,7 @@ test("formal stdio server rejects a live non-parent owner", async () => {
 });
 
 test("formal stdio server rejects unknown ownership and source", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-owner-"));
+  const dir = await privateFixtureDirectory("openubmc-stdio-formal-owner-");
   const lifecycleRoot = join(dir, "processes");
   const child = spawn(process.execPath, [
     resolve("src/server.js"),

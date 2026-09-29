@@ -699,6 +699,7 @@ function renderStorageRecovery() {
   for (const selector of ["aside", "#editor", "#remember", ".connection", "#config-location", "#plugin-maintenance"])
     document.querySelector(selector).hidden = blocked;
   if (!blocked) return false;
+  $("storage-recovery-undo").hidden = !state.storage_repair;
   $("title").textContent = "本机目录需要修复";
   $("subtitle").textContent = "修复后会继续打开原来的配置页面。";
   $("saved-state").textContent = "需要修复";
@@ -908,12 +909,14 @@ $("plugin-undo").onclick = () => action(async () => {
   $("plugin-result").textContent = "已恢复修复前的配置。";
   await pluginStatus();
 });
-$("plugin-storage-undo").onclick = () => action(async () => {
+const undoStorage = () => action(async () => {
   await api("/api/plugin", { action: "undo-storage" });
   state = await api("/api/state");
   render();
   notice("本次目录修复已撤销。", false);
 });
+$("plugin-storage-undo").onclick = undoStorage;
+$("storage-recovery-undo").onclick = undoStorage;
 for (const capability of ["runtime", "kb"]) {
   $("plugin-" + capability).onclick = () => action(async () => {
     $("plugin-result").textContent = "正在修复依赖，请保持页面打开。";
