@@ -2612,26 +2612,42 @@ class SQLiteRuntimeRepository:
         self._owner_started = _process_start_marker(self._owner_pid)
         self._owner_token = uuid.uuid4().hex
         self._owner_is_active = owner_is_active
+        self._connection: sqlite3.Connection | None = None
         self._initialize()
 
     @contextmanager
     def _connect(self):
-        created = not self.path.exists()
-        if os.name == "nt" and not created:
+        connection = self._connection
+        if os.name == "nt" and self.path.exists():
             from .windows_private import verify_private_path
             verify_private_path(self.path)
-        connection = sqlite3.connect(self.path, timeout=30)
-        try:
-            if os.name == "nt" and created:
-                from .windows_private import harden_new_file
-                harden_new_file(self.path)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        if connection is None:
+            created = not self.path.exists()
+            # Public methods hold _lock; initialization runs before the repository
+            # is published. One connection avoids a WAL close/checkpoint per read.
+            connection = sqlite3.connect(
+                self.path, timeout=30, check_same_thread=False
+            )
+            try:
+                if os.name == "nt" and created:
+                    from .windows_private import harden_new_file
+                    harden_new_file(self.path)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+            except BaseException:
+                connection.close()
+                raise
+            self._connection = connection
+        with connection:
+            yield connection
+
+    def close(self) -> None:
+        with self._lock:
+            connection = self._connection
+            self._connection = None
+            if connection is not None:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
