@@ -118,6 +118,7 @@ class PluginMaintenance:
         self.preview_config = None
         self.preview_operation = None
         self.transaction = None
+        self.storage_transaction = None
 
     def command(self, *arguments):
         options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
@@ -165,7 +166,18 @@ class PluginMaintenance:
                                   "--expected-token", token)
             if not report.get("ok"):
                 raise ConfigurationConflict("Private-root snapshot changed")
+            self.storage_transaction = (root_id, report["transaction"])
             return {"status": report["status"], "root_id": root_id}
+        if action == "undo-storage":
+            if self.storage_transaction is None:
+                raise ConfigurationConflict("No directory repair to undo")
+            root_id, transaction = self.storage_transaction
+            report = self.command("restore-storage", "--root-id", root_id,
+                                  "--transaction", transaction)
+            if not report.get("ok"):
+                raise ConfigurationConflict("Directory changed after repair")
+            self.storage_transaction = None
+            return {"status": "restored", "root_id": root_id}
         if action == "status":
             report = self.command("doctor")
             config = report.get("codex_configuration", {})
@@ -506,6 +518,7 @@ class LocalConfigurationServer:
             if not storage.get("ok"):
                 return {
                     "storage": storage,
+                    "storage_repair": bool(self.maintenance and self.maintenance.storage_transaction),
                     "environment": {
                         "platform": _platform_label(),
                         "hostname": socket.gethostname(),
@@ -519,6 +532,7 @@ class LocalConfigurationServer:
             )
             return {
                 "storage": storage,
+                "storage_repair": bool(self.maintenance and self.maintenance.storage_transaction),
                 **{kind: self.view(kind) for kind in self.stores},
                 "environment": {
                     "platform": _platform_label(),

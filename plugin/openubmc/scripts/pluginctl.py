@@ -79,8 +79,17 @@ def repair_windows_storage(content: dict[str, bytes], root_id: str, expected_tok
         raise ValueError('private_root_unknown')
     module = verified_windows_private(content)
     root = windows_private_roots()[root_id]
-    module.repair_inherited_read_directory(root, expected_token=expected_token)
-    return {'ok': True, 'status': 'repaired', 'root_id': root_id,
+    transaction = module.repair_inherited_read_directory(root, expected_token=expected_token)
+    return {'ok': True, 'status': 'repaired', 'root_id': root_id, 'transaction': transaction,
+            'private_roots': windows_storage_status(content)}
+
+
+def restore_windows_storage(content: dict[str, bytes], root_id: str, transaction: str) -> dict[str, object]:
+    if sys.platform != 'win32' or root_id not in windows_private_roots():
+        raise ValueError('private_root_unknown')
+    module = verified_windows_private(content)
+    module.restore_inherited_read_directory(windows_private_roots()[root_id], transaction=transaction)
+    return {'ok': True, 'status': 'restored', 'root_id': root_id,
             'private_roots': windows_storage_status(content)}
 
 
@@ -719,7 +728,7 @@ def positive_timeout(value: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'host-hook', 'configure', 'migrate', 'repair-overrides', 'restore-legacy', 'cleanup-retired', 'storage-status', 'repair-storage'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'host-hook', 'configure', 'migrate', 'repair-overrides', 'restore-legacy', 'cleanup-retired', 'storage-status', 'repair-storage', 'restore-storage'])
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path, default=Path(os.environ['CODEX_HOME']) if os.environ.get('CODEX_HOME') else None)
     parser.add_argument('--transaction', default='')
@@ -764,6 +773,11 @@ def main() -> int:
             if not args.root_id or not args.expected_token:
                 raise ValueError('private_root_repair_requires_snapshot')
             print(json.dumps(repair_windows_storage(content, args.root_id, args.expected_token), sort_keys=True))
+            return 0
+        if args.command == 'restore-storage':
+            if not args.root_id or not args.transaction:
+                raise ValueError('private_root_restore_requires_transaction')
+            print(json.dumps(restore_windows_storage(content, args.root_id, args.transaction), sort_keys=True))
             return 0
         if args.command in {'prepare', 'runtime', 'kb', 'host-hook', 'doctor'}:
             storage = windows_storage_status(content)

@@ -245,9 +245,12 @@ for line in sys.stdin:
             "runtime",
             [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
              {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-              "params": {"name": "openubmc_setup_status", "arguments": {}}}],
+              "params": {"name": "openubmc_setup_status", "arguments": {}}},
+             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+              "params": {"name": "openubmc_setup_prepare", "arguments": {}}}],
             OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
             FAKE_PYTHON_DOCTOR_REPORT=json.dumps(report), FAKE_PYTHON_DOCTOR_STATUS="2",
+            FAKE_PYTHON_PREPARE_ERROR=json.dumps(report), FAKE_PYTHON_PREPARE_STATUS="2",
             LOCALAPPDATA=str(self.base / "private-root-conflict"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -256,6 +259,9 @@ for line in sys.stdin:
         self.assertIn("openubmc_setup_open_configuration", payload["recovery_action"])
         self.assertEqual(payload["affected_roots"], [{"root_id": "data", "capabilities": ["data", "cache", "config"], "status": "repairable"}])
         self.assertNotIn("snapshot_token", json.dumps(payload))
+        prepared = json.loads([json.loads(line) for line in result.stdout.splitlines()][2]["result"]["content"][0]["text"])
+        self.assertEqual(prepared["reason"], "windows_private_root_conflict")
+        self.assertEqual(prepared["affected_roots"], payload["affected_roots"])
 
     def test_native_windows_child_receives_task_identity_without_ambient_secrets(self) -> None:
         log = self.base / "native-python-argv.jsonl"

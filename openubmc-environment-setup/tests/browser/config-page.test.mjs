@@ -97,7 +97,10 @@ test("a private-root conflict offers one local repair and resumes the requested 
   let blocked = true;
   const calls = [];
   await page.route("**/api/state", async (route) => {
-    if (!blocked) return route.continue();
+    if (!blocked) {
+      const response = await route.fetch();
+      return route.fulfill({ json: { ...(await response.json()), storage_repair: true } });
+    }
     return route.fulfill({ json: {
       storage: { ok: false, error_code: "windows_private_root_conflict", roots: [{
         root_id: "data", capabilities: ["data", "cache", "config"],
@@ -111,8 +114,8 @@ test("a private-root conflict offers one local repair and resumes the requested 
   await page.route("**/api/plugin", async (route) => {
     const data = route.request().postDataJSON();
     calls.push(data);
-    blocked = false;
-    await route.fulfill({ json: { status: "repaired", root_id: "data" } });
+    blocked = data.action !== "repair-storage";
+    await route.fulfill({ json: { status: blocked ? "restored" : "repaired", root_id: "data" } });
   });
   await page.goto(url);
   await page.getByRole("button", { name: "修复本机目录", exact: true }).waitFor();
@@ -121,6 +124,10 @@ test("a private-root conflict offers one local repair and resumes the requested 
   await page.getByLabel("openUBMC 账号", { exact: true }).waitFor();
   assert.deepEqual(calls, [{ action: "repair-storage", root_id: "data", snapshot_token: "a".repeat(64) }]);
   assert.equal(await page.locator("#editor").isVisible(), true);
+  await page.locator("#plugin-maintenance summary").click();
+  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
+  await page.getByRole("button", { name: "修复本机目录", exact: true }).waitFor();
+  assert.deepEqual(calls.at(-1), { action: "undo-storage" });
 });
 
 test("a focused page saves the requested account and signals completion without a chat reply", { timeout: 30000 }, async (t) => {

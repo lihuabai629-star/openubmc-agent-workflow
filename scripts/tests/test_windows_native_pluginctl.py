@@ -77,10 +77,19 @@ class WindowsNativePluginCliTests(unittest.TestCase):
                 private["verify_private_path"](affected)
             repaired = cli("repair-storage", "--root-id", "data", "--expected-token", selected["snapshot_token"])
             self.assertEqual(repaired.returncode, 0, repaired.stderr)
-            self.assertEqual(json.loads(repaired.stdout)["status"], "repaired")
+            receipt = json.loads(repaired.stdout)
+            self.assertEqual(receipt["status"], "repaired")
             private["verify_private_path"](affected)
             self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
             self.assertTrue(json.loads(cli("storage-status").stdout)["ok"])
+            undone = cli("restore-storage", "--root-id", "data", "--transaction", receipt["transaction"])
+            self.assertEqual(undone.returncode, 0, undone.stderr)
+            self.assertEqual(json.loads(undone.stdout)["status"], "restored")
+            reselected = json.loads(cli("storage-status").stdout)["roots"][0]
+            self.assertEqual(reselected["status"], "repairable")
+            rerepaired = cli("repair-storage", "--root-id", "data", "--expected-token", reselected["snapshot_token"])
+            self.assertEqual(rerepaired.returncode, 0, rerepaired.stderr)
+            self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
 
             subprocess.run(["icacls.exe", str(affected), "/inheritance:e"],
                            check=True, capture_output=True, text=True, timeout=10)
@@ -101,6 +110,10 @@ class WindowsNativePluginCliTests(unittest.TestCase):
                     }).encode(), headers=headers)
                     with urlopen(request, timeout=5) as response:
                         return json.load(response)
+                def undo():
+                    request = Request(server.origin + "/api/plugin", data=b'{"action":"undo-storage"}', headers=headers)
+                    with urlopen(request, timeout=5) as response:
+                        return json.load(response)
                 pending = state()
                 self.assertEqual(pending["storage"]["error_code"], "windows_private_root_conflict")
                 self.assertEqual(pending["page_session"]["kind"], "kb")
@@ -109,6 +122,11 @@ class WindowsNativePluginCliTests(unittest.TestCase):
                 resumed = state()
                 self.assertTrue(resumed["storage"]["ok"])
                 self.assertEqual(resumed["page_session"]["kind"], "kb")
+                self.assertTrue(resumed["storage_repair"])
+                self.assertEqual(undo()["status"], "restored")
+                restored = state()
+                self.assertEqual(restored["storage"]["roots"][0]["status"], "repairable")
+                self.assertEqual(repair("data", restored["storage"]["roots"][0]["snapshot_token"])["status"], "repaired")
                 self.assertEqual(retained.read_bytes(), b'{"fixture":"unchanged"}')
 
             subprocess.run(["icacls.exe", str(affected), "/grant", "*S-1-1-0:R"],

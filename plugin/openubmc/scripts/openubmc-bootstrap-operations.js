@@ -69,7 +69,10 @@ function createSetupOperations(adapter, capability) {
     relaySafeProgress(adapter, prepared.stderr);
     if (prepared.error || prepared.status !== 0) {
       const reason = preparationFailure(adapter, prepared);
-      return { ok: false, reason, recovery_action: recoveryActions[reason] };
+      const report = reason === "windows_private_root_conflict"
+        ? progressRecords(adapter, prepared.stderr).find((record) => record.error_code === reason)
+        : undefined;
+      return { ok: false, reason, recovery_action: recoveryActions[reason], report };
     }
     return { ok: true };
   }

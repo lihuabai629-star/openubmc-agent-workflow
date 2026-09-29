@@ -725,6 +725,7 @@ function renderStorageRecovery() {
 function render() {
   if (renderStorageRecovery()) return;
   dirty = false;
+  $("plugin-storage-undo").hidden = !state.storage_repair;
   const current = state[kind];
   $("fields").replaceChildren();
   $("fields").oninput = null;
@@ -906,6 +907,12 @@ $("plugin-undo").onclick = () => action(async () => {
   $("plugin-undo").hidden = true;
   $("plugin-result").textContent = "已恢复修复前的配置。";
   await pluginStatus();
+});
+$("plugin-storage-undo").onclick = () => action(async () => {
+  await api("/api/plugin", { action: "undo-storage" });
+  state = await api("/api/state");
+  render();
+  notice("本次目录修复已撤销。", false);
 });
 for (const capability of ["runtime", "kb"]) {
   $("plugin-" + capability).onclick = () => action(async () => {
