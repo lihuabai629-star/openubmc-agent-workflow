@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -13,16 +13,28 @@ const script = fileURLToPath(
   new URL("../../scripts/config_page.py", import.meta.url),
 );
 
-async function configurationPage(t, options = []) {
+async function configurationPage(t, options = [], { discoveredTargetSource = false } = {}) {
   const directory = await mkdtemp(
     path.join(tmpdir(), "openubmc-config-browser-"),
   );
   t.after(() => rm(directory, { recursive: true, force: true }));
+  const environment = { ...process.env };
+  const arguments_ = ["-B", script];
+  if (discoveredTargetSource) {
+    const source = path.join(directory, "openubmc", "credentials.json");
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(source, "{}", { mode: 0o600 });
+    environment.XDG_CONFIG_HOME = directory;
+    environment.OPENUBMC_CREDENTIALS_CONFIG = source;
+  } else {
+    arguments_.push("--config-home", directory);
+  }
   const server = spawn(
     "python3",
-    ["-B", script, "--config-home", directory, "--no-browser", ...options],
+    [...arguments_, "--no-browser", ...options],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
     },
   );
   let stderr = "";
@@ -70,6 +82,15 @@ async function configurationPage(t, options = []) {
   t.after(() => browser.close());
   return { page: await browser.newPage(), api, url, completion };
 }
+
+test("a discovered target source does not replace the requested KB page", { timeout: 30000 }, async (t) => {
+  const { page, api, url } = await configurationPage(
+    t, ["--kind", "kb"], { discoveredTargetSource: true },
+  );
+  await page.goto(url);
+  assert.equal((await api("/api/state")).page_session.kind, "kb");
+  assert.equal(await page.getByLabel("openUBMC 账号", { exact: true }).isVisible(), true);
+});
 
 test("a focused page saves the requested account and signals completion without a chat reply", { timeout: 30000 }, async (t) => {
   const { page, url, completion } = await configurationPage(t, ["--kind", "kb", "--wait-for-save"]);
