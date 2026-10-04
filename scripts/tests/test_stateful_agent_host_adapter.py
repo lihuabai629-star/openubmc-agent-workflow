@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import http.server
+import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -14,6 +17,89 @@ from scripts import stateful_agent_host_adapter as adapter
 
 
 class StatefulAgentHostAdapterTests(unittest.TestCase):
+    def test_resume_request_initializes_the_bound_fake_runtime(self) -> None:
+        from scripts import stateful_agent_evaluation as evaluation
+        manifest = evaluation.load_manifest()
+        case = next(item for item in manifest['scenarios'] if item['id'] == 'diagnosis-resume')
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request = {
+                'schema': f'{evaluation.SCHEMA}/adapter-request',
+                'scenario_id': case['id'], 'scenario_version': case['version'],
+                'trial': 1, 'task_id': 'eval-diagnosis-resume-v1-t1',
+                'prompt': case['prompt'], 'prompt_digest': evaluation._digest(case['prompt']),
+                'fixture_target': manifest['fixture_target'], 'backend': 'runtime-fake',
+                'execution_mode': 'controlled-scripted-responses', 'model_invoked': False,
+                'output_directory': str(directory),
+                'source_commit': subprocess.check_output(
+                    ['git', 'rev-parse', 'HEAD'], cwd=adapter.ROOT, text=True).strip(),
+                'plan_digest': 'sha256:' + 'a' * 64,
+                'schedule_digest': 'sha256:' + 'b' * 64,
+            }
+            path = directory / 'request.json'
+            path.write_text(json.dumps(request), encoding='utf-8')
+            response = subprocess.run(
+                [sys.executable, '-B', str(Path(adapter.__file__)), 'serve', str(path)],
+                input=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                                  'params': {'protocolVersion': '2025-06-18',
+                                             'capabilities': {},
+                                             'clientInfo': {'name': 'fixture', 'version': '1'}}}) + '\n',
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(response.returncode, 0, response.stderr)
+            self.assertIn('result', json.loads(response.stdout))
+
+    def test_resume_reuses_rpc_id_after_mcp_restart_without_repeating_backend(self) -> None:
+        from scripts import stateful_agent_evaluation as evaluation
+        manifest = evaluation.load_manifest()
+        case = next(item for item in manifest['scenarios'] if item['id'] == 'diagnosis-resume')
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request = {
+                'schema': f'{evaluation.SCHEMA}/adapter-request',
+                'scenario_id': case['id'], 'scenario_version': 1, 'trial': 1,
+                'task_id': 'eval-diagnosis-resume-v1-t1', 'prompt': case['prompt'],
+                'prompt_digest': evaluation._digest(case['prompt']),
+                'fixture_target': manifest['fixture_target'], 'backend': 'runtime-fake',
+                'execution_mode': 'controlled-scripted-responses', 'model_invoked': False,
+                'output_directory': str(directory),
+                'source_commit': subprocess.check_output(
+                    ['git', 'rev-parse', 'HEAD'], cwd=adapter.ROOT, text=True).strip(),
+                'plan_digest': 'sha256:' + 'a' * 64, 'schedule_digest': 'sha256:' + 'b' * 64,
+            }
+            path = directory / 'request.json'
+            path.write_text(json.dumps(request), encoding='utf-8')
+
+            def invoke(arguments):
+                messages = [
+                    {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                     'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+                                'clientInfo': {'name': 'fixture', 'version': '1'}}},
+                    {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                     'params': {'name': 'execute', 'arguments': arguments,
+                                '_meta': {'threadId': '12345678-1234-1234-1234-123456789abc'}}},
+                ]
+                result = subprocess.run(
+                    [sys.executable, '-B', str(Path(adapter.__file__)), 'serve', str(path)],
+                    input=''.join(json.dumps(m) + '\n' for m in messages),
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout.splitlines()[-1])['result']['structuredContent']
+
+            initial = invoke({'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only'})
+            self.assertEqual(initial['state'], 'waiting_response')
+            for _ in range(2):
+                resumed = invoke({'kind': 'resume', 'run_id': initial['run_id']})
+                self.assertEqual(resumed['state'], 'waiting_response', resumed)
+                self.assertEqual(resumed['run_id'], initial['run_id'])
+                self.assertEqual(resumed['gate']['gate_id'], initial['gate']['gate_id'])
+            conflict = invoke({'kind': 'start', 'target': '192.0.2.11', 'intent': 'diagnosis-only'})
+            self.assertEqual(conflict['state'], 'failed')
+            self.assertEqual(conflict['error']['code'], 'CommandConflict')
+            self.assertEqual(len((directory / 'backend-invocations.jsonl').read_text().splitlines()), 1)
+
+
     def test_known_read_only_mcp_cancellation_blocks_before_credential_use(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             binary = Path(raw) / "codex"

@@ -84,8 +84,8 @@ the native rollout format expected by the final-answer audit.
 
 ### One native pilot
 
-`scripts/stateful_agent_host_adapter.py` supports only the positive
-`diagnosis-complete` scenario. It starts a target-free fake Runtime MCP server
+`scripts/stateful_agent_host_adapter.py` supports `diagnosis-complete` and
+`diagnosis-resume`. It starts a target-free fake Runtime MCP server
 with a fresh SQLite ledger, launches the pinned Codex CLI against a configured
 Responses provider, and copies the native rollout without rewriting events.
 The Runtime task ID comes from the pinned schedule. Native MCP `threadId`
@@ -132,8 +132,8 @@ Score the selected slot using the standard `score-live` command and the measured
 `elapsed_seconds` from its `timing.json`. A trial counts only when the Runtime
 task binding, persisted terminal Outcome, native MCP session link, matching
 prepared answer, native final event and completed Host turn all verify. This
-pilot does not implement interruption, fault injection, the other 19 scenario
-behaviors or a baseline rerun.
+pilot implements only these two diagnosis scenarios. The other 18 scenario
+behaviors, fault injection and a baseline rerun remain unsupported.
 
 ```sh
 PLAN_PATH=/absolute/path/to/trial-plan.json
@@ -163,8 +163,9 @@ percentage is inferred from the offline fixtures.
 The committed offline report is a deterministic scorer result. It records
 20/20 expected fixture verdicts; it predates the authenticated pilot below. Live
 acceptance and the prior-source comparison are explicitly unverified. The
-pilot adapter covers only `diagnosis-complete`; the Runtime and release gates
-are unchanged.
+historical pilot below covered only `diagnosis-complete`. The current adapter
+also supports the controlled `diagnosis-resume` path described below; Runtime
+and release gates are unchanged.
 
 The single-slot native pilot on 2026-09-27 used Codex CLI 0.144.6, the
 configured Responses provider, `approval_policy=never`, and `--sandbox
@@ -194,3 +195,56 @@ The score is now 1/60 actual trials, 0 accepted trials; the remaining 59
 slots and the prior-source comparison are unattempted. No budget was relaxed.
 The aggregate live-acceptance gate fails on any scored issue once all slots
 are present; budget failures cannot be reported as an evaluated pass.
+
+
+## Controlled native Host interruption and resume
+
+`diagnosis-resume` interrupts the native Codex turn after `execute(start)` returns
+the persisted `diagnosis.acceptance` Gate, before any Gate answer or terminal
+Outcome. The adapter sends SIGINT only to its own child and requires an actual
+`turn_aborted` event. It resumes the same Host session and requires an actual
+`execute(resume)` for the same Run before answering the Gate. This checkpoint
+tests interruption after a completed read-only diagnosis Effect; it does not
+claim recovery of an in-flight or unknown mutation.
+
+The scorer reads original native `function_call`/`function_call_output` records,
+their unique call IDs and explicit turn IDs, cancellation and completion events,
+and the Runtime ledger. It rejects missing cancellation, another session/Run/
+Gate/Effect, early final answers, repeated backend invocations, and unbound or
+out-of-order tool results. Both the Runtime `OperationStarted` record and the
+independent fake-backend invocation log must show exactly one diagnosis action.
+The terminal record is prepared after Runtime Outcome and acknowledged only
+after the matching completed Host turn. The other 18 scenarios still produce
+`scenario_not_exercised` in live scoring.
+
+Native Codex restarts stdio MCP on `exec resume` and reuses JSON-RPC request IDs.
+For this scenario only, the evaluation endpoint scopes command IDs by command
+kind plus RPC ID. Identical retries retain the same identity; reusing a persisted start command's
+kind/ID with a different target still conflicts. A no-progress resume remains
+subject to Runtime's existing Run/task binding rules. Runtime's default command and
+Effect identity algorithms are unchanged.
+
+A request with `execution_mode=controlled-scripted-responses` uses a loopback
+fixture and a fixed synthetic upstream marker. It never reads the normal API
+credential. Its trial and score retain that mode, `model_invoked=false`,
+`actual_agent_trials=0`, and `live_acceptance=unverified`. Request/trial mode
+conflicts are rejected; the official 60-slot summary explicitly excludes these
+artifacts even when the native Host contract passes. New `diagnosis-resume`
+requests and trials require explicit matching modes and `model_invoked` booleans;
+a missing request or stripped markers cannot become an Agent trial. Only legacy
+`diagnosis-complete` artifacts retain the previous missing-mode compatibility.
+The MCP trace also binds the native `_meta.callId` to each raw Host call/output
+pair; this is evidence correlation, not a new Runtime command identity scheme.
+
+The bounded local protocol fixture can be run without a model or target:
+
+```sh
+python -B scripts/tests/stateful_host_responses_fixture.py \
+  --output /absolute/private/host-resume-controlled.json
+```
+
+It uses the existing Codex CLI 0.153.4 (or `--codex-bin` pointing to that version),
+a fresh temporary HOME/CODEX_HOME, the Runtime fake backend, and only loopback
+Responses. This is controlled adapter verification, never item 19's real Agent
+trial acceptance. Preserve its raw rollout, cancellation checkpoint, Runtime
+ledger, backend log and final store alongside the bounded result.
