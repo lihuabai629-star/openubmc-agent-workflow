@@ -18,6 +18,7 @@ import platform_acceptance as acceptance  # noqa: E402
 
 SOURCE = "a" * 40
 HASH = hashlib.sha256(b"qualification-evidence").hexdigest()
+DESKTOP_HASH = hashlib.sha256(b"desktop-installer").hexdigest()
 
 
 def host(role: str, os_name: str, architecture: str, environment: str) -> dict[str, str]:
@@ -77,7 +78,9 @@ def passing_matrix() -> dict[str, object]:
                 "effect_count_before": 1, "effect_count_after": 1,
             }
         elif row_id == "desktop-synthetic":
-            row["artifacts"]["desktop_installer"] = HASH
+            row["package_sha256"] = DESKTOP_HASH
+            row["artifacts"]["desktop_installer"] = DESKTOP_HASH
+            row["artifacts"]["plugin_archive"] = HASH
             row["hosts"] = [host("client", "Darwin", "arm64", "native-desktop"),
                             host("target", "Synthetic", "none", "fixture")]
             row["desktop_source_commit"] = "b" * 40
@@ -227,6 +230,31 @@ class PlatformAcceptanceTests(unittest.TestCase):
         report = acceptance.assess(matrix)
         self.assertFalse(report["release_ready"])
         self.assertTrue(any("same Run/Outcome" in item for item in report["blockers"]))
+
+    def test_desktop_runtime_archive_must_match_the_qualified_plugin(self) -> None:
+        for mode in ("hosted-ci", "installed-candidate"):
+            for archive_digest in (None, "invalid", "b" * 64):
+                with self.subTest(mode=mode, archive_digest=archive_digest):
+                    matrix = passing_matrix()
+                    desktop = next(row for row in matrix["rows"] if row["id"] == "desktop-synthetic")
+                    if archive_digest is None:
+                        del desktop["artifacts"]["plugin_archive"]
+                    else:
+                        desktop["artifacts"]["plugin_archive"] = archive_digest
+                    if mode == "installed-candidate":
+                        matrix["validation_mode"] = mode
+                        matrix["candidate_archive_sha256"] = HASH
+                        hosted = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
+                        hosted.clear()
+                        hosted.update({"id": "hosted-ci", "status": "untested",
+                                       "reason": "No hosted execution"})
+                    with tempfile.TemporaryDirectory() as directory:
+                        archive = Path(directory) / "candidate.tar.gz"
+                        archive.write_bytes(b"qualification-evidence")
+                        report = acceptance.assess(matrix, candidate_archive=archive)
+                    self.assertFalse(report["release_ready"])
+                    self.assertTrue(any("Desktop Runtime plugin archive" in item
+                                        for item in report["blockers"]), report["blockers"])
 
     def test_billing_skipped_ci_job_cannot_pass_even_with_success_claim(self) -> None:
         matrix = passing_matrix()

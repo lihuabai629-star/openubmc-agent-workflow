@@ -710,6 +710,8 @@ class ReleaseGateTests(unittest.TestCase):
                 if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = archive_sha
                     row["artifacts"]["plugin_archive"] = archive_sha
+                elif row["id"] == "desktop-synthetic":
+                    row["artifacts"]["plugin_archive"] = archive_sha
             source = root / "matrix.json"
             source.write_text(json.dumps(matrix), encoding="utf-8")
             qualification = root / "qualification.json"
@@ -746,6 +748,8 @@ class ReleaseGateTests(unittest.TestCase):
             for row in matrix["rows"]:
                 if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = wrong_sha
+                    row["artifacts"]["plugin_archive"] = wrong_sha
+                elif row["id"] == "desktop-synthetic":
                     row["artifacts"]["plugin_archive"] = wrong_sha
             source.write_text(json.dumps(matrix), encoding="utf-8")
             bad_qualification = json.loads(qualification.read_text())

@@ -100,8 +100,16 @@ Runtime processes and a synthetic target separately. Its route must report
 `execution_host=windows-native` with no selected WSL; credential revision and
 Run ID must remain the same after interruption, with one Effect before and after.
 The Desktop row requires the Desktop source commit and identical Run IDs and
-Outcome hashes observed through plugin and Desktop clients. Do not record
-credential values, cookies, tokens or a real BMC target in a matrix.
+Outcome hashes observed through plugin and Desktop clients. Its `package_sha256`
+and `artifacts.desktop_installer` identify the separate Desktop installer;
+`artifacts.plugin_archive` identifies the Runtime plugin archive actually used
+for that readback and must match the qualified Linux/Windows plugin archive
+(and the selected archive in installed-candidate mode). A missing or different
+Desktop Runtime archive blocks acceptance even when the Run and Outcome match.
+Historical Desktop evidence without this field needs a captured archive identity;
+do not fill it from the candidate's claimed digest without verifying the installed
+bytes. Do not record credential values, cookies, tokens or a real BMC target in a
+matrix.
 
 ## Native execution checklist
 

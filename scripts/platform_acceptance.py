@@ -316,6 +316,8 @@ def _row_errors(row: dict[str, Any], source_commit: str) -> list[str]:
         if isinstance(artifacts, dict) and artifacts.get("plugin_archive") != row.get("package_sha256"):
             errors.append("plugin archive artifact does not match package digest")
     if row_id == "desktop-synthetic":
+        if not isinstance(artifacts, dict) or not _hash(artifacts.get("plugin_archive")):
+            errors.append("Desktop Runtime plugin archive SHA-256 is missing or invalid")
         if isinstance(artifacts, dict) and artifacts.get("desktop_installer") != row.get("package_sha256"):
             errors.append("Desktop installer artifact does not match package digest")
     return errors
@@ -374,6 +376,12 @@ def assess(
     digests = {row["package_sha256"] for row in passed if _hash(row.get("package_sha256"))}
     if len(digests) > 1:
         blockers.append("Linux, Windows and hosted CI plugin package digests differ")
+    desktop = selected["desktop-synthetic"]
+    desktop_artifacts = desktop.get("artifacts")
+    if desktop.get("status") == "passed" and isinstance(desktop_artifacts, dict):
+        desktop_plugin = desktop_artifacts.get("plugin_archive")
+        if _hash(desktop_plugin) and digests and digests != {desktop_plugin}:
+            blockers.append("Desktop Runtime plugin archive differs from platform plugin package")
     if validation_mode == "installed-candidate" and digests != {
         report.get("candidate_archive_sha256")
     }:

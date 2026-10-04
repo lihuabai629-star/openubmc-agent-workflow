@@ -54,9 +54,55 @@ def _archive(root, arm):
         ".codex-plugin/plugin.json": _json_bytes(
             {"name": "openubmc", "version": "0.0.0-fixture", "skills": "./skills/"}
         ),
-        ".mcp.json": _json_bytes(
-            {"mcpServers": {"openubmc-target-runtime": {}}}
+        ".mcp.json": _json_bytes({"mcpServers": {
+            name: {
+                "type": "stdio", "required": True, "command": "node",
+                "args": ["./scripts/openubmc-mcp-bootstrap.js", capability],
+                "env_vars": [],
+            }
+            for name, capability in (
+                ("openubmc-target-runtime", "runtime"), ("openubmc-kb", "kb")
+            )
+        }}),
+        "skills/openubmc-target-runtime/openubmc_target_runtime/contracts.py": (
+            b'RUNTIME_API_VERSION = "openubmc.target-runtime.v1"\n'
         ),
+        "openubmc-kb-mcp/package.json": _json_bytes({"version": "1.3.0"}),
+        # This report fixture speaks the required readiness protocol over real
+        # stdio. It never executes tools, accesses a target, or calls a model.
+        "scripts/openubmc-mcp-bootstrap.js": br"""
+const fs = require('node:fs');
+const capability = process.argv[2];
+if (!['runtime', 'kb'].includes(capability)) process.exit(1);
+const runtime = capability === 'runtime';
+const tools = runtime ? ['observe', 'execute']
+  : ['openubmc_kb_query', 'openubmc_kb_status', 'openubmc_kb_list'];
+const serverInfo = runtime
+  ? {name: 'openubmc-target-runtime', version: 'openubmc.target-runtime.v1'}
+  : {name: 'openubmc-kb-mcp-server', version: '1.3.0'};
+for (const line of fs.readFileSync(0, 'utf8').split('\n').filter(Boolean)) {
+  const request = JSON.parse(line);
+  if (request.method === 'notifications/initialized' && request.id === undefined) continue;
+  const reply = {jsonrpc: '2.0', id: request.id};
+  const params = request.params;
+  if (request.jsonrpc !== '2.0' || !Number.isInteger(request.id)
+      || !params || typeof params !== 'object' || Array.isArray(params)) {
+    reply.error = {code: -32600, message: 'Invalid fixture request'};
+  } else if (request.method === 'initialize') {
+    if (params.protocolVersion === '2025-06-18' && params.capabilities
+        && params.clientInfo && typeof params.clientInfo.name === 'string') {
+      reply.result = {protocolVersion: '2025-06-18', capabilities: {tools: {}}, serverInfo};
+    } else reply.error = {code: -32602, message: 'Invalid fixture initialization'};
+  } else if (request.method === 'ping' && Object.keys(params).length === 0) {
+    reply.result = {};
+  } else if (request.method === 'tools/list' && Object.keys(params).length === 0) {
+    reply.result = {tools: tools.map(name => ({name,
+      description: 'Controlled report fixture; tool execution is unavailable',
+      inputSchema: {type: 'object', properties: {}}}))};
+  } else reply.error = {code: -32601, message: 'Fixture method unavailable'};
+  process.stdout.write(JSON.stringify(reply) + '\n');
+}
+""",
         "skills/report-fixture/SKILL.md": (
             "---\nname: report-fixture\n---\nControlled " + arm + " fixture.\n"
         ).encode(),
@@ -176,8 +222,9 @@ def build_report_fixture(root, *, samples=None, arm_samples=None, extra_events=N
                 value = {"installed": [{"pluginId": subject.plugin_id,
                          "version": subject.version, "installed": True, "enabled": True}]}
             elif tuple(command[1:3]) == ("mcp", "list"):
-                value = [{"name": "openubmc-target-runtime", "enabled": True,
-                          "transport": {"cwd": str(cache)}}]
+                value = [{"name": name, "enabled": True,
+                          "transport": {"cwd": str(cache)}}
+                         for name in ("openubmc-target-runtime", "openubmc-kb")]
             else:
                 raise AssertionError("unexpected native process request")
             return CommandResult(tuple(command), 0, json.dumps(value), "")
