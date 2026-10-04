@@ -119,6 +119,10 @@ EXECUTE_ACTION_FIELD_TYPES = {
         "kind": "string",
         "target": "string",
         "targets": "array",
+        "ssh_port": "integer",
+        "telnet_port": "integer",
+        "redfish_port": "integer",
+        "allow_insecure_tls": "boolean",
         "intent": "string",
         "entry_operation": "string",
         "entry_arguments": "object",
@@ -239,6 +243,7 @@ class PreflightContext:
     run_id: str = ""
     target: str = ""
     targets: tuple[Mapping[str, object], ...] = ()
+    target_ports: Mapping[str, int] = field(default_factory=dict)
     intent: str = ""
     purpose: str = ""
     delivery_strategy: str = ""
@@ -655,6 +660,7 @@ class ObservationQuery:
     freshness_mode: str = "live"
     max_age_seconds: int = 0
     deadline: float = 180.0
+    ssh_port: int = 22
 
     @classmethod
     def from_query(cls, query: Mapping[str, object]) -> "ObservationQuery":
@@ -664,6 +670,7 @@ class ObservationQuery:
             "selectors",
             "freshness",
             "deadline",
+            "ssh_port",
         }
         if unexpected:
             field = sorted(unexpected)[0]
@@ -672,7 +679,7 @@ class ObservationQuery:
                 + ", ".join(sorted(unexpected)),
                 reason=PreflightReason.UNDECLARED_FIELD,
                 field=field,
-                limit={"allowed_fields": ["target", "selectors", "freshness", "deadline"]},
+                limit={"allowed_fields": ["target", "selectors", "freshness", "deadline", "ssh_port"]},
             )
         raw_target = query.get("target")
         if not isinstance(raw_target, str):
@@ -818,12 +825,21 @@ class ObservationQuery:
                 field="deadline",
                 limit={"exclusive_minimum": 0},
             )
+        ssh_port = query.get("ssh_port", 22)
+        if type(ssh_port) is not int or not 1 <= ssh_port <= 65535:
+            raise AgentPreflightError(
+                "ssh_port must be an integer between 1 and 65535",
+                reason=PreflightReason.WRONG_TYPE,
+                field="ssh_port",
+                limit={"type": "integer", "minimum": 1, "maximum": 65535},
+            )
         contract = cls(
             target=target,
             selectors=selectors,
             freshness_mode=freshness_mode,
             max_age_seconds=max_age,
             deadline=numeric_deadline,
+            ssh_port=ssh_port,
         )
         return contract
 
@@ -841,6 +857,7 @@ class ObservationQuery:
                     "mode": self.freshness_mode,
                     "max_age_seconds": self.max_age_seconds,
                 },
+                **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
             }
 
         for selector in self.selectors:
@@ -880,6 +897,7 @@ class ObservationQuery:
                 freshness_mode=self.freshness_mode,
                 max_age_seconds=self.max_age_seconds,
                 deadline=self.deadline,
+                ssh_port=self.ssh_port,
             )
             for batch in batches
         )
@@ -894,6 +912,7 @@ class ObservationQuery:
         return {
             "ip": self.target,
             "deadline": self.deadline,
+            **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
             "mdb_queries": queries,
             "mdb_only": True,
             "_agent_capability_names": [
@@ -917,6 +936,7 @@ class ObservationQuery:
                 "mode": self.freshness_mode,
                 "max_age_seconds": self.max_age_seconds,
             },
+            **({"ssh_port": self.ssh_port} if self.ssh_port != 22 else {}),
         }
 
 
@@ -1119,6 +1139,10 @@ class StartRun:
     input_digest: str
     entry_operation: str = ""
     entry_arguments: Mapping[str, object] | None = None
+    ssh_port: int = 22
+    telnet_port: int = 23
+    redfish_port: int = 443
+    allow_insecure_tls: bool = True
     targets: tuple[RunTarget, ...] = ()
     observation_ref: ObservationRef | None = None
     caller_deadline: float = 120.0
@@ -1298,6 +1322,10 @@ def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         "intent": command.intent,
         "entry_operation": command.entry_operation,
         "entry_arguments": dict(command.entry_arguments or {}),
+        **({"ssh_port": command.ssh_port} if command.ssh_port != 22 else {}),
+        **({"telnet_port": command.telnet_port} if command.telnet_port != 23 else {}),
+        **({"redfish_port": command.redfish_port} if command.redfish_port != 443 else {}),
+        **({"allow_insecure_tls": False} if not command.allow_insecure_tls else {}),
         "purpose": command.purpose,
         "delivery_strategy": command.delivery_strategy,
         "observation_ref": (
@@ -1401,6 +1429,12 @@ def _action_preflight_context(action: Mapping[str, object]) -> PreflightContext:
             )
             if isinstance(item, Mapping)
         ),
+        target_ports={
+            name: value
+            for name in ("ssh_port", "telnet_port", "redfish_port")
+            if (value := action.get(name)) is not None
+            and type(value) is int and 1 <= value <= 65535
+        },
         intent=_text(action.get("intent")),
         purpose=_text(action.get("purpose")),
         delivery_strategy=_text(action.get("delivery_strategy")),
@@ -1542,6 +1576,8 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
             if expected == "object"
             else isinstance(value, list)
             if expected == "array"
+            else isinstance(value, bool)
+            if expected == "boolean"
             else isinstance(value, int) and not isinstance(value, bool)
             if expected == "integer"
             else isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -1745,6 +1781,15 @@ def decode_run_command(
             raise AgentGatewayError(
                 "entry_arguments requires entry_operation"
             )
+        ports = {
+            name: action.get(name, entry_arguments.get(name, default))
+            for name, default in (("ssh_port", 22), ("telnet_port", 23), ("redfish_port", 443))
+        }
+        for name, port in ports.items():
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise AgentGatewayError(f"{name} must be an integer between 1 and 65535")
+            if name in action and name in entry_arguments and entry_arguments[name] != port:
+                raise AgentGatewayError(f"entry_arguments.{name} conflicts with {name}")
         _bounded_diagnostic_scope(
             intent=intent,
             arguments=entry_arguments,
@@ -1780,6 +1825,10 @@ def decode_run_command(
             input_digest="",
             entry_operation=entry_operation,
             entry_arguments=entry_arguments,
+            ssh_port=ports["ssh_port"],
+            telnet_port=ports["telnet_port"],
+            redfish_port=ports["redfish_port"],
+            allow_insecure_tls=action.get("allow_insecure_tls", True),
             targets=targets,
             observation_ref=observation_ref,
             caller_deadline=caller_deadline,

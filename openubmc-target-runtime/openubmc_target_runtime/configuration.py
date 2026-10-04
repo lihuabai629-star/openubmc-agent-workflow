@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-import fcntl
 import ipaddress
 import json
 import math
@@ -14,6 +13,10 @@ import re
 import stat
 import tempfile
 import uuid
+import sys
+
+if sys.platform != 'win32':
+    import fcntl
 
 from .credential_file import CredentialFileError, read_private_text
 
@@ -95,16 +98,20 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise ConfigurationError('Configuration markers must not be symbolic links')
     descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
     try:
+        if sys.platform == 'win32':
+            from .windows_private import harden_new_file
+            harden_new_file(Path(temporary))
         with os.fdopen(descriptor, 'wb') as output:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if sys.platform != 'win32':
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -116,6 +123,9 @@ def _marker_backup(path: Path) -> Path | None:
     original = read_private_text(path, max_bytes=4096).encode()
     descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-rollback-', dir=path.parent)
     try:
+        if sys.platform == 'win32':
+            from .windows_private import harden_new_file
+            harden_new_file(Path(temporary))
         with os.fdopen(descriptor, 'wb') as output:
             output.write(original)
             output.flush()
@@ -256,15 +266,31 @@ class LocalConfigurationStore:
 
     @contextmanager
     def _locked(self, *, blocking: bool = True):
-        self.source.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if sys.platform == 'win32':
+            from .windows_private import WindowsPrivateError, ensure_private_directory
+            try:
+                ensure_private_directory(self.source.parent)
+            except WindowsPrivateError as exc:
+                raise ConfigurationError(str(exc)) from None
+        else:
+            self.source.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = self.source.with_name('.' + self.source.name + '.lock')
-        descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-                raise ConfigurationError('Configuration lock must be a private current-user file')
-            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-            yield
+            if sys.platform == 'win32':
+                from .windows_private import WindowsPrivateError, locked_file, verify_private_path
+                try:
+                    verify_private_path(lock)
+                    with locked_file(descriptor, blocking=blocking):
+                        yield
+                except WindowsPrivateError as exc:
+                    raise ConfigurationError(str(exc)) from None
+            else:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise ConfigurationError('Configuration lock must be a private current-user file')
+                fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                yield
         finally:
             os.close(descriptor)
 
@@ -300,10 +326,7 @@ class LocalConfigurationStore:
             snapshot = _snapshot(self.source, revision)
             if snapshot.parent.is_symlink():
                 raise ConfigurationError('Configuration snapshots must remain local')
-            snapshot.parent.mkdir(mode=0o700, exist_ok=True)
-            info = snapshot.parent.stat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-                raise ConfigurationError('Configuration snapshot directory must be private and current-user owned')
+            self._ensure_snapshot_directory(snapshot.parent)
             _atomic_write(snapshot, content)
             _atomic_write(_sidecar(self.source, 'saved'), json.dumps({'schema': 'openubmc.configuration.v1', 'revision': revision}).encode())
             return self.status()
@@ -344,10 +367,7 @@ class LocalConfigurationStore:
             snapshot = _snapshot(self.source, revision)
             if snapshot.parent.is_symlink():
                 raise ConfigurationError('Configuration snapshots must remain local')
-            snapshot.parent.mkdir(mode=0o700, exist_ok=True)
-            info = snapshot.parent.stat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-                raise ConfigurationError('Configuration snapshot directory must be private and current-user owned')
+            self._ensure_snapshot_directory(snapshot.parent)
             markers = (_sidecar(self.source, 'saved'), _sidecar(self.source, 'active'))
             backups: list[Path | None] = []
             try:
@@ -368,13 +388,28 @@ class LocalConfigurationStore:
                     else:
                         os.replace(backup, path)
                 snapshot.unlink(missing_ok=True)
-                directory = os.open(self.source.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
+                if sys.platform != 'win32':
+                    directory = os.open(self.source.parent, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
                 raise
             finally:
                 for backup in backups:
                     if backup is not None:
                         backup.unlink(missing_ok=True)
+
+    @staticmethod
+    def _ensure_snapshot_directory(path: Path) -> None:
+        if sys.platform == 'win32':
+            from .windows_private import WindowsPrivateError, ensure_private_directory
+            try:
+                ensure_private_directory(path)
+            except WindowsPrivateError as exc:
+                raise ConfigurationError(str(exc)) from None
+        else:
+            path.mkdir(mode=0o700, exist_ok=True)
+            info = path.stat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                raise ConfigurationError('Configuration snapshot directory must be private and current-user owned')

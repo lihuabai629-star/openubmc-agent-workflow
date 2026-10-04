@@ -11,6 +11,14 @@ import sys
 from _target_runtime_adapter import _load_runtime_module
 
 
+def _default_state_dir() -> Path:
+    if os.name == "nt":
+        local = Path(os.environ.get("XDG_STATE_HOME") or os.environ.get("LOCALAPPDATA")
+                     or Path.home() / "AppData" / "Local")
+        return local / "openubmc" / "runtime-state"
+    return Path.home() / ".local" / "state" / "openubmc-target-runtime"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("handoff", "notes", "answer", "audit", "hook"))
@@ -18,7 +26,7 @@ def main(argv=None) -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--state-dir", default=os.environ.get(
         "OPENUBMC_TARGET_RUNTIME_STATE_DIR",
-        str(Path.home() / ".local/state/openubmc-target-runtime"),
+        str(_default_state_dir()),
     ))
     parser.add_argument("--notes-file", type=Path)
     parser.add_argument("--rollout", type=Path)

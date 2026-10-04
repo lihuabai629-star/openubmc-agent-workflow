@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -178,7 +179,7 @@ def _search_term_with_rg(
             if not _literal_token_matches(line_text, term):
                 continue
             try:
-                path_text = str(Path(path_text).relative_to(root))
+                path_text = Path(path_text).relative_to(root).as_posix()
             except (ValueError, OSError):
                 pass
             match = _source_match(
@@ -232,7 +233,7 @@ def _python_source_search(
 
     def relative_path(path: Path) -> str:
         try:
-            return str(path.relative_to(root))
+            return path.relative_to(root).as_posix()
         except ValueError:
             return str(path)
 
@@ -571,6 +572,15 @@ class SourceIndexUnavailable(Exception):
     """A local cache failed; callers should use bounded text search."""
 
 
+def _windows_private_storage():
+    """Find the Runtime sibling when this source helper runs alone."""
+    sibling = Path(__file__).resolve().parents[2] / "openubmc-target-runtime"
+    if str(sibling) not in sys.path:
+        sys.path.insert(0, str(sibling))
+    from openubmc_target_runtime import windows_private
+    return windows_private
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -584,7 +594,11 @@ def _default_index_path(root: Path) -> Path:
 def _index_connection(root: Path, index_path: Path) -> sqlite3.Connection:
     if index_path.is_symlink():
         raise SourceIndexUnavailable("index_path_symlink")
-    index_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt":
+        _windows_private_storage().ensure_private_directory(index_path.parent)
+    else:
+        index_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    created = not index_path.exists()
     if not index_path.exists():
         try:
             fd = os.open(index_path, os.O_CREAT | os.O_EXCL | os.O_RDWR |
@@ -596,7 +610,14 @@ def _index_connection(root: Path, index_path: Path) -> sqlite3.Connection:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise SourceIndexUnavailable("index_not_regular")
-        os.fchmod(fd, 0o600)
+        if os.name == "nt":
+            private = _windows_private_storage()
+            if created:
+                private.harden_new_file(index_path)
+            else:
+                private.verify_private_path(index_path)
+        else:
+            os.fchmod(fd, 0o600)
     finally:
         os.close(fd)
     connection = sqlite3.connect(index_path, timeout=0.5)

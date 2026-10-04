@@ -1271,6 +1271,10 @@ def _runtime_state_dir() -> Path:
     configured = os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
+    if os.name == "nt":
+        local = Path(os.environ.get("XDG_STATE_HOME") or os.environ.get("LOCALAPPDATA")
+                     or Path.home() / "AppData" / "Local")
+        return (local / "openubmc" / "runtime-state").resolve()
     return (Path.home() / ".local" / "state" / "openubmc-target-runtime").resolve()
 
 
@@ -1360,7 +1364,11 @@ def create_service():
     runtime = _load_runtime_module()
     state_dir = _runtime_state_dir()
     artifact_dir = state_dir / "artifacts"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        private = importlib.import_module(runtime.__name__ + ".windows_private")
+        private.ensure_private_directory(artifact_dir)
+    else:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
     artifact_store = runtime.LocalArtifactStore(
         content_root=artifact_dir / "content",
         repository=runtime.SQLiteArtifactRepository(
@@ -1519,7 +1527,7 @@ def main() -> int:
     ).strip()
     if configured_lifecycle_root:
         lifecycle_root = Path(configured_lifecycle_root)
-    elif os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip():
+    elif os.name == "nt" or os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip():
         lifecycle_root = state_dir / "mcp-processes"
     else:
         lifecycle_root = (

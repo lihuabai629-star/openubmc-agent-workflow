@@ -1,0 +1,29 @@
+# Native Windows device execution
+
+Status: Proposed. This specification replaces the Windows→WSL device execution assumption in ADR-0008, #247, #284, and the unpublished 2.1.3 qualification plan. Linux remains supported. A WSL distribution is optional for a separately configured build environment; it is not a prerequisite for device work.
+
+## Product contract
+
+A Windows Codex installation runs the packaged Runtime and knowledge MCP backends on Windows. The normal Agent Interface remains `observe` and `execute`; Runtime Core remains the sole authority for Run, Gate, Effect, Evidence, and Outcome. The Windows bootstrap reports `execution_host=windows-native` only after the installed Python Runtime completes protocol and package-integrity checks. It must not report a WSL execution host for a Windows-native request or silently send credentials or operations across that boundary.
+
+Without WSL, a user can use the local configuration page, retain global and per-IP BMC credentials, associate BMC and OS IPs, query the KB, perform authorized SSH/Redfish observations, collect logs, and run the existing typed device diagnosis, upgrade, live-patch and rollback flows against reachable devices. The same local Run and Effect identities survive restart. A missing compiler, Conan, Bingo, or product workspace is reported only when a build or publish action needs it; device connection and KB startup remain available. The build workflow must never reinterpret a missing toolchain as successful build evidence.
+
+On Windows, local credentials, KB tokens, dependency caches and Runtime state live under Windows user-owned paths. The installer may offer a reviewed migration from an existing WSL profile, but it cannot copy secrets automatically. Secret values remain outside model context, tool arguments, command lines, environment variables and command output. Existing host-key and TLS verification policies, target identity binding, typed mutation gates and fail-closed unknown-Effect recovery apply unchanged.
+
+## Implementation seams
+
+1. **Host bootstrap:** The installed Node entrypoint selects Windows Python and Node backends for device work, validates the package inventory, and keeps setup mode available if a prerequisite is missing. Linux continues to use its current backend. WSL selection is removed from the default Windows device path. An explicit build-environment choice may be added separately.
+2. **Local persistence:** A platform Adapter supplies private current-user files, exclusive locks, atomic activation, and owned-process lifecycle. Windows validates owner-only access using Windows security descriptors rather than POSIX mode bits. Failure to establish the private-store invariant blocks credential activation or a durable Run; it never falls back to a shared directory.
+3. **Device transports:** A Windows SSH Adapter supports password and key authentication, strict/accept-new/insecure host-key modes, bounded remote commands, upload/download, connection-loss detection and close through the same transport Interface used by Runtime. Passwords are passed in process memory only. The existing Redfish and Telnet Adapters are qualified on Windows with the same target and certificate policy. The Windows SSH implementation must not require `sshpass`, POSIX ControlMaster sockets or a shell command containing a password.
+4. **Dependencies and KB:** Windows x86_64 uses CPython 3.12 and Node 20 or newer. Python wheel hashes and Node packages are pinned and verified in a Windows-owned cache outside MCP initialization. The actual installed archive starts both required MCP servers and survives bytecode generation, Codex restart, update and uninstall. Package identity is identical across Linux and Windows.
+5. **Capability reporting:** Missing build tools produce a typed `build_environment_unavailable` result for build/publish tasks. It is not a Runtime device failure and does not suppress `observe`, `execute`, configuration or KB tools.
+
+## Acceptance
+
+- On native Windows x86_64 with no installed or selected WSL distribution, install the exact archive through Codex, complete setup, initialize both MCP servers, list their tools, and run `observe` against an isolated SSH/Redfish target. Confirm the route receipt says `windows-native` and the backend process is a Windows process.
+- Use a local private credential revision for a BMC and its associated OS address. Verify successful read-only SSH and Redfish checks, per-IP override selection, a rejected host key/certificate, authentication failure, and restart reuse without exposing a secret in durable Codex rollout or child-process metadata.
+- Against isolated device fixtures, complete one typed diagnosis Run, one existing-HPM upgrade path, and a live-patch apply/verify/rollback path. Interrupt a controlled Effect and resume the same Run with no duplicate mutation. Bind Evidence to target, IP, version and time. Real-device mutation requires a separately authorized qualification.
+- Exercise the configuration page and KB authentication recovery natively on Windows. Missing build tools must leave device and KB operations healthy and return the typed build blocker only to build/publish work.
+- Qualify install, upgrade from the last public release, stale-override repair, lifecycle closeout, uninstall/reinstall and the same archive on native Linux. The platform matrix must contain a Windows-native device row; a Windows→WSL probe cannot satisfy it. Desktop same-Run readback and real Agent trials remain independent release gates.
+
+The public test seams are the installed MCP entrypoints, `LocalConfigurationStore`, Runtime device transport Interface, and platform-matrix verifier. Tests use local fixtures and inspect persisted receipts; they do not copy a live credential or mutate a real device.

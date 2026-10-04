@@ -512,11 +512,21 @@ class _RuntimeTransportPort:
 
 
 class _RuntimeLifecyclePort:
-    def __init__(self, effect_runner: LocalEffectRunner) -> None:
+    def __init__(
+        self,
+        effect_runner: LocalEffectRunner,
+        context_repository: RuntimeRepository,
+    ) -> None:
         self._effect_runner = effect_runner
+        self._context_repository = context_repository
 
     def close(self) -> None:
-        self._effect_runner.close()
+        try:
+            self._effect_runner.close()
+        finally:
+            closer = getattr(self._context_repository, "close", None)
+            if callable(closer):
+                closer()
 
 
 class _RuntimeTestSupport:
@@ -828,7 +838,9 @@ def compose_runtime(
         projector=agent_projector,
         tracing=options.tracing,
     )
-    lifecycle = _RuntimeLifecyclePort(effect_runner)
+    lifecycle = _RuntimeLifecyclePort(
+        effect_runner, context_runtime.repository.base_repository
+    )
     return _RuntimeComposition(
         agent=_AgentRuntimePort(
             semantic_runtime,

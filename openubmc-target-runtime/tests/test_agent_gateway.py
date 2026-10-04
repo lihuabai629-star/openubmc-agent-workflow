@@ -1183,6 +1183,61 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
         }
 
 
+class IntegrityOnlyLivePatchBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("business_acceptance", None)
+        return value
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().live_patch_run(task, arguments, context)
+        metadata = {"mode": "644", "uid": 0, "gid": 0}
+        value["mutation"]["remote_after_metadata"] = metadata
+        value["verification"]["remote_metadata"] = metadata
+        return value
+
+
+class RemovedFileRollbackBackend(IntegrityOnlyLivePatchBackend):
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("live_patch_run", dict(arguments)))
+        return {
+            "ok": True,
+            "summary": "created file removed and absence verified",
+            "target_epoch": 1,
+            "mutation": {
+                "remote_after_sha256": "",
+                "remote_removed": True,
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_removed": True,
+                "target_epoch": 1,
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "rollback",
+                "expected_missing": True,
+                "expected_checksum": "",
+                "observed_checksum": "",
+                "root_mount_restored": True,
+            },
+        }
+
+
+class ContradictoryRemovedFileRollbackBackend(RemovedFileRollbackBackend):
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().live_patch_run(task, arguments, context)
+        value["mutation"]["remote_removed"] = False
+        value["mutation"]["remote_after_sha256"] = "a" * 64
+        value["verification"]["remote_removed"] = False
+        value["verification"]["remote_sha256"] = "a" * 64
+        value["journal"]["expected_checksum"] = "a" * 64
+        value["journal"]["observed_checksum"] = "a" * 64
+        return value
+
+
 class ConflictingAcceptanceSemanticBackend(SemanticBackend):
     def debug_collect(self, task, arguments, context) -> dict[str, object]:
         value = super().debug_collect(task, arguments, context)
@@ -2598,6 +2653,7 @@ class AgentGatewayTests(unittest.TestCase):
             "mdbctl",
             capability_item["description"],
         )
+
         self.assertIn("response_required", definitions[1]["description"])
         self.assertIn("sole structured reusable action", definitions[1]["description"])
         action_shapes = {
@@ -2634,6 +2690,97 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertIn("oneOf", action_shapes["control"])
         self.assertNotIn("max_steps", json.dumps(execute_schema))
+
+    def test_upgrade_start_keeps_target_ports_for_upgrade_and_fresh_verification(self) -> None:
+        artifact = self.artifact_root / "fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "ssh_port": 2222, "redfish_port": 8443,
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                },
+            },
+            task_id="upgrade-target-ports",
+            operation_id="upgrade-target-ports-start",
+        )
+        for index in range(8):
+            if any(name == "debug_collect" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-target-ports",
+                operation_id=f"upgrade-target-ports-resume-{index}",
+            )
+
+        upgrade = next(arguments for name, arguments in self.backend.calls if name == "upgrade_run")
+        verification = next(arguments for name, arguments in self.backend.calls if name == "debug_collect")
+        self.assertEqual(upgrade["redfish_port"], 8443)
+        self.assertEqual(verification["ssh_port"], 2222)
+
+    def test_upgrade_start_can_require_tls_certificate_validation(self) -> None:
+        artifact = self.artifact_root / "tls-verified-fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "allow_insecure_tls": False,
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                },
+            },
+            task_id="upgrade-strict-tls",
+            operation_id="upgrade-strict-tls-start",
+        )
+        for index in range(8):
+            if any(name == "upgrade_run" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-strict-tls",
+                operation_id=f"upgrade-strict-tls-resume-{index}",
+            )
+        upgrade = next(arguments for name, arguments in self.backend.calls if name == "upgrade_run")
+        self.assertIs(upgrade["allow_insecure_tls"], False)
+
+    def test_upgrade_start_legacy_entry_ports_reach_fresh_verification(self) -> None:
+        artifact = self.artifact_root / "fixture.hpm"
+        artifact.write_bytes(b"synthetic firmware")
+        turn = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start", "target": "192.0.2.10", "intent": "upgrade-and-verify",
+                "entry_operation": "upgrade_run",
+                "entry_arguments": {
+                    "artifact_path": str(artifact),
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "product_version": "2.0.0",
+                    "ssh_port": 2222, "redfish_port": 8443,
+                },
+            },
+            task_id="upgrade-legacy-ports",
+            operation_id="upgrade-legacy-ports-start",
+        )
+        for index in range(8):
+            if any(name == "debug_collect" for name, _arguments in self.backend.calls):
+                break
+            turn = self.service.call_exposed_tool(
+                "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                task_id="upgrade-legacy-ports",
+                operation_id=f"upgrade-legacy-ports-resume-{index}",
+            )
+
+        verification = next(arguments for name, arguments in self.backend.calls if name == "debug_collect")
+        self.assertEqual(verification["ssh_port"], 2222)
 
     def test_execute_rejects_invalid_action_shapes_before_dispatch(self) -> None:
         runtime = RejectDispatchRuntime()
@@ -2690,6 +2837,15 @@ class AgentGatewayTests(unittest.TestCase):
                     "target_epoch": 9,
                 },
                 "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "upgrade-and-verify",
+                    "allow_insecure_tls": "false",
+                },
+                "allow_insecure_tls must be a boolean",
             ),
             (
                 {
@@ -3347,6 +3503,8 @@ class AgentGatewayTests(unittest.TestCase):
                     "arguments": {
                         "kind": "start",
                         "target": target,
+                        "ssh_port": 2222,
+                        "redfish_port": 8443,
                         "intent": "x" * (128 * 1024),
                         "deadline": 121,
                     },
@@ -3361,6 +3519,8 @@ class AgentGatewayTests(unittest.TestCase):
             TURN_MAX_BYTES,
         )
         self.assertEqual(example["target"], target)
+        self.assertEqual(example["ssh_port"], 2222)
+        self.assertEqual(example["redfish_port"], 8443)
         self.assertEqual(example["intent"], "x" * (128 * 1024))
         self.assertEqual(example["deadline"], 120)
         self.assertFalse(structured["projection_compacted"])
@@ -12481,6 +12641,161 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_direct_live_patch_without_extra_business_checks_closes_after_fresh_verification(self) -> None:
+        backend = IntegrityOnlyLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        artifact = self.artifact_root / "direct-live-patch.lua"
+        artifact.write_bytes(b"return 'synthetic patch'\n")
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.73", "intent": "live-patch",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "local_path": str(artifact),
+                        "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                        "remote_path": "/tmp/direct-live-patch.lua",
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="direct-live-patch-integrity",
+                operation_id="direct-live-patch-integrity-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-live-patch-integrity",
+                    operation_id=f"direct-live-patch-integrity-resume-{index}",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["outcome"]["status"], "completed")
+        self.assertEqual([name for name, _args in backend.calls], ["live_patch_run", "debug_collect"])
+
+    def test_direct_live_patch_with_declared_business_check_stays_unverified_without_result(self) -> None:
+        backend = IntegrityOnlyLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        artifact = self.artifact_root / "checked-live-patch.lua"
+        artifact.write_bytes(b"return 'synthetic patch'\n")
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.74", "intent": "live-patch",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "local_path": str(artifact),
+                        "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                        "remote_path": "/tmp/checked-live-patch.lua",
+                        "restart_scope": "none",
+                        "verification_checks": ["Redfish service returns the expected result"],
+                    },
+                },
+                task_id="direct-live-patch-business-check",
+                operation_id="direct-live-patch-business-check-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-live-patch-business-check",
+                    operation_id=f"direct-live-patch-business-check-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "unverified")
+
+    def test_direct_remove_created_rollback_closes_after_verified_absence(self) -> None:
+        backend = RemovedFileRollbackBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.75", "intent": "rollback",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "action": "rollback",
+                        "remote_path": "/tmp/created-by-live-patch.lua",
+                        "remove_created": True,
+                        "expected_current_sha256": "a" * 64,
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="direct-remove-created-rollback",
+                operation_id="direct-remove-created-rollback-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="direct-remove-created-rollback",
+                    operation_id=f"direct-remove-created-rollback-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["outcome"]["status"], "completed")
+        self.assertEqual(projection["closeout"]["identity_status"], "matched")
+        integrity = next(
+            check for check in projection["closeout"]["checks"]
+            if check["requirement_id"] == "acceptance.live-patch.integrity"
+        )
+        self.assertEqual(integrity["status"], "passed")
+        self.assertEqual([name for name, _args in backend.calls], ["live_patch_run", "debug_collect"])
+
+    def test_remove_created_rollback_cannot_close_on_conflicting_checksum_evidence(self) -> None:
+        backend = ContradictoryRemovedFileRollbackBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start", "target": "192.0.2.76", "intent": "rollback",
+                    "entry_operation": "live_patch_run",
+                    "entry_arguments": {
+                        "action": "rollback",
+                        "remote_path": "/tmp/created-by-live-patch.lua",
+                        "remove_created": True,
+                        "expected_current_sha256": "a" * 64,
+                        "restart_scope": "none",
+                    },
+                },
+                task_id="contradictory-remove-created-rollback",
+                operation_id="contradictory-remove-created-rollback-start",
+            )
+            for index in range(8):
+                if turn["state"] != "running":
+                    break
+                turn = service.call_exposed_tool(
+                    "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                    task_id="contradictory-remove-created-rollback",
+                    operation_id=f"contradictory-remove-created-rollback-resume-{index}",
+                )
+            projection = service._test.context_runtime.read_case(turn["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "failed")
+        self.assertNotEqual(projection["closeout"]["identity_status"], "matched")
+        integrity = next(
+            check for check in projection["closeout"]["checks"]
+            if check["requirement_id"] == "acceptance.live-patch.integrity"
+        )
+        self.assertEqual(integrity["status"], "failed")
 
     def test_incomplete_live_patch_acceptance_cannot_report_completed_success(self) -> None:
         backend = IncompleteAcceptanceSemanticBackend()

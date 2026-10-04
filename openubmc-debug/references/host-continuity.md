@@ -14,13 +14,13 @@ The plugin's trusted `SessionStart` hook rereads current Runtime facts. The trus
 `Stop` hook can ask for one text-only final from a persisted terminal Outcome.
 Do not call `execute`, `resume` or `observe` to deliver that text. An untrusted or
 unavailable hook does not block the existing workflow; use the local CLI below.
-Hooks do not prepare dependencies, select a new WSL distribution, or grant trust.
+Hooks do not prepare dependencies, choose a build host, or grant trust.
 
 ## Explicit local recovery
 
-Run on the Runtime host (Linux or the already-selected WSL), with its existing
-`OPENUBMC_TARGET_RUNTIME_STATE_DIR`. The default is
-`~/.local/state/openubmc-target-runtime`. Use the packaged script or source script:
+Run on the host of the same Runtime (native Windows, Linux, or an explicitly
+selected WSL environment), with its existing `OPENUBMC_TARGET_RUNTIME_STATE_DIR`.
+Use the packaged script or source script:
 
 ```sh
 python openubmc-debug/scripts/host_continuity.py handoff --task-id '<task-id>'

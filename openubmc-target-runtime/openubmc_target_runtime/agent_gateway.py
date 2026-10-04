@@ -314,6 +314,7 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
             example["target"] = context.target or "<BMC IP>"
         if context.targets:
             example["targets"] = [dict(item) for item in context.targets]
+        example.update(context.target_ports)
         example["intent"] = context.intent or "diagnosis-only"
         if context.purpose:
             example["purpose"] = context.purpose
@@ -1934,6 +1935,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
         "required": ["target", "selectors"],
         "properties": {
             "target": {"type": "string", "minLength": 1, "maxLength": 512},
+            "ssh_port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 22},
             "selectors": {
                 "type": "array",
                 "minItems": 1,
@@ -2078,6 +2080,10 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "kind": {"const": "start"},
                     "target": {"$ref": "#/$defs/target"},
                     "targets": {"$ref": "#/$defs/targets"},
+                    "ssh_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "telnet_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "redfish_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "allow_insecure_tls": {"type": "boolean"},
                     "intent": {"type": "string", "minLength": 1},
                     "entry_operation": {"type": "string", "minLength": 1, "maxLength": 128},
                     "entry_arguments": {

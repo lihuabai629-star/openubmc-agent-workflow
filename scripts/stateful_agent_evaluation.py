@@ -292,6 +292,159 @@ def _mutated_events(events: Sequence[Mapping[str, object]], fault: str) -> list[
     return copied
 
 
+def audit_host_resume(*, rollout: Path, events: Sequence[Mapping[str, object]],
+                      run_id: str, task_id: str, host_session_id: str,
+                      prepared_at: str) -> dict[str, object]:
+    """Bind a native cancelled turn and a later execute(resume) to Runtime facts.
+
+    The supported checkpoint is diagnosis.acceptance, after one completed fake
+    debug Effect and before its Gate response. Host records never advance Runtime.
+    """
+    def stamp(value: object) -> float:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            raise ValueError("Host recovery event has no timezone")
+        return moment.timestamp()
+
+    sessions: set[str] = set()
+    active_turn = ""
+    calls: dict[str, dict[str, object]] = {}
+    cancelled: list[tuple[str, int, float]] = []
+    final_times: list[float] = []
+    with rollout.open(encoding="utf-8") as stream:
+        for index, line in enumerate(stream):
+            if index >= 10000 or len(line) > 16 * 1024 * 1024:
+                raise ValueError("Host recovery evidence exceeds audit bounds")
+            row = _object(json.loads(line))
+            payload = _object(row.get("payload"))
+            if row.get("type") == "session_meta":
+                sessions.add(str(payload.get("id", "")))
+            if row.get("type") == "event_msg":
+                kind, turn = payload.get("type"), str(payload.get("turn_id", ""))
+                if kind == "task_started":
+                    if active_turn or not turn:
+                        raise ValueError("Host recovery turns overlap")
+                    active_turn = turn
+                elif kind in {"turn_aborted", "task_complete"}:
+                    if not turn or turn != active_turn:
+                        raise ValueError("Host recovery turn identity differs")
+                    if kind == "turn_aborted":
+                        if payload.get("reason") != "interrupted":
+                            raise ValueError("Host turn was not interrupted")
+                        cancelled.append((turn, index, stamp(row.get("timestamp"))))
+                    active_turn = ""
+            if row.get("type") != "response_item":
+                continue
+            kind = payload.get("type")
+            if kind == "message" and payload.get("role") == "assistant" and payload.get("phase") == "final_answer":
+                final_times.append(stamp(row.get("timestamp")))
+            if kind == "function_call" and (
+                (payload.get("namespace") == "mcp__runtime_fake" and payload.get("name") == "execute")
+                or payload.get("name") == "mcp__runtime_fake__execute"
+            ):
+                call_id = str(payload.get("call_id", ""))
+                if not active_turn or not call_id or call_id in calls:
+                    raise ValueError("Host Runtime call identity is ambiguous")
+                metadata = _object(payload.get("internal_chat_message_metadata_passthrough"))
+                if metadata.get("turn_id") != active_turn:
+                    raise ValueError("Host call belongs to another turn")
+                arguments = json.loads(str(payload.get("arguments", "")))
+                if not isinstance(arguments, Mapping):
+                    raise ValueError("Host Runtime arguments are invalid")
+                calls[call_id] = {"turn": active_turn, "arguments": arguments,
+                                  "index": index, "time": stamp(row.get("timestamp"))}
+            elif kind == "function_call_output" and str(payload.get("call_id")) in calls:
+                call = calls[str(payload["call_id"])]
+                if "output" in call or call["turn"] != active_turn:
+                    raise ValueError("Host Runtime output is duplicated or outside its turn")
+                metadata = _object(payload.get("internal_chat_message_metadata_passthrough"))
+                if metadata.get("turn_id") != active_turn:
+                    raise ValueError("Host output belongs to another turn")
+                raw = str(payload.get("output", ""))
+                document = json.loads(raw.partition("\nOutput:\n")[2] if "\nOutput:\n" in raw else raw)
+                if not isinstance(document, Mapping) or not str(document.get("schema", "")).endswith("/turn"):
+                    raise ValueError("Host output is not a Runtime Turn")
+                call.update(output=document, output_index=index, output_time=stamp(row.get("timestamp")))
+    if sessions != {host_session_id} or not host_session_id or len(cancelled) != 1:
+        raise ValueError("native Host cancellation is missing or belongs to another session")
+    by_kind = {kind: [c for c in calls.values() if _object(c["arguments"]).get("kind") == kind]
+               for kind in ("start", "resume", "respond")}
+    if (len(calls) != 3 or any(len(items) != 1 for items in by_kind.values())
+            or any("output" not in call for call in calls.values())):
+        raise ValueError("resume requires exactly one start, resume and Gate response")
+    start, resume, respond = (by_kind[kind][0] for kind in ("start", "resume", "respond"))
+    cancelled_turn, cancelled_index, cancelled_time = cancelled[0]
+    if (start["turn"] != cancelled_turn or resume["turn"] == cancelled_turn
+            or respond["turn"] != resume["turn"]
+            or not (start["index"] < start.get("output_index", -1) < cancelled_index
+                    < resume["index"] < resume.get("output_index", -1) < respond["index"]
+                    < respond.get("output_index", -1))
+            or not (start["time"] <= start.get("output_time", 0) <= cancelled_time < resume["time"]
+                    <= resume.get("output_time", 0) <= respond["time"] <= respond.get("output_time", 0))):
+        raise ValueError("Host cancellation/resume order is invalid")
+    start_output, resume_output = (_object(c.get("output")) for c in (start, resume))
+    gate = _object(start_output.get("gate"))
+    if (gate.get("name") != "diagnosis.acceptance" or not gate.get("gate_id")
+            or any(o.get("run_id") != run_id or o.get("state") != "waiting_response" or o.get("outcome")
+                   or _object(o.get("gate")).get("gate_id") != gate["gate_id"]
+                   for o in (start_output, resume_output))
+            or any(_object(c["arguments"]).get("run_id") != run_id for c in (resume, respond))
+            or _object(respond["arguments"]).get("gate_id") != gate["gate_id"]):
+        raise ValueError("Host resume did not reattach to the same nonterminal Run and Gate")
+    outcomes = [e for e in events if e.get("kind") == "RunOutcomeRecorded"]
+    gates = [e for e in events if e.get("kind") == "RunGateOpened"
+             and _object(_object(e.get("payload")).get("gate")).get("gate_id") == gate["gate_id"]]
+    if (len(outcomes) != 1 or len(gates) != 1
+            or not (float(gates[0]["created_at"]) <= cancelled_time < float(outcomes[0]["created_at"]))
+            or stamp(prepared_at) <= float(outcomes[0]["created_at"])
+            or any(t < float(outcomes[0]["created_at"]) for t in final_times)):
+        raise ValueError("cancellation or final preparation did not precede/follow Runtime terminal state")
+    terminal_turn = _object(respond["output"])
+    terminal_outcome = _object(_object(outcomes[0].get("payload")).get("outcome"))
+    projected_outcome = _object(terminal_turn.get("outcome"))
+    projection_fields = ("status", "summary", "acceptance")
+    if (terminal_turn.get("run_id") != run_id or terminal_turn.get("state") != "completed"
+            or terminal_turn.get("error")
+            or any(key not in projected_outcome or projected_outcome[key] != terminal_outcome.get(key)
+                   for key in projection_fields)
+            or float(outcomes[0]["created_at"]) > float(respond["output_time"])):
+        raise ValueError("respond output does not bind the Runtime Outcome projection")
+    trace = [json.loads(line) for line in
+             (rollout.parent / "host-trace.jsonl").read_text(encoding="utf-8").splitlines()]
+    if len(trace) != len(calls) or {str(_object(row).get("host_call_id", "")) for row in trace} != set(calls):
+        raise ValueError("native MCP call identities do not match the Host rollout")
+    for row in trace:
+        call = calls[str(row["host_call_id"])]
+        if (row.get("task_id") != task_id or row.get("host_session_id") != host_session_id
+                or row.get("tool") != "execute" or row.get("response_received") is not True
+                or row.get("request_kind") != _object(call["arguments"]).get("kind")
+                or row.get("response_run_id") != run_id):
+            raise ValueError("native MCP trace does not bind every recovery call")
+    accepted = [e for e in events if e.get("kind") == "OperationAccepted"
+                and _object(e.get("payload")).get("operation") == "debug_run"]
+    starts = [e for e in events if e.get("kind") == "OperationStarted"]
+    if len(accepted) != 1 or len(starts) != 1 or starts[0].get("operation_id") != accepted[0].get("operation_id"):
+        raise ValueError("diagnosis backend action was repeated")
+    effect_id = str(accepted[0]["operation_id"])
+    for output in (start_output, resume_output):
+        evidence = _object(output.get("diagnostic_receipt")).get("evidence", [])
+        if not isinstance(evidence, list) or not evidence or {
+            _object(item).get("operation_id") for item in evidence
+        } != {effect_id}:
+            raise ValueError("resume Effect identity differs from Runtime")
+    invocations = [json.loads(line) for line in
+                   (rollout.parent / "backend-invocations.jsonl").read_text(encoding="utf-8").splitlines()]
+    if (len(invocations) != 1 or _object(invocations[0]).get("task_id") != task_id
+            or _object(invocations[0]).get("operation") != "debug_run"):
+        raise ValueError("fake backend invocation count is not one")
+    return {"host_cancellation_verified": True, "same_run": True,
+            "host_session_id": host_session_id, "run_id": run_id, "effect_id": effect_id,
+            "gate_id": gate["gate_id"], "cancelled_turn_id": cancelled_turn,
+            "resumed_turn_id": resume["turn"], "backend_invocations": 1,
+            "checkpoint": "diagnosis.acceptance", "cancelled_at": cancelled_time,
+            "resume_called_at": resume["time"], "outcome_recorded_at": outcomes[0]["created_at"]}
+
+
 def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
                task_id: str, final: FinalAnswerRecord | None,
                rollout: Path | None, identity: Mapping[str, object],
@@ -377,20 +530,29 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
     status = str(outcome.get("status", ""))
     if case.get("requires_completed") is True and status != "completed":
         issues.add("expected_completion_missing")
+    recovery = None
     if live_mode:
         scenario = case.get("id")
-        # Only the complete-diagnosis scenario has a native Host adapter.
-        # Other manifest rows have offline fixtures, but cannot pass a live
-        # score until their interruptions/effects/gates bind to this Run.
-        if scenario != "diagnosis-complete":
+        # Only these two scenarios have native Host adapters. Other rows
+        # remain fail-closed until their actual behaviors bind to this Run.
+        if scenario not in {"diagnosis-complete", "diagnosis-resume"}:
             issues.add("scenario_not_exercised")
         opened_intent = str(_object(opened[0].get("payload")).get("intent", "")) if opened else ""
         gates = {str(_object(_object(event.get("payload")).get("gate")).get("name", ""))
                  for event in events if event.get("kind") == "RunGateOpened"}
-        if scenario == "diagnosis-complete" and (
+        if scenario in {"diagnosis-complete", "diagnosis-resume"} and (
             opened_intent != "diagnosis-only" or "diagnosis.acceptance" not in gates
         ):
             issues.add("scenario_not_exercised")
+        if scenario == "diagnosis-resume":
+            try:
+                if rollout is None or final is None:
+                    raise ValueError("Host recovery evidence is missing")
+                recovery = audit_host_resume(
+                    rollout=rollout, events=events, run_id=run_id, task_id=task_id,
+                    host_session_id=host_session_id, prepared_at=final.prepared_at)
+            except (OSError, ValueError, TypeError, KeyError):
+                issues.update({"scenario_not_exercised", "host_recovery_unconfirmed"})
     if len(recorded) > 1:
         issues.add("multiple_outcomes")
     if not status or status == "partial" or outcome.get("remaining_work"):
@@ -477,6 +639,7 @@ def score_case(*, case: Mapping[str, object], repository: object, run_id: str,
         "runtime_status": status or "unrecorded", "issues": prioritized[:12],
         "issue_count": len(issues), "issues_truncated": len(issues) > 12,
         "host_final_confirmed": host_final_confirmed,
+        **({"recovery": recovery} if recovery is not None else {}),
         "metrics": {"elapsed_seconds": metrics.get("elapsed_seconds"),
                     "input_tokens": metrics.get("input_tokens"),
                     "output_tokens": metrics.get("output_tokens"),
@@ -685,6 +848,26 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
                      rollout: Path, elapsed_seconds: float) -> dict[str, object]:
     """Read existing Agent trial artifacts; no Agent claim can supply a verdict."""
     validate_plan(plan, manifest)
+    mode = trial.get("execution_mode", "agent")
+    if mode not in {"agent", "controlled-scripted-responses"}:
+        raise ValueError("unknown trial execution mode")
+    request_path = runtime_db.parent / "request.json"
+    if case["id"] == "diagnosis-resume":
+        if not request_path.is_file():
+            raise ValueError("resume execution mode requires its adapter request")
+        request = _object(json.loads(request_path.read_text(encoding="utf-8")))
+        expected_model = mode == "agent"
+        if (trial.get("execution_mode") != mode or request.get("execution_mode") != mode
+                or trial.get("model_invoked") is not expected_model
+                or request.get("model_invoked") is not expected_model):
+            raise ValueError("resume execution mode and model invocation must be explicit and consistent")
+    if request_path.is_file():
+        request = _object(json.loads(request_path.read_text(encoding="utf-8")))
+        if request.get("execution_mode", "agent") != mode:
+            raise ValueError("trial execution mode differs from adapter request")
+    if ((mode == "controlled-scripted-responses" and trial.get("model_invoked") is not False)
+            or (mode == "agent" and trial.get("model_invoked") is False)):
+        raise ValueError("trial execution mode conflicts with model invocation")
     selected = [item for item in plan["schedule"]
                 if item["scenario_id"] == case["id"] and item["trial"] == trial.get("trial")]
     if len(selected) != 1:
@@ -744,7 +927,12 @@ def score_live_trial(*, case: Mapping[str, object], plan: Mapping[str, object],
         result["issues_truncated"] = bool(result["issue_count"] > 12)
         result["host_final_confirmed"] = False
     result["trial"] = row["trial"]
-    result["kind"] = "agent-evidence-scored"
+    result["execution_mode"] = mode
+    result["kind"] = ("controlled-host-evidence-scored" if mode == "controlled-scripted-responses"
+                      else "agent-evidence-scored")
+    if mode == "controlled-scripted-responses":
+        result.update(model_invoked=False, actual_agent_trials=0,
+                      live_acceptance="unverified")
     return result
 
 
@@ -778,7 +966,7 @@ def _dispatch_slots(*, manifest: Mapping[str, object], plan: Mapping[str, object
             "schedule_digest": plan["schedule_digest"],
             "fixture_target": manifest["fixture_target"],
             "output_directory": str(directory),
-            "backend": "runtime-fake",
+            "backend": "runtime-fake", "execution_mode": "agent", "model_invoked": True,
         }
         request_path = directory / "request.json"
         _write_json(request_path, request)
@@ -845,6 +1033,15 @@ def summarize_live(*, manifest: Mapping[str, object], plan: Mapping[str, object]
                     or timing.get("schema") != f"{SCHEMA}/timing"
                     or timing.get("adapter_exit_code") != 0):
                 raise ValueError("adapter trial did not complete")
+            if trial.get("execution_mode") == "controlled-scripted-responses":
+                rows.append({"scenario_id": slot["scenario_id"],
+                             "scenario_version": slot["scenario_version"], "trial": slot["trial"],
+                             "kind": "controlled-host-evidence-excluded",
+                             "execution_mode": "controlled-scripted-responses",
+                             "model_invoked": False, "actual_agent_trials": 0,
+                             "live_acceptance": "unverified", "host_final_confirmed": False,
+                             "issues": ["controlled_evidence_not_agent_trial"]})
+                continue
             elapsed = timing.get("elapsed_seconds")
             if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or elapsed < 0:
                 raise ValueError("elapsed time is invalid")
@@ -885,6 +1082,8 @@ def summarize_live(*, manifest: Mapping[str, object], plan: Mapping[str, object]
         "reasoning_effort": plan["reasoning_effort"],
         "baseline_source_commit": plan["baseline_source_commit"],
         "planned_agent_trials": len(rows), "actual_agent_trials": completed,
+        "controlled_trials_excluded": sum(
+            row.get("kind") == "controlled-host-evidence-excluded" for row in rows),
         "live_acceptance": ("unverified" if completed < len(rows)
                             else "failed" if all_issues else "evaluated"),
         "safety_gate": ("unverified" if completed < len(rows)

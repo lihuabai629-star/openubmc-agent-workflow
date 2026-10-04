@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 import gzip
@@ -271,6 +272,10 @@ _DEBUG_DOMAIN_ARGUMENTS = {
 
 
 def _process_start_marker(pid: int) -> str:
+    if os.name == "nt":
+        from .mcp_lifecycle import _windows_process_state
+        alive, identity = _windows_process_state(pid)
+        return identity if alive and identity != "unknown" else ""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -283,6 +288,10 @@ def _process_start_marker(pid: int) -> str:
 def _process_owner_is_active(pid: int, started: str) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        from .mcp_lifecycle import _windows_process_state
+        alive, identity = _windows_process_state(pid)
+        return alive and identity != "unknown" and (not started or identity == started)
     observed = _process_start_marker(pid)
     if observed:
         return not started or observed == started
@@ -2590,21 +2599,55 @@ class SQLiteRuntimeRepository:
         owner_is_active: Callable[[int, str], bool] = _process_owner_is_active,
     ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            from .windows_private import ensure_private_directory, verify_private_path
+            ensure_private_directory(self.path.parent)
+            if self.path.exists():
+                verify_private_path(self.path)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._clock = clock
         self._owner_pid = os.getpid()
         self._owner_started = _process_start_marker(self._owner_pid)
         self._owner_token = uuid.uuid4().hex
         self._owner_is_active = owner_is_active
+        self._connection: sqlite3.Connection | None = None
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        return connection
+    @contextmanager
+    def _connect(self):
+        connection = self._connection
+        if os.name == "nt" and self.path.exists():
+            from .windows_private import verify_private_path
+            verify_private_path(self.path)
+        if connection is None:
+            created = not self.path.exists()
+            # Public methods hold _lock; initialization runs before the repository
+            # is published. One connection avoids a WAL close/checkpoint per read.
+            connection = sqlite3.connect(
+                self.path, timeout=30, check_same_thread=False
+            )
+            try:
+                if os.name == "nt" and created:
+                    from .windows_private import harden_new_file
+                    harden_new_file(self.path)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+            except BaseException:
+                connection.close()
+                raise
+            self._connection = connection
+        with connection:
+            yield connection
+
+    def close(self) -> None:
+        with self._lock:
+            connection = self._connection
+            self._connection = None
+            if connection is not None:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -36,7 +37,7 @@ class SourceNavigationTests(unittest.TestCase):
         for relative, content in files.items():
             path = repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
+            path.write_text(content, encoding="utf-8", newline="\n")
         self.git(repo, "add", ".")
         self.git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "commit", "-qm", "fixture")
@@ -83,7 +84,7 @@ class SourceNavigationTests(unittest.TestCase):
         original = next(item for item in second["results"] if item["path"].startswith("z-product/"))
         original_commit = original["source"]["commit"]
         original_digest = original["content_digest"]
-        (product / "src/drive.lua").write_text("function Drive.update()\n  emit_alarm(0xE001) -- edited\nend\n")
+        (product / "src/drive.lua").write_text("function Drive.update()\n  emit_alarm(0xE001) -- edited\nend\n", encoding="utf-8", newline="\n")
         changed = self.navigate("0xE001")
         self.assertEqual(changed["index"]["updated_files"], 1)
         dirty = next(item for item in changed["results"] if item["path"] == "z-product/src/drive.lua")
@@ -160,7 +161,7 @@ class SourceNavigationTests(unittest.TestCase):
     def test_non_ascii_query_falls_back_and_deleted_file_is_removed(self):
         repos = self.fixtures()
         (repos["z-product"] / "src/drive.lua").write_text(
-            "function Drive.update()\n  emit_alarm(0xE001) -- 故障恢复路径\nend\n")
+            "function Drive.update()\n  emit_alarm(0xE001) -- 故障恢复路径\nend\n", encoding="utf-8", newline="\n")
         chinese = self.navigate("故障恢复路径")
         self.assertTrue(chinese["fallback"])
         self.assertTrue(any(item["path"] == "z-product/src/drive.lua" for item in chinese["results"]))
@@ -173,7 +174,12 @@ class SourceNavigationTests(unittest.TestCase):
     def test_local_index_cache_is_private(self):
         self.fixtures()
         self.navigate("0xE001")
-        self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
+        if os.name == "nt":
+            from openubmc_target_runtime.windows_private import verify_private_path
+            verify_private_path(self.index.parent)
+            verify_private_path(self.index)
+        else:
+            self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
 
     def test_unchanged_truncated_file_keeps_index_partial_until_reindexed(self):
         repo = self.repository("product", {"long.lua": "local value = 1\n" * 20001})
@@ -192,9 +198,10 @@ class SourceNavigationTests(unittest.TestCase):
         self.repository("product", {"long.lua": "local value = 1\n" * 20001})
         first = self.navigate("value")
         self.assertEqual(first["index"]["status"], "partial")
-        with sqlite3.connect(self.index) as connection:
-            connection.execute("UPDATE index_meta SET value='1' WHERE key='version'")
-            connection.execute("UPDATE index_files SET warnings='[]'")
+        with closing(sqlite3.connect(self.index)) as connection:
+            with connection:
+                connection.execute("UPDATE index_meta SET value='1' WHERE key='version'")
+                connection.execute("UPDATE index_files SET warnings='[]'")
         migrated = self.navigate("value")
         self.assertEqual(migrated["index"]["updated_files"], 1)
         self.assertEqual(migrated["index"]["status"], "partial")

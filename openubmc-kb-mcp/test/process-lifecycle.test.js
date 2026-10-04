@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { privateFixtureDirectory } from "../test-support/private-fixture.js";
 
 import {
   McpProcessLifecycle,
@@ -11,7 +11,7 @@ import {
 
 
 test("records ownership and never expires while a request is active", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-lifecycle-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-lifecycle-");
   let monotonic = 100;
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
@@ -68,7 +68,7 @@ test("records ownership and never expires while a request is active", async () =
 });
 
 test("unknown ownership still yields parent-exited after parent loss", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-orphan-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-orphan-");
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "1.3.0",
@@ -89,7 +89,7 @@ test("unknown ownership still yields parent-exited after parent loss", async () 
 });
 
 test("an unreadable live parent identity remains unknown-owner", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-parent-unknown-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-parent-unknown-");
   let parentIdentity = "process-1200-start";
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
@@ -113,7 +113,7 @@ test("an unreadable live parent identity remains unknown-owner", async () => {
 });
 
 test("startup ownership stays unknown until parent identity is verified", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-parent-startup-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-parent-startup-");
   let parentIdentity = "unknown";
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
@@ -139,7 +139,7 @@ test("startup ownership stays unknown until parent identity is verified", async 
 });
 
 test("requested shutdown drains active work and timeout must be finite", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-shutdown-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-shutdown-");
   const options = {
     component: "knowledge-mcp",
     version: "1.3.0",
@@ -181,7 +181,7 @@ test("requested shutdown drains active work and timeout must be finite", async (
 });
 
 test("explicit task closeout drains active work before recording exit", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-task-closeout-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-task-closeout-");
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "1.3.0",
@@ -209,8 +209,9 @@ test("explicit task closeout drains active work before recording exit", async ()
   assert.equal(record.exit_reason, "task-closeout");
 });
 
-test("repeated termination signals remain handled until explicit cleanup", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-repeat-signal-"));
+test("repeated termination signals remain handled until explicit cleanup",
+  { skip: process.platform === "win32" }, async () => {
+  const root = await privateFixtureDirectory("openubmc-mcp-repeat-signal-");
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "test",
@@ -240,7 +241,7 @@ test("repeated termination signals remain handled until explicit cleanup", async
 });
 
 test("abrupt process exit records a stopped lifecycle even with active work", async () => {
-  const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-forced-exit-"));
+  const root = await privateFixtureDirectory("openubmc-mcp-forced-exit-");
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "test",
@@ -263,9 +264,10 @@ test("abrupt process exit records a stopped lifecycle even with active work", as
   assert.equal(record.exit_reason, "process-exit");
 });
 
-test("SIGTERM and SIGINT drain active responses before lifecycle exit", async () => {
+test("SIGTERM and SIGINT drain active responses before lifecycle exit",
+  { skip: process.platform === "win32" }, async () => {
   for (const terminationSignal of ["SIGTERM", "SIGINT"]) {
-    const root = await mkdtemp(join(tmpdir(), "openubmc-mcp-signal-"));
+    const root = await privateFixtureDirectory("openubmc-mcp-signal-");
     const lifecycle = new McpProcessLifecycle({
       component: "knowledge-mcp",
       version: "test",

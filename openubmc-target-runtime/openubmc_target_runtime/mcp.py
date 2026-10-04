@@ -3531,9 +3531,13 @@ class RuntimeMcpService:
 
     def close(self) -> None:
         self._agent_input.clear()
-        self._runtime.lifecycle.close()
-        self.registry.close()
-        self.tracing.close()
+        try:
+            self.registry.close()
+        finally:
+            try:
+                self._runtime.lifecycle.close()
+            finally:
+                self.tracing.close()
 
 
 class JsonRpcMcpEndpoint:

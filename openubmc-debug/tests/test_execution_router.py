@@ -17,7 +17,7 @@ from execution_router import (  # noqa: E402
 )
 
 
-def healthy(host: str = "wsl") -> ProtocolProbe:
+def healthy(host: str = "windows-native") -> ProtocolProbe:
     return probe_protocol(
         "diagnose", host=host,
         initialize=lambda: {"protocolVersion": "2025-03-26"},
@@ -35,12 +35,12 @@ class PackagedExecutionRouterTests(unittest.TestCase):
         self.assertIn("execution_router.py", reference)
         self.assertIn("reason_code", reference)
 
-    def test_healthy_wsl_protocol_routes_windows_to_structured_runtime(self) -> None:
+    def test_healthy_native_protocol_routes_windows_to_structured_runtime(self) -> None:
         router = ExecutionRouter(environment="windows")
         receipt = router.choose("diagnose", probe=healthy(), requested_scope="BMC fixture.invalid",
                                 evidence_boundary="fresh Runtime request")
         self.assertEqual(receipt["path"], "structured-runtime-mcp")
-        self.assertEqual(receipt["execution_host"], "wsl")
+        self.assertEqual(receipt["execution_host"], "windows-native")
         router.record_structured_call(record=receipt, tool="observe")
         self.assertEqual(router.metrics()["structured_calls"], 1)
 
@@ -63,7 +63,7 @@ class PackagedExecutionRouterTests(unittest.TestCase):
 
     def test_healthy_mcp_on_wrong_host_is_not_selected(self) -> None:
         router = ExecutionRouter(environment="windows")
-        receipt = router.choose("diagnose", probe=healthy("windows-native"), shell_host="wsl",
+        receipt = router.choose("diagnose", probe=healthy("wsl"), shell_host="wsl",
                                 requested_scope="BMC fixture.invalid", evidence_boundary="stdout only")
         self.assertEqual(receipt["path"], "shell-fallback")
         self.assertEqual(receipt["fallback"]["reason_code"], "protocol_host_mismatch")

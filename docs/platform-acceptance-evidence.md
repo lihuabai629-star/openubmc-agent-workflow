@@ -1,40 +1,30 @@
-# Platform acceptance evidence for #284
+# Platform acceptance evidence
 
-This document applies to [the platform acceptance specification](issues/platform-acceptance-matrix.md).
-It records the source acceptance decision separately from existing Runtime,
+The matrix records the source acceptance decision separately from Runtime,
 plugin and release gates. The default hosted-CI path requires all five rows to
 pass for the *same full source commit*. The explicit installed-candidate path
 requires the four native platform rows to pass for the same source and archive;
 the hosted-CI row remains untested with a reason. See
 [installed candidate qualification](specs/installed-candidate-qualification.md).
-The macOS row is useful local evidence but cannot replace any required row.
+The former Windows→WSL Runtime row and macOS local row are optional. Neither
+can replace the required Windows-native device row. The original #284 scope is
+archived in [the platform acceptance issue](issues/platform-acceptance-matrix.md);
+[ADR-0009](adr/0009-native-windows-device-backend.md) governs device execution.
 
-## Current observation (2026-09-28, Asia/Shanghai)
+## Current observation (2026-09-29, Asia/Shanghai)
 
 | Row | Host and package identity | Result and reason |
 | --- | --- | --- |
-| Local regression, optional | macOS 26.6, Darwin 25.6.0 arm64; default Python 3.14.6, Node 26.5.0, Codex CLI 0.144.6; branch base `cf68d0044345e29e83eb639954d469e4048642fc` | 18 targeted Python tests and `validate_workflow.py --quick` passed in an isolated Python 3.12 environment. The locked CI toolchain is Python 3.12.13, Node 22.23.2 and plugin Codex 0.153.4. This row does not certify Linux or Windows. |
-| Linux x86_64 complete validation and immutable plugin | No native Linux x86_64 host assigned to this task; source/package digest, client/runtime versions, command exit codes and test counts absent | **Untested**. Do not substitute the Mac or an emulated container. |
-| Native Windows plugin bootstrap | No native Windows host assigned; installed package and client version absent | **Untested**. The existing CI script checks marketplace activation and unavailable-WSL setup mode, but has not run here. |
-| Windows → selected WSL Runtime | No native Windows/WSL pair assigned; no synthetic Run/Outcome or interruption receipts | **Untested**. Simulator tests are insufficient. |
-| Separate Desktop installer on synthetic target | Separate active Desktop project was not changed or run from this checkout | **Untested**. Same Run ID and Outcome digest still need direct readback from both clients. |
-| Hosted GitHub CI | [Run 36266142666](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/36266142666) was for commit `e6d37324f39b6422ae6aaf51335ac90ba7260f7a`, not this candidate | **Untested for this source**. On that run, preflight failed before any step with the account billing/spending-limit annotation; Linux and Windows jobs were skipped. `collect-ci` returned exit 1; its local JSON digest is `c731fea7d60952751d55d060e1585ca3f1c86cc990c7e51dd03a864a3755cc7b`. The account owner must resolve billing before an exact-commit rerun. |
+| Linux x86_64 complete validation and immutable plugin | The final native-Windows candidate has not been frozen | **Untested** for the final source and archive. |
+| Native Windows plugin bootstrap | An isolated 2.1.3 archive from `50627c1` passed Windows `verify`, `prepare --repair` and `doctor` for both MCPs | **Untested** for the final archive and Codex marketplace installation. The archive predates subsequent HPM fixes. |
+| Native Windows device workflows | The same archive initialized both MCPs and listed `observe`/`execute`; source-level Windows SSH transport, Upgrade and Live Patch fixtures passed | **Untested** as a complete installed Agent Run. No synthetic `observe`, upgrade, Live Patch rollback or interruption receipt has been accepted for the final archive. |
+| Windows → selected WSL Runtime, optional | Historical route only | **Untested**; it cannot certify Windows-native device work. |
+| Separate Desktop installer on synthetic target | No same-Run readback for the final archive | **Untested**. |
+| Hosted GitHub CI | No exact-commit run for the final candidate | **Untested**. The installed-candidate path is available if hosted jobs cannot start. |
 
-The matrix decision is currently **blocked**. The clean x86_64 WSL2 validation
-and immutable-plugin qualification on PR #287 commit `421d554` passed, but that
-older commit and WSL2 do not fill the new candidate's native Linux row. Native
-Windows/WSL and Desktop rows also lack passing evidence. Hosted CI has not
-started, and no fixture establishes real-BMC acceptance.
-
-Local check details at the branch base: `.scratch/issue-284/venv/bin/python -m
-unittest scripts.tests.test_continuous_validation_workflow
-scripts.tests.test_platform_acceptance -v` exited 0 with 18 tests passing;
-`.scratch/issue-284/venv/bin/python scripts/validate_workflow.py --quick`
-exited 0. `--quick` compiles and checks repository metadata but skips the full
-test and Node suites. Installing the committed `requirements-ci.lock` on
-macOS arm64 exited 1 at `cffi==2.1.1` because the macOS wheel hash differs
-from the lockfile's Linux wheel hash. Only PyYAML 6.0.3 was installed in this
-isolated environment to run the contract tests; this is not a locked CI run.
+The matrix decision remains **blocked** until one final source commit and
+archive have all required native platform and Desktop evidence. The earlier
+Windows→WSL and macOS observations do not fill those rows.
 
 ## Evidence format and collector
 
@@ -105,12 +95,21 @@ Every passing row must give its full source commit, clean checkout state,
 observation time, toolchain identity, separate client/Runtime versions, package SHA-256, host
 identities, exact commands with exit 0 and log hashes, artifact hashes, and
 per-check evidence digests. The Linux row additionally needs Python and Node
-test counts. The Windows/WSL row must identify native Windows, the selected
-WSL distribution and synthetic target separately; credential revision and Run
-ID must remain the same after interruption, with one Effect before and after.
+test counts. The native Windows device row must identify Windows client and
+Runtime processes and a synthetic target separately. Its route must report
+`execution_host=windows-native` with no selected WSL; credential revision and
+Run ID must remain the same after interruption, with one Effect before and after.
 The Desktop row requires the Desktop source commit and identical Run IDs and
-Outcome hashes observed through plugin and Desktop clients. Do not record
-credential values, cookies, tokens or a real BMC target in a matrix.
+Outcome hashes observed through plugin and Desktop clients. Its `package_sha256`
+and `artifacts.desktop_installer` identify the separate Desktop installer;
+`artifacts.plugin_archive` identifies the Runtime plugin archive actually used
+for that readback and must match the qualified Linux/Windows plugin archive
+(and the selected archive in installed-candidate mode). A missing or different
+Desktop Runtime archive blocks acceptance even when the Run and Outcome match.
+Historical Desktop evidence without this field needs a captured archive identity;
+do not fill it from the candidate's claimed digest without verifying the installed
+bytes. Do not record credential values, cookies, tokens or a real BMC target in a
+matrix.
 
 ## Native execution checklist
 
@@ -141,20 +140,19 @@ as artifacts. `qualify_plugin.py` must return `ok: true`, exact `source_commit`,
 Codex execution evidence. Read test counts from the complete validation logs.
 Do not infer this gate from a prior release lock or an arm64 Docker run.
 
-### Native Windows and selected WSL
+### Native Windows device execution
 
 First run the existing `scripts/qualify_windows_plugin.ps1` against a package
 built from the exact candidate. It proves native marketplace installation and
-the unavailable-WSL setup path; capture its command exit, package hash,
-installed Codex version and JSON output. Then use an actual Windows host with
-an installed, selected x86_64 WSL2 distribution. Confirm the packaged plugin's
-healthy Runtime MCP `initialize`, `tools/list`, `observe` and `execute` path on
-a **synthetic target**, followed by unavailable MCP and bounded shell fallback
-receipts. After interrupting a controlled synthetic operation, read the same
-Run and Effect count back through the selected WSL Runtime. Record credential
-source *revision only* before and after restart to prove reuse without exposing
-the credential. The native Windows, WSL and synthetic target identities must
-remain separate. Existing simulated routing unit tests cannot fill this row.
+the unavailable-backend setup path; capture its command exit, package hash,
+installed Codex version and JSON output. Confirm the packaged Windows Runtime
+and KB MCPs initialize and list their tools with WSL unavailable. Run `observe`
+and typed diagnosis, existing-HPM upgrade, Live Patch and rollback against
+isolated targets. Check credential reuse, host-key and TLS rejection, interrupted
+Effect recovery and the build-only blocker when no compiler is installed.
+Record credential source *revision only*, Runtime process identity, route receipt,
+Run ID and Effect count before and after restart. Source-level transport tests
+and a passing `doctor` result cannot fill the device row alone.
 
 ### Desktop synthetic target
 
@@ -184,7 +182,5 @@ Gate keep their own authority; this matrix adds a source acceptance decision.
 
 ## Ownership and rollback
 
-This work changes only platform evidence tooling and documentation. It does not
-change Agent/MCP/Runtime behavior, credential sources, global hook trust,
-billing settings, release thresholds, Desktop code or a real BMC. Remove the
-matrix report and this collector to roll back; existing gates keep operating.
+This matrix indexes evidence and does not change Runtime decisions. An invalid
+or incomplete row blocks the release claim; it never authorizes device writes.

@@ -17,7 +17,7 @@ path was used.
 
 - Select a clean, full source commit. Build and qualify one archive from that
   commit, record its SHA-256 and qualification report, and reuse those exact
-  bytes across the Linux, Windows and selected WSL observations. The release
+  bytes across the Linux and native Windows observations. The release
   verifier reads the archive inventory and binds its source commit, content
   digest and version to the qualification report and release lock.
 - Run complete repository validation and immutable plugin qualification on a
@@ -25,8 +25,9 @@ path was used.
   toolchain identities and private-log hashes must be inspectable.
 - Install the archive with native Windows Codex and exercise the marketplace
   bootstrap and unavailable-backend setup path. Exercise healthy Runtime MCP,
-  degraded routing, credential revision reuse and single-Effect recovery through
-  the selected WSL distribution against a synthetic target.
+  native device routing, credential revision reuse and single-Effect recovery
+  on Windows against a synthetic target. WSL evidence is optional and cannot
+  replace the native Windows device row.
 - Read the same Run ID and Outcome digest through the installed plugin and the
   separate Desktop client. Bind the Desktop installer and source identities.
 - Keep the hosted-CI row explicitly untested with its reason. An executed CI

@@ -100,6 +100,7 @@ for line in sys.stdin:
             "OPENUBMC_PLUGIN_HOST_PLATFORM": "win32" if windows else "linux",
             "OPENUBMC_PLUGIN_WSL_EXE": str(self.launcher),
             "OPENUBMC_PLUGIN_PYTHON": str(self.launcher),
+            "OPENUBMC_PLUGIN_WINDOWS_PYTHON": str(self.launcher),
             "USERPROFILE": r"C:\Users\fixture",
             "CODEX_HOME": r"C:\Users\fixture\.codex",
         })
@@ -139,15 +140,15 @@ for line in sys.stdin:
         self.assertTrue(receipt["requested_scope_mac"].startswith("hmac-sha256:"))
         self.assertNotIn("fixture.invalid", result.stderr)
 
-    def test_installed_windows_wsl_path_uses_selected_distribution(self) -> None:
+    def test_installed_windows_path_uses_native_backend(self) -> None:
         result, call_log = self.invoke(windows=True, healthy=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(call_log.read_text(), "execute\n")
         audit = next(json.loads(line.removeprefix("openubmc-routing "))
                      for line in result.stderr.splitlines() if line.startswith("openubmc-routing "))
         self.assertEqual(audit["client_environment"], "windows")
-        self.assertEqual(audit["execution_host"], "wsl")
-        self.assertEqual(audit["selected_wsl"], "Ubuntu-24.04")
+        self.assertEqual(audit["execution_host"], "windows-native")
+        self.assertIsNone(audit["selected_wsl"])
         self.assertEqual(audit["protocol"]["probe"], "initialize/tools/list")
 
     def test_runtime_accepted_wide_read_only_observation_reaches_installed_backend(self) -> None:

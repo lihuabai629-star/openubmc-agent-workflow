@@ -20,7 +20,6 @@ const hostPlatform = process.env.OPENUBMC_PLUGIN_HOST_PLATFORM || process.platfo
 const adapter = createHostAdapter({
   pluginRoot: path.resolve(__dirname, ".."),
   hostPlatform,
-  wslExecutable: process.env.OPENUBMC_PLUGIN_WSL_EXE || "wsl.exe",
 });
 const operations = createSetupOperations(adapter, capability);
 
@@ -159,9 +158,6 @@ function serveSetup(initialFailure) {
         { name: "openubmc_setup_status",
           description: "Return separate package, host, dependency, configuration and protocol-health facts without exposing credentials.",
           inputSchema: { type: "object", properties: {}, additionalProperties: false } },
-        { name: "openubmc_setup_select_wsl",
-          description: "Select an installed WSL distribution for the openUBMC Linux backend.",
-          inputSchema: { type: "object", properties: { distro: { type: "string", description: "An exact name from available_wsl_distros." } }, required: ["distro"], additionalProperties: false } },
         { name: "openubmc_setup_prepare",
           description: "Prepare the locked dependencies for this openUBMC capability outside MCP initialization.",
           inputSchema: { type: "object", properties: {}, additionalProperties: false } },
@@ -178,18 +174,6 @@ function serveSetup(initialFailure) {
       const name = request.params?.name;
       if (name === "openubmc_setup_status") {
         toolReply(request.id, refreshedStatus());
-        return;
-      }
-      if (name === "openubmc_setup_select_wsl") {
-        try {
-          adapter.saveSelectedDistro(request.params?.arguments?.distro,
-            refreshedStatus().available_wsl_distros || initialStatus.available_wsl_distros || []);
-          toolReply(request.id, { schema: initialStatus.schema, status: "configuration_saved",
-            selected_wsl: request.params.arguments.distro,
-            next_action: "Start a new Codex task to initialize the openUBMC backend." });
-        } catch (selectionError) {
-          toolReply(request.id, { ...refreshedStatus(), error: selectionError.message }, true);
-        }
         return;
       }
       if (name === "openubmc_setup_prepare") {

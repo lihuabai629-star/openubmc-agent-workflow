@@ -1,6 +1,6 @@
 {
   "case_id": "execution-host-negative",
-  "probe": {"kind": "execution-route", "environment": "windows", "host": "windows-native", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "wsl", "route": "shell-fallback"}},
+  "probe": {"kind": "execution-route", "environment": "windows", "host": "wsl", "shell_host": "wsl", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "wsl", "route": "shell-fallback"}},
   "evidence_boundary": {
     "completion_calibration": {
       "bounded": true,
@@ -94,7 +94,7 @@
       }
     },
     "execution_host": {
-      "host": "wsl",
+      "host": "windows-native",
       "route": "structured-runtime"
     },
     "final_answer": {
@@ -154,8 +154,12 @@
       }
     },
     "execution_host": {
-      "host": "windows",
-      "route": "structured-runtime"
+      "host": "wsl",
+      "route": "shell-fallback",
+      "reason_code": "protocol_host_mismatch",
+      "requested_scope": "sanitized fixture",
+      "evidence_boundary": "router receipt",
+      "call_budget": 8
     },
     "final_answer": {
       "present": true,

@@ -66,16 +66,39 @@ raise SystemExit(43)
         )
         cls.fake_wsl.chmod(0o755)
         cls.fake_python = cls.base / "fake-python3"
+        cls.fake_python_control = cls.base / "fake-python-control.json"
+        cls.fake_python_control.write_text("{}")
         cls.fake_python.write_text(
             """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
+with open(__CONTROL__) as stream:
+    control = json.load(stream)
+if control.get('FAKE_PYTHON_ARGV_LOG'):
+    with open(control['FAKE_PYTHON_ARGV_LOG'], 'a') as stream:
+        stream.write(json.dumps(args) + '\\n')
+if control.get('FAKE_PYTHON_ENV_LOG'):
+    with open(control['FAKE_PYTHON_ENV_LOG'], 'a') as stream:
+        stream.write(json.dumps({name: os.environ.get(name) for name in (
+            'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_KB_PASSWORD',
+            'OPENUBMC_MCP_TASK_ID', 'OPENUBMC_EXECUTION_HOST')}) + '\\n')
 if '-c' in args or 'prepare' in args or 'cleanup-retired' in args:
+    if 'prepare' in args and control.get('FAKE_PYTHON_PREPARE_ERROR'):
+        print(control['FAKE_PYTHON_PREPARE_ERROR'], file=sys.stderr)
+    if 'prepare' in args:
+        raise SystemExit(int(control.get('FAKE_PYTHON_PREPARE_STATUS', 0)))
+    raise SystemExit(0)
+if 'repair-overrides' in args or 'migrate' in args:
+    command = 'repair-overrides' if 'repair-overrides' in args else 'migrate'
+    changes = {'mcp_servers': ['openubmc-kb'] if command == 'repair-overrides' else [],
+               'skills': [] if command == 'repair-overrides' else ['/fixture/openubmc-debug/SKILL.md']}
+    print(json.dumps({'ok': True, 'would_change': True, 'changed': '--preview' not in args,
+                      'transaction': 'a' * 32, 'changes': changes}))
     raise SystemExit(0)
 if 'doctor' in args:
-    status = int(os.environ.get('FAKE_PYTHON_DOCTOR_STATUS', '0'))
+    status = int(control.get('FAKE_PYTHON_DOCTOR_STATUS', os.environ.get('FAKE_PYTHON_DOCTOR_STATUS', '0')))
     ready = status == 0
-    print(json.dumps({'ok': ready, 'version': '2.1.0', 'source_commit': 'a' * 40,
+    print(control.get('FAKE_PYTHON_DOCTOR_REPORT') or json.dumps({'ok': ready, 'version': '2.1.0', 'source_commit': 'a' * 40,
         'package_integrity': True,
         'capabilities': {'runtime': {'dependencies_ready': ready, 'startup_ready': ready},
                          'kb': {'dependencies_ready': ready, 'startup_ready': ready}},
@@ -101,6 +124,7 @@ for line in sys.stdin:
         result = {}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 """
+            .replace("__CONTROL__", repr(str(cls.fake_python_control)))
         )
         cls.fake_python.chmod(0o755)
 
@@ -118,7 +142,10 @@ for line in sys.stdin:
         )
         control = {key: value for key, value in environment.items() if key.startswith("FAKE_WSL_")}
         self.fake_wsl_control.write_text(json.dumps(control))
-        env.update({key: value for key, value in environment.items() if not key.startswith("FAKE_WSL_")})
+        python_control = {key: value for key, value in environment.items() if key.startswith("FAKE_PYTHON_")}
+        self.fake_python_control.write_text(json.dumps(python_control))
+        env.update({key: value for key, value in environment.items()
+                    if not key.startswith(("FAKE_WSL_", "FAKE_PYTHON_"))})
         payload = "".join(json.dumps(message) + "\n" for message in messages)
         return subprocess.run(
             ["node", str(self.plugin / "scripts/openubmc-mcp-bootstrap.js"), capability],
@@ -129,7 +156,7 @@ for line in sys.stdin:
             timeout=15,
         )
 
-    def test_packaged_windows_launcher_initializes_when_wsl_is_unavailable(self) -> None:
+    def test_packaged_windows_launcher_offers_setup_without_native_python(self) -> None:
         config = json.loads((self.plugin / ".mcp.json").read_text())
         secret_environment = {
             "OPENUBMC_CREDENTIALS_FILE",
@@ -163,8 +190,25 @@ for line in sys.stdin:
                 tools = replies[1]["result"]["tools"]
                 self.assertEqual(
                     {tool["name"] for tool in tools},
-                    {"openubmc_setup_status", "openubmc_setup_select_wsl", "openubmc_setup_prepare", "openubmc_setup_open_configuration", "openubmc_setup_repair_configuration"},
+                    {"openubmc_setup_status", "openubmc_setup_prepare", "openubmc_setup_open_configuration", "openubmc_setup_repair_configuration"},
                 )
+
+    def test_windows_device_backend_uses_native_python_without_wsl(self) -> None:
+        result = self.invoke(
+            "runtime",
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2024-11-05"}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            ],
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            OPENUBMC_PLUGIN_WSL_EXE=str(self.base / "missing-wsl.exe"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "fake-runtime")
+        self.assertEqual(replies[1]["result"]["tools"], [])
+        self.assertNotIn("wsl_unavailable", result.stderr)
 
     def test_setup_status_explains_the_missing_windows_prerequisite(self) -> None:
         result = self.invoke(
@@ -184,78 +228,50 @@ for line in sys.stdin:
         payload = json.loads(reply["result"]["content"][0]["text"])
         self.assertEqual(payload["status"], "setup_required")
         self.assertEqual(payload["host"], "windows")
-        self.assertEqual(payload["reason"], "wsl_unavailable")
+        self.assertEqual(payload["reason"], "windows_python_unavailable")
+        self.assertEqual(payload["execution_host"], "windows-native")
         lock = json.loads((self.plugin / "plugin-lock.json").read_text())
         self.assertEqual(payload["plugin"]["version"], lock["version"])
         self.assertEqual(payload["plugin"]["source_commit"], lock["source_commit"])
         self.assertTrue(payload["plugin"]["integrity"])
         self.assertNotIn(str(self.base), json.dumps(payload))
 
-    def test_multiple_wsl_distributions_require_and_persist_an_explicit_selection(self) -> None:
-        environment = {
-            "OPENUBMC_PLUGIN_WSL_EXE": str(self.fake_wsl),
-            "FAKE_WSL_DISTROS": "Ubuntu-24.04\nopenUBMC-dev",
-            "FAKE_WSL_PLUGIN_ROOT": "/mnt/c/plugin",
-        }
-        selected = self.invoke(
-            "runtime",
-            [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {"name": "openubmc_setup_select_wsl", "arguments": {"distro": "openUBMC-dev"}},
-                },
-            ],
-            **environment,
-        )
-        self.assertEqual(selected.returncode, 0, selected.stderr)
-        response = json.loads([json.loads(line) for line in selected.stdout.splitlines()][1]["result"]["content"][0]["text"])
-        self.assertEqual(response["status"], "configuration_saved")
-        record = json.loads((self.base / "local-app-data/openubmc/plugin-host.json").read_text())
-        self.assertEqual(record["wsl_distro"], "openUBMC-dev")
-
-        retried = self.invoke(
-            "runtime",
-            [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
-                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_status", "arguments": {}}},
-            ],
-            **environment,
-        )
-        payload = json.loads([json.loads(line) for line in retried.stdout.splitlines()][1]["result"]["content"][0]["text"])
-        self.assertEqual(payload["reason"], "dependency_preflight_failed")
-        self.assertEqual(payload["selected_wsl"], "openUBMC-dev")
-
-    def test_one_wsl_distribution_is_selected_automatically(self) -> None:
+    def test_windows_private_root_conflict_points_to_the_local_recovery_page(self) -> None:
+        report = {"ok": False, "error_code": "windows_private_root_conflict",
+                  "roots": [{"root_id": "data", "capabilities": ["data", "cache", "config"],
+                             "path": "C:\\Users\\fixture\\AppData\\Local\\openubmc",
+                             "status": "repairable", "snapshot_token": "a" * 64}]}
         result = self.invoke(
-            "kb",
-            [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
-                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_status", "arguments": {}}},
-            ],
-            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-            FAKE_WSL_DISTROS="Ubuntu-24.04",
-            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
-            LOCALAPPDATA=str(self.base / "single-distro-local-app-data"),
+            "runtime",
+            [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
+             {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+              "params": {"name": "openubmc_setup_status", "arguments": {}}},
+             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+              "params": {"name": "openubmc_setup_prepare", "arguments": {}}}],
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            FAKE_PYTHON_DOCTOR_REPORT=json.dumps(report), FAKE_PYTHON_DOCTOR_STATUS="2",
+            FAKE_PYTHON_PREPARE_ERROR=json.dumps(report), FAKE_PYTHON_PREPARE_STATUS="2",
+            LOCALAPPDATA=str(self.base / "private-root-conflict"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads([json.loads(line) for line in result.stdout.splitlines()][1]["result"]["content"][0]["text"])
-        self.assertEqual(payload["reason"], "dependency_preflight_failed")
-        self.assertEqual(payload["selected_wsl"], "Ubuntu-24.04")
+        self.assertEqual(payload["reason"], "windows_private_root_conflict")
+        self.assertIn("openubmc_setup_open_configuration", payload["recovery_action"])
+        self.assertEqual(payload["affected_roots"], [{"root_id": "data", "capabilities": ["data", "cache", "config"], "status": "repairable"}])
+        self.assertNotIn("snapshot_token", json.dumps(payload))
+        prepared = json.loads([json.loads(line) for line in result.stdout.splitlines()][2]["result"]["content"][0]["text"])
+        self.assertEqual(prepared["reason"], "windows_private_root_conflict")
+        self.assertEqual(prepared["affected_roots"], payload["affected_roots"])
 
-    def test_windows_wsl_receives_only_non_secret_task_identity(self) -> None:
-        log = self.base / "wsl-argv.jsonl"
-        environment_log = self.base / "wsl-environment.jsonl"
+    def test_native_windows_child_receives_task_identity_without_ambient_secrets(self) -> None:
+        log = self.base / "native-python-argv.jsonl"
+        environment_log = self.base / "native-python-environment.jsonl"
         result = self.invoke(
             "runtime",
             [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}}],
-            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-            FAKE_WSL_DISTROS="Ubuntu-24.04",
-            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
-            FAKE_WSL_ARGV_LOG=str(log),
-            FAKE_WSL_ENV_LOG=str(environment_log),
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            FAKE_PYTHON_ARGV_LOG=str(log),
+            FAKE_PYTHON_ENV_LOG=str(environment_log),
             LOCALAPPDATA=str(self.base / "identity-local-app-data"),
             OPENUBMC_MCP_TASK_ID="task-fixture",
             OPENUBMC_MCP_SESSION_ID="session-fixture",
@@ -265,10 +281,11 @@ for line in sys.stdin:
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = log.read_text()
-        self.assertIn("OPENUBMC_MCP_TASK_ID=task-fixture", arguments)
-        self.assertIn("OPENUBMC_MCP_SESSION_ID=session-fixture", arguments)
+        self.assertIn("pluginctl.py", arguments)
         self.assertNotIn("private-password-fixture", arguments)
         child_environments = environment_log.read_text()
+        self.assertIn("task-fixture", child_environments)
+        self.assertIn("windows-native", child_environments)
         self.assertNotIn("private-password-fixture", child_environments)
         self.assertNotIn("kb-password-fixture", child_environments)
         self.assertNotIn("kb-client-secret-fixture", child_environments)
@@ -290,11 +307,10 @@ for line in sys.stdin:
                         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
                         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_prepare", "arguments": {}}},
                     ],
-                    OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-                    FAKE_WSL_DISTROS="Ubuntu-24.04",
-                    FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
-                    FAKE_WSL_PREPARE_STATUS="130" if reason == "dependency_prepare_interrupted" else "42",
-                    FAKE_WSL_PREPARE_ERROR=detail,
+                    OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+                    FAKE_PYTHON_DOCTOR_STATUS="42",
+                    FAKE_PYTHON_PREPARE_STATUS="130" if reason == "dependency_prepare_interrupted" else "42",
+                    FAKE_PYTHON_PREPARE_ERROR=detail,
                     LOCALAPPDATA=str(self.base / f"prepare-failure-{index}"),
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -333,16 +349,15 @@ for line in sys.stdin:
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_status", "arguments": {}}},
             ],
-            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-            FAKE_WSL_DISTROS="Ubuntu-24.04",
-            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
-            FAKE_WSL_DOCTOR_REPORT=json.dumps(report),
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            FAKE_PYTHON_DOCTOR_REPORT=json.dumps(report),
+            FAKE_PYTHON_DOCTOR_STATUS="2",
             LOCALAPPDATA=str(self.base / "unified-status"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads([json.loads(line) for line in result.stdout.splitlines()][1]["result"]["content"][0]["text"])
         self.assertEqual(payload["plugin"], {"version": "2.1.0", "source_commit": "a" * 40, "integrity": True})
-        self.assertEqual(payload["backend"]["selected_wsl"], "Ubuntu-24.04")
+        self.assertEqual(payload["backend"]["execution_host"], "windows-native")
         self.assertTrue(payload["dependencies"]["runtime"]["ready"])
         self.assertFalse(payload["dependencies"]["kb"]["ready"])
         self.assertEqual(payload["configuration"]["mcp_servers"], ["openubmc-kb"])
@@ -391,10 +406,9 @@ for line in sys.stdin:
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_prepare", "arguments": {}}},
             ],
-            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-            FAKE_WSL_DISTROS="Ubuntu-24.04",
-            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
-            FAKE_WSL_PREPARE_STATUS="0",
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            FAKE_PYTHON_DOCTOR_STATUS="2",
+            FAKE_PYTHON_PREPARE_STATUS="0",
             LOCALAPPDATA=str(self.base / "prepare-local-app-data"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -402,16 +416,15 @@ for line in sys.stdin:
         self.assertEqual(response["status"], "preparation_completed")
         self.assertEqual(response["capability"], "runtime")
 
-    def test_windows_setup_repairs_recognized_host_configuration_through_wsl(self) -> None:
+    def test_windows_setup_repairs_recognized_host_configuration_natively(self) -> None:
         result = self.invoke(
             "runtime",
             [
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "openubmc_setup_repair_configuration", "arguments": {}}},
             ],
-            OPENUBMC_PLUGIN_WSL_EXE=str(self.fake_wsl),
-            FAKE_WSL_DISTROS="Ubuntu-24.04",
-            FAKE_WSL_PLUGIN_ROOT="/mnt/c/plugin",
+            OPENUBMC_PLUGIN_WINDOWS_PYTHON=str(self.fake_python),
+            FAKE_PYTHON_DOCTOR_STATUS="2",
             LOCALAPPDATA=str(self.base / "repair-local-app-data"),
             USERPROFILE="C:\\Users\\fixture",
             CODEX_HOME="C:\\Users\\fixture\\.codex",

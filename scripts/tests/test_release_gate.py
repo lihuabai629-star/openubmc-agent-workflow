@@ -707,8 +707,10 @@ class ReleaseGateTests(unittest.TestCase):
             hosted.clear()
             hosted.update({"id": "hosted-ci", "status": "untested", "reason": "No hosted execution"})
             for row in matrix["rows"]:
-                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = archive_sha
+                    row["artifacts"]["plugin_archive"] = archive_sha
+                elif row["id"] == "desktop-synthetic":
                     row["artifacts"]["plugin_archive"] = archive_sha
             source = root / "matrix.json"
             source.write_text(json.dumps(matrix), encoding="utf-8")
@@ -744,8 +746,10 @@ class ReleaseGateTests(unittest.TestCase):
             wrong_sha, wrong_content_digest = write_candidate_archive(archive, source_commit="b" * 40)
             matrix["candidate_archive_sha256"] = wrong_sha
             for row in matrix["rows"]:
-                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = wrong_sha
+                    row["artifacts"]["plugin_archive"] = wrong_sha
+                elif row["id"] == "desktop-synthetic":
                     row["artifacts"]["plugin_archive"] = wrong_sha
             source.write_text(json.dumps(matrix), encoding="utf-8")
             bad_qualification = json.loads(qualification.read_text())
@@ -764,7 +768,7 @@ class ReleaseGateTests(unittest.TestCase):
             wrong_version_sha, wrong_version_digest = write_candidate_archive(archive, version="2.0.3")
             matrix["candidate_archive_sha256"] = wrong_version_sha
             for row in matrix["rows"]:
-                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = wrong_version_sha
                     row["artifacts"]["plugin_archive"] = wrong_version_sha
             source.write_text(json.dumps(matrix), encoding="utf-8")
@@ -784,7 +788,7 @@ class ReleaseGateTests(unittest.TestCase):
             invalid_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
             matrix["candidate_archive_sha256"] = invalid_sha
             for row in matrix["rows"]:
-                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-wsl-runtime"):
+                if row["id"] in ("linux-x86_64", "windows-bootstrap", "windows-native-device"):
                     row["package_sha256"] = invalid_sha
                     row["artifacts"]["plugin_archive"] = invalid_sha
             source.write_text(json.dumps(matrix), encoding="utf-8")

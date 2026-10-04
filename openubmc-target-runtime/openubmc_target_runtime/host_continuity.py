@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -43,8 +44,12 @@ def read_runtime_projection(path: Path, run_id: str) -> Mapping[str, object] | N
     from .context_runtime import SQLiteRuntimeRepository
 
     _identity(run_id)
+    if os.name == "nt" and Path(path).exists():
+        from .windows_private import verify_private_path
+        verify_private_path(Path(path).parent)
+        verify_private_path(path)
     uri = Path(path).resolve().as_uri() + "?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=0.25) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=0.25)) as connection:
         connection.row_factory = sqlite3.Row
         return SQLiteRuntimeRepository._load_from_connection(connection, run_id)
 
@@ -70,14 +75,24 @@ class HostContinuity:
 
     @contextmanager
     def _database(self):
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == "nt":
+            from .windows_private import ensure_private_directory, harden_new_file, verify_private_path
+            ensure_private_directory(self.root)
+        else:
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self.root / "bookmarks.sqlite3"
         # Parallel MCP processes may serialize short bookmark writes.  A
         # quarter-second timeout turned ordinary startup contention into a
         # lost host handoff even though the Runtime operation had completed.
+        created = not path.exists()
+        if os.name == "nt" and not created:
+            verify_private_path(path)
         connection = sqlite3.connect(path, timeout=5.0)
         try:
-            path.chmod(0o600)
+            if os.name == "nt" and created:
+                harden_new_file(path)
+            elif os.name != "nt":
+                path.chmod(0o600)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute("BEGIN IMMEDIATE")

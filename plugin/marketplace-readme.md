@@ -4,17 +4,25 @@ Diagnose openUBMC systems, analyze log bundles, develop components, build firmwa
 
 ## Install
 
-Requires Codex CLI 0.153.4, Node.js 20+, and Git. Linux needs Python 3.12 with pip. Windows uses an installed WSL distribution with Python 3.12, pip, Node.js 20+ and npm for the Runtime, knowledge service and openUBMC toolchain. Run the same command on either host:
+Requires Codex CLI 0.153.4, Node.js 20+, Git, and Python 3.12 with pip on the host. Windows runs Runtime, KB and device connections natively; WSL is optional for a separately selected build environment.
+
+Linux or WSL:
 
 ```bash
 codex plugin marketplace add lihuabai629-star/openubmc-codex-plugins && codex plugin add openubmc@openubmc-public
 ```
 
+Windows PowerShell:
+
+```powershell
+codex plugin marketplace add lihuabai629-star/openubmc-codex-plugins; if ($LASTEXITCODE -eq 0) { codex plugin add openubmc@openubmc-public }
+```
+
 Alternatively, add `lihuabai629-star/openubmc-codex-plugins` as a Git marketplace in Codex, then install **openUBMC** from **Openubmc Public**. This is a community marketplace; OpenAI's default catalog is managed separately.
 
-Start a new Codex task after installation. A clean machine opens in setup mode before downloading anything, so missing WSL, Python, npm, registry access or proxy settings do not prevent the task from opening. Ask Codex to complete openUBMC setup; it can select WSL, prepare locked dependencies and open the private loopback configuration page. Later startups reuse the verified dependency cache. Credentials and Runtime history remain in Linux/WSL.
+Start a new Codex task after installation. A clean machine opens in setup mode before downloading anything, so missing Python, npm, registry access or proxy settings do not prevent the task from opening. Ask Codex to complete openUBMC setup; it prepares locked dependencies and opens the private loopback configuration page. Later startups reuse the verified dependency cache. Credentials and Runtime history stay on the same Windows or Linux host as the device Runtime.
 
-When one WSL distribution is available, the plugin selects it automatically. When several are available, Codex asks you to select one and remembers that non-secret choice. Windows delegates builds, Conan and firmware work to that WSL distribution; it does not run those toolchains natively.
+Windows can diagnose, collect logs, upgrade firmware, and apply or roll back an authorized live patch without WSL. Building a component or product still requires a separately configured toolchain, such as a Linux or WSL environment.
 
 Try from any working directory:
 
@@ -63,7 +71,7 @@ python3 -I <plugin-directory>/scripts/pluginctl.py doctor
 python3 -I <plugin-directory>/scripts/pluginctl.py prepare --repair
 ```
 
-`doctor` verifies the package, dependencies, duplicate entry points and local MCP startup. It reports local credential activation, knowledge authentication and remote target authentication separately; it does not establish access to a BMC or knowledge service. On Windows, use the setup tools presented in the Codex task instead of invoking the Linux controller from PowerShell.
+`doctor` verifies the package, dependencies, duplicate entry points and local MCP startup. It reports local credential activation, knowledge authentication and remote target authentication separately; it does not establish access to a BMC or knowledge service. On Windows, use the setup tools presented in the Codex task; the controller and configuration page run locally on Windows.
 
 ## License
 

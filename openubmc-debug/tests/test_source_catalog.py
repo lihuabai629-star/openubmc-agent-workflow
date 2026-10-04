@@ -29,7 +29,7 @@ class SourceCatalogTests(unittest.TestCase):
         repo = self.root / name
         repo.mkdir(parents=True)
         self.git(repo, "init", "-q")
-        (repo / "alarm.lua").write_text(text)
+        (repo / "alarm.lua").write_text(text, encoding="utf-8", newline="\n")
         self.git(repo, "add", "alarm.lua")
         self.git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "commit", "-qm", "fixture")
@@ -105,7 +105,7 @@ class SourceCatalogTests(unittest.TestCase):
         repo = self.repository("internal")
         self.git(repo, "config", "filter.audit.clean", "touch filter-executed; cat")
         (repo / ".gitattributes").write_text("*.lua filter=audit\n")
-        (repo / "alarm.lua").write_text("if AlarmId then emit_alarm(AlarmId) end -- changed\n")
+        (repo / "alarm.lua").write_text("if AlarmId then emit_alarm(AlarmId) end -- changed\n", encoding="utf-8", newline="\n")
         self.catalog([self.entry("internal")])
         result = self.search()
         self.assertTrue(result["matches"][0]["source"]["modified"])
@@ -137,12 +137,25 @@ class SourceCatalogTests(unittest.TestCase):
         self.assertIsNone(matches[0]["source"].get("commit"))
         self.assertEqual(matches[0]["source"]["applicability"], "unknown")
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "named pipes are unavailable")
     def test_nonregular_catalog_is_ignored_without_waiting_for_a_writer(self):
         directory = self.root / ".openubmc"
         directory.mkdir()
         os.mkfifo(directory / "source-catalog.json")
         result = SourceCatalog(self.root).annotate([])
         self.assertIn("catalog_unavailable_or_invalid", result["warnings"])
+
+    def test_linked_source_is_not_claimed_as_a_product_file(self):
+        repo = self.repository("internal")
+        link = repo / "linked.lua"
+        try:
+            link.symlink_to(repo / "alarm.lua")
+        except (OSError, NotImplementedError):
+            self.skipTest("creating symlinks is unavailable")
+        self.catalog([self.entry("internal")])
+        match = {"path": "internal/linked.lua"}
+        SourceCatalog(self.root).annotate([match])
+        self.assertEqual(match["source"], {"applicability": "unknown", "reason": "source_reparse_path"})
 
 
 if __name__ == "__main__":

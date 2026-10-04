@@ -196,9 +196,9 @@ jobs:
           path: public-marketplace
           fetch-depth: 1
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12.13"
+      - name: Set up locked Windows Python
+        shell: pwsh
+        run: ./scripts/setup_windows_python.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP "openubmc-python-3.12.15") -ExportToGitHubActions
 
       - uses: actions/setup-node@v7
         with:

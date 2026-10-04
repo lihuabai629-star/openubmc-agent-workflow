@@ -45,7 +45,9 @@ def protect_python_entrypoints(payload: dict[str, bytes]) -> None:
     helper = 'skills/openubmc-debug/scripts/_plugin_entrypoint.py'
     for name, content in list(payload.items()):
         path = PurePosixPath(name)
-        if path.suffix != '.py' or 'tests' in path.parts or name == 'scripts/pluginctl.py':
+        if (path.suffix != '.py' or 'tests' in path.parts
+            or name in {'scripts/pluginctl.py',
+                        'skills/openubmc-target-runtime/tools/windows_platform_helper.py'}):
             continue
         tree = ast.parse(content)
         has_main = any(isinstance(node, ast.If) and isinstance(node.test, ast.Compare)

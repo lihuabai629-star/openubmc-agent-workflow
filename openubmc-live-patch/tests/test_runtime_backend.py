@@ -73,7 +73,7 @@ class SelectedCredentialTests(unittest.TestCase):
             artifact = root / 'fixture.lua'; artifact.write_text('return true\n')
             telnet = ControlledTelnet()
             backend = LivePatchMcpBackend(journal_store=MutationJournalStore(root / 'journal'), ssh_transport_factory=lambda _args: ControlledSsh(), telnet_transport_factory=lambda _args: telnet)
-            environment = {'HOME': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_TELNET_USER': 'fixture-telnet', 'FIXTURE_TELNET_PASSWORD': 'fictional-telnet'}
+            environment = {'HOME': raw, 'LOCALAPPDATA': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_TELNET_USER': 'fixture-telnet', 'FIXTURE_TELNET_PASSWORD': 'fictional-telnet'}
             with patch.dict(os.environ, environment, clear=True):
                 service = RuntimeMcpService(OrchestratedMcpBackend({'live_patch_run': backend}))
                 try:
@@ -834,7 +834,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
                 process.communicate(timeout=1)
-                self.assertLess(process.returncode, 0)
+                if os.name == "nt":
+                    self.assertNotEqual(process.returncode, 0)
+                else:
+                    self.assertLess(process.returncode, 0)
 
                 recovered = subprocess.run(
                     [sys.executable, str(helper), str(root), cut, "recover"],
@@ -1081,10 +1084,12 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             finally:
                 second.close()
 
+            journal_entries = journals.load_for_task(waiting["run_id"])
+
         self.assertEqual(running["state"], "running")
         self.assertEqual(final["state"], "incident", final)
         self.assertEqual(final["incident"]["effect_id"], effect_id)
-        self.assertEqual(journals.load_for_task(waiting["run_id"]), [])
+        self.assertEqual(journal_entries, [])
         self.assertEqual(ssh.uploads, [])
         self.assertEqual(telnet.commands, [])
 
