@@ -295,7 +295,12 @@ class ParamikoSshTransport:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
             if channel is not None:
-                channel.close()
+                try:
+                    channel.close()
+                except EOFError:
+                    # A disconnected peer cannot acknowledge channel shutdown.
+                    # Preserve the transfer result or the original exception.
+                    pass
 
     def upload_file(self, master: ParamikoMaster, local_path: str, remote_path: str,
                     **kwargs: object) -> subprocess.CompletedProcess[str]:
