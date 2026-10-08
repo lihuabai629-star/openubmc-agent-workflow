@@ -34,6 +34,16 @@ Snapshots live in `.<source-name>.revisions/`; the `.<source-name>.saved.json` a
 `.<source-name>.active.json` sidecars contain revision pointers only. Source and snapshot files
 must stay local. Snapshot files are mode 0600 and their directory is mode 0700 on Linux/WSL.
 The writer requires POSIX locking; native Windows activation is not qualified.
+
+For the Linux/WSL backend, keep private configuration and test fixtures on a
+filesystem that enforces these POSIX ownership and mode requirements. A Windows
+drive mounted under `/mnt/c` may not preserve mode 0600 even after `chmod`;
+the configuration writer then rejects its lock as non-private. Keep the
+permission check intact. Use the WSL native filesystem for private state, and
+use a native temporary directory such as `/tmp` for synthetic configuration
+tests when the source checkout is on a mounted Windows drive. This does not
+require moving the source checkout or changing mount options or Windows ACLs.
+
 The verified save-and-activate path stages private marker backups under that
 lock. On a recoverable write failure, it restores the prior saved/active
 pointers and removes the new snapshot before reporting a storage failure.
