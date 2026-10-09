@@ -1,7 +1,7 @@
 # W02a：可信计量读取与去重用量投影
 
 规格：[Run/Task measurements v2](../run-measurements-v2.md)。
-依赖：W01 本地基线 `a21f4f0`；v2 公共字段和下列公开验证接口确定。
+依赖：W01 本地基线 `a21f4f0`。
 
 ## 行为
 

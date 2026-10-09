@@ -40,6 +40,8 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Workspace snapshot** | A validated immutable non-secret Host selection of project, requested machine/firmware, and repository identities. RunEngine binds it in the Run's start input; it does not establish observed target identity or execution permission. |
 | **Run record** | A pure projection of fresh Runtime facts and the persisted workspace binding for a Host bookmark association. Unavailable facts remain explicit; it is not a second execution ledger or delivery claim. |
 | **Task aggregate** | A read projection of unique bookmarked Run references for one Task, with explicit usage availability. It does not own Run state or form a Task Outcome. |
+| **Measurement snapshot** | An immutable, bounded, Task-scoped read of producer-owned invocation, timing, and human-event facts, supplied through trusted Host composition. It does not own Runtime state. |
+| **Measurement coverage** | A producer's declaration that a metric inventory is complete, partial, or unavailable at a snapshot; it never implies Task completion or Runtime success. |
 | **RunCommand** | A typed request to start, respond to, resume, or control a Run. |
 | **RunEngine** | The only Module allowed to commit Run, Gate, Incident, Effect-reference, and Outcome transitions. |
 | **WorkflowDefinitions** | Versioned deterministic workflow structure and transition rules. It performs no external I/O and does not write Run state. |
@@ -149,3 +151,4 @@ records into current projections, but they cannot accept old commands or create 
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
 - [Host workspace binding and Run records](docs/run-workspace-records.md)
+- [Host measurement snapshots and Run/Task records v2](docs/design/run-measurements-v2.md)

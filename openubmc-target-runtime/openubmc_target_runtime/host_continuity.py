@@ -70,8 +70,14 @@ class HostContinuity:
     No method invokes execute, observe, credentials, or a target transport.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, measurement_reader=None, record_schema_version=1):
+        if type(record_schema_version) is not int or record_schema_version not in (1, 2):
+            raise ValueError("Unsupported Run record schema version")
+        if measurement_reader is not None and not callable(measurement_reader):
+            raise ValueError("Host measurement reader must be callable")
         self.root = Path(root).expanduser().resolve()
+        self.measurement_reader = measurement_reader
+        self.record_schema_version = record_schema_version
 
     @contextmanager
     def _database(self):
@@ -261,11 +267,32 @@ class HostContinuity:
                              "error_type": type(exc).__name__,
                              "run_record": project_run_record(task_id, row["run_id"], None),
                              "next": "Restore the ledger/store; do not repeat the device operation."})
+        aggregate = project_task_aggregate(task_id, runs)
+        if self.record_schema_version == 2:
+            from .measurements import MeasurementSnapshot, unavailable_measurements
+
+            snapshot = None
+            if self.measurement_reader is not None:
+                try:
+                    run_refs = tuple(aggregate["run_refs"])
+                    raw = self.measurement_reader(task_id, run_refs)
+                    if raw is not None:
+                        snapshot = MeasurementSnapshot(raw, task_id=task_id, run_refs=run_refs)
+                except Exception:
+                    # Optional observations cannot invalidate a committed Run result.
+                    # Never expose source values or exception details in the handoff.
+                    snapshot = None
+            for run in runs:
+                record = run["run_record"]
+                record.update(schema_version=2, **(snapshot.project(run["run_id"]) if snapshot
+                                                   else unavailable_measurements()))
+            metrics = snapshot.project() if snapshot else unavailable_measurements(task=True)
+            aggregate.update(schema_version=2, usage_totals=metrics.pop("usage"), **metrics)
         return {"schema": SCHEMA, "task_id": task_id,
                 "notes_authoritative": False, "notes": json.loads(note["body"]) if note else {},
                 "authority_note": "Notes are references only; Runtime validates every action.",
                 "runs": runs,
-                "task_aggregate": project_task_aggregate(task_id, runs)}
+                "task_aggregate": aggregate}
 
     def acknowledge_rollout(self, task_id: str, run_id: str, path: Path, *, read_run):
         _identity(task_id)

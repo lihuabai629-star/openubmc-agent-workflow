@@ -1,11 +1,11 @@
-# Run 与 Task 计量记录 v2 草案
+# Run 与 Task 计量记录 v2
 
 源码基线：`a21f4f08049bcf1146af3a02b16fdd8e9b4e48f8`。
 现有 v1 合同：[Run records](../run-workspace-records.md)。
 
 ## 接入方式与事实归属
 
-在既有 HostContinuity 接入处增加两个可选构造参数：
+HostContinuity 通过两个可选构造参数接入计量：
 
 ```python
 HostContinuity(
@@ -27,6 +27,24 @@ Effect 和 Outcome。投影器不建立计量数据库。恢复后重新读取�
 
 reader 的输入来自实际 Host Task/书签；Agent action、MCP `_meta` 和 notes 不能
 设置 reader、计量值或覆盖范围。读取计量不会发起 provider 请求或调用设备。
+
+### 已保存来源的 reader
+
+`JsonMeasurementReader(path)` 读取 producer 已保存的规范化快照。每次重新打开文件，
+最多读取 512 KiB；重复 JSON object key、超限、非法 JSON 或文件丢失使计量
+unavailable。该 reader 不创建文件、不保存缓存，也不控制来源的保留期限。
+
+`ProviderReportReader(path, task_id=..., provider_ref=..., evidence_kind=...,
+inventory_complete=False)` 适配现有 `runtime_model_measurement.py` 报告中的
+`provider_requests`。Host 绑定确切 Task/provider，并显式声明 inventory 是否完整。
+每条原观察须有 producer 保存的 `invocation_ref`；Run 归属使用原 `run_ref`，
+缺少该键时只计 Task，且不宣称 Run inventory 完整。原观察缺稳定 identity 时，
+adapter 降低覆盖度，不根据数组位置或 response id 补造调用身份。
+
+adapter 读取原 usage 的 input/output 和 `input_tokens_details.cached_tokens`
+（或一致的 `cached_tokens`），只保留允许字段。原来源声明的 Task/provider 与
+Host 绑定不一致时拒绝。已有未带 invocation identity 的历史报告仍显示
+unavailable；该 reader 不修改历史文件或启用已安装采集器。
 
 ## v1 与 v2
 
@@ -126,7 +144,8 @@ Task 的 `usage_totals` 另含 `unattributed_invocation_count`。
 
 `wall_intervals` 的条目仅含 `interval_ref`、`run_ref`（Task interval 为 null）、
 `started_at`、`ended_at`、`clock_ref`、`source_ref`。起止为有 UTC 时区的 RFC3339
-时间或 null，同一 scope 最多一个 interval。它表示 Host 对该 Task/Run 的起止
+时间或 null（小数秒最多六位），同一 scope 最多一个 interval。clock_ref 为
+连续可信时钟的 reference；连续性未知或 epoch 改变时为 null。它表示 Host 对该 Task/Run 的起止
 观察，不能冒充精确的 RunDecision commit timestamp。
 
 `wall_seconds` 为同一可信 `clock_ref` 下起止观察之差，包含 Gate 等待、Host 离线
@@ -138,7 +157,8 @@ Task 的 `usage_totals` 另含 `unattributed_invocation_count`。
 `elapsed_seconds`、`source_ref`。elapsed 是 producer 在同一进程/clock epoch
 内部测量的有限、非负 monotonic 秒数；跨进程 monotonic 起止值不能直接相减。
 相同 segment_ref 重复去重，字段冲突拒绝。只有覆盖完整，才能将分段秒数相加为
-完整 `active_seconds`；缺段保留 null。来源必须在同一 scope 保证分段互不重叠；
+完整 `active_seconds`；缺段或总和超出可表示的有限秒数时保留 null。
+来源必须在同一 scope 保证分段互不重叠；
 该字段表示 Host 测量运行段，可能包含该段内部的等待，并非 CPU 时间。
 
 输出 `timing` 为 `status`、`started_at`、`ended_at`、`wall_seconds`、
