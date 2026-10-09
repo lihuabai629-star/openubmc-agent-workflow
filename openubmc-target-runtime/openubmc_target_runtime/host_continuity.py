@@ -296,6 +296,18 @@ class HostContinuity:
                 "runs": runs,
                 "task_aggregate": aggregate}
 
+    def export_records(self, task_id: str, *, read_run, producer_commit, evidence_reader=None):
+        from .record_export import export_task_records
+
+        handoff = self.handoff(task_id, read_run=read_run)
+        evidence = None
+        if evidence_reader is not None:
+            try:
+                evidence = evidence_reader(task_id, tuple(handoff["task_aggregate"]["run_refs"]))
+            except Exception:
+                pass
+        return export_task_records(handoff, producer_commit=producer_commit, evidence_snapshot=evidence)
+
     def acknowledge_rollout(self, task_id: str, run_id: str, path: Path, *, read_run):
         _identity(task_id)
         _identity(run_id)
