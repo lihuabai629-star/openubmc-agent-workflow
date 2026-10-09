@@ -37,6 +37,9 @@ operation identities, retry safety, target fencing, or terminal success.
 | **ArtifactRef** | A bounded handle, digest, type, size, provenance, retention, target, and Run binding for content stored outside Run state. |
 | **Recovery Artifact** | An independently identified firmware package available before a target Mutation starts. Its absolute path, digest, size, and version are bound to Run Evidence; it is not applied automatically. |
 | **Run** | One durable execution of a pinned workflow definition for a target and intent. |
+| **Workspace snapshot** | A validated immutable non-secret Host selection of project, requested machine/firmware, and repository identities. RunEngine binds it in the Run's start input; it does not establish observed target identity or execution permission. |
+| **Run record** | A pure projection of fresh Runtime facts and the persisted workspace binding for a Host bookmark association. Unavailable facts remain explicit; it is not a second execution ledger or delivery claim. |
+| **Task aggregate** | A read projection of unique bookmarked Run references for one Task, with explicit usage availability. It does not own Run state or form a Task Outcome. |
 | **RunCommand** | A typed request to start, respond to, resume, or control a Run. |
 | **RunEngine** | The only Module allowed to commit Run, Gate, Incident, Effect-reference, and Outcome transitions. |
 | **WorkflowDefinitions** | Versioned deterministic workflow structure and transition rules. It performs no external I/O and does not write Run state. |
@@ -86,6 +89,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | --- | --- |
 | Observation collection, assurance, and source persistence | `ObservationEngine` |
 | Run, Gate, Incident, and Outcome transitions | `RunEngine` |
+| Durable workspace snapshot binding in Run start input | `RunEngine` |
 | Workflow structure and version pinning rules | `WorkflowDefinitions` |
 | Domain Adapter selection and invocation | `DomainExecutor` |
 | Mutation execution and recovery truth | `MutationJournal` |
@@ -124,6 +128,7 @@ records into current projections, but they cannot accept old commands or create 
   redaction always derives new bytes and a new digest, while GC removes content only after its
   final retained reference expires or is explicitly released.
 - Workflow definitions are version-pinned for each Run.
+- Host workspace selection changes affect new Starts; resume/control uses the Run's persisted binding. Legacy Runs remain unbound and unavailable usage is never zero.
 - MCP, CLI, queues, and future durable engines remain replaceable Adapters; their vocabulary does
   not enter the domain model.
 - Outbox, Inbox, remote Workers, and distributed fencing are introduced only when an actual
@@ -143,3 +148,4 @@ records into current projections, but they cannot accept old commands or create 
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
+- [Host workspace binding and Run records](docs/run-workspace-records.md)

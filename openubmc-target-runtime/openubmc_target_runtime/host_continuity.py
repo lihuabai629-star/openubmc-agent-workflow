@@ -198,14 +198,19 @@ class HostContinuity:
             )
 
     def _read(self, task_id, run_id, read_run):
+        from .run_record import project_run_record
+
         projection = read_run(run_id)
         if not isinstance(projection, Mapping):
             return {"run_id": run_id, "status": "runtime_unavailable",
+                    "run_record": project_run_record(task_id, run_id, None),
                     "next": "Restore the Runtime ledger; do not restart the device operation."}
         facts = self._facts(projection, run_id)
         turn = facts["turn"]
         outcome = _mapping(projection.get("run_outcome"))
         current = {"run_id": run_id, "status": "runtime_readback", **facts}
+        current["run_record"] = project_run_record(task_id, run_id, projection,
+                                                  runtime_state=turn.get("state"))
         # Only a persisted Outcome can prepare a final. A blocked tool/error is not one.
         if outcome:
             summary = str(outcome.get("summary") or "Runtime 已记录终态；详细证据见 Run。")
@@ -239,6 +244,8 @@ class HostContinuity:
         return current
 
     def handoff(self, task_id: str, *, read_run) -> dict[str, object]:
+        from .run_record import project_run_record, project_task_aggregate
+
         _identity(task_id)
         with self._database() as connection:
             rows = connection.execute(
@@ -252,11 +259,13 @@ class HostContinuity:
             except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
                 runs.append({"run_id": row["run_id"], "status": "runtime_unavailable",
                              "error_type": type(exc).__name__,
+                             "run_record": project_run_record(task_id, row["run_id"], None),
                              "next": "Restore the ledger/store; do not repeat the device operation."})
         return {"schema": SCHEMA, "task_id": task_id,
                 "notes_authoritative": False, "notes": json.loads(note["body"]) if note else {},
                 "authority_note": "Notes are references only; Runtime validates every action.",
-                "runs": runs}
+                "runs": runs,
+                "task_aggregate": project_task_aggregate(task_id, runs)}
 
     def acknowledge_rollout(self, task_id: str, run_id: str, path: Path, *, read_run):
         _identity(task_id)
