@@ -67,6 +67,19 @@ def _status(values):
     return "available" if all(value is not None for value in values) else "partial"
 
 
+def _token_total(rows, name, *, complete):
+    if not complete or any(row[name] is None for row in rows):
+        return None
+    total = sum(row[name] for row in rows)
+    try:
+        # Individually valid JSON integers may exceed the encoder's digit limit
+        # after summation. Keep other independently known measurements usable.
+        json.dumps(total)
+    except (ValueError, OverflowError):
+        return None
+    return total
+
+
 def _timestamp(value):
     if value is None:
         return None
@@ -192,8 +205,7 @@ class MeasurementSnapshot:
         if run_ref is not None:
             rows = [row for row in rows if row["run_ref"] == run_ref]
         complete = selected.get("usage") == "complete"
-        usage = {name: sum(row[name] for row in rows) if complete and all(
-            row[name] is not None for row in rows) else None for name in _TOKENS}
+        usage = {name: _token_total(rows, name, complete=complete) for name in _TOKENS}
         usage["invocation_count"] = len(rows) if complete else None
         if run_ref is None:
             usage["unattributed_invocation_count"] = sum(row["run_ref"] is None for row in rows) if complete else None
@@ -289,7 +301,9 @@ class ProviderReportReader:
             usage = usage if isinstance(usage, Mapping) else {}
             details = usage.get("input_tokens_details")
             details = details if isinstance(details, Mapping) else {}
-            cached = usage.get("cached_tokens", details.get("cached_tokens"))
+            cached = usage.get("cached_tokens")
+            if cached is None:
+                cached = details.get("cached_tokens")
             if (usage.get("cached_tokens") is not None and details.get("cached_tokens") is not None
                     and usage["cached_tokens"] != details["cached_tokens"]):
                 raise MeasurementError()

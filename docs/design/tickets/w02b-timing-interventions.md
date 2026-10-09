@@ -30,5 +30,4 @@ operation/test 证据扩展另行定义，因为本切片的计量来源不能�
 - Event/segment 同身份冲突及来源读取失败只降低计量可用性；恢复后读取同一
   来源得到相同计数，已完成 Effect 不重做，prepared 不提升为 delivered。
 
-验证仍经过可信 source adapter→handoff 和既有 execute/capture/restart 两个
-公开接口，按单场景 red→green 逐步实现。
+验证通过可信 source adapter→handoff 和既有 execute/capture/restart 两个公开接口。

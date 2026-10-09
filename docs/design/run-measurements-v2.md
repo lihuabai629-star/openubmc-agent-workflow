@@ -42,7 +42,8 @@ inventory_complete=False)` 适配现有 `runtime_model_measurement.py` 报告中
 adapter 降低覆盖度，不根据数组位置或 response id 补造调用身份。
 
 adapter 读取原 usage 的 input/output 和 `input_tokens_details.cached_tokens`
-（或一致的 `cached_tokens`），只保留允许字段。原来源声明的 Task/provider 与
+（或一致的 `cached_tokens`），只保留允许字段。缓存别名一方为 null 时使用另一方
+的已知值；两方均非 null 时必须一致。原来源声明的 Task/provider 与
 Host 绑定不一致时拒绝。已有未带 invocation identity 的历史报告仍显示
 unavailable；该 reader 不修改历史文件或启用已安装采集器。
 
@@ -135,6 +136,8 @@ Task 的 `usage_totals` 另含 `unattributed_invocation_count`。
 该值时，才输出总数；否则该数字为 null。inventory complete 时 invocation_count
 可以是确切计数。coverage complete 且明确没有任何调用时输出观测零；单个调用
 缺 usage 时仍保留 invocation_count，但不能用零补 token。
+总数超出当前 JSON encoder 的整数表示限制时，仅该字段为 null；其余独立可表示
+的数字与合法 source_ref 保留，不放宽解释器的整数转换限制。
 
 有合法来源、至少一项已知数字，但其他必要数字缺失时 status 为 partial；全部
 数字已知时为 available；没有可用数字时为 unavailable。合法来源的 source_ref
@@ -191,7 +194,7 @@ gate_ref 为实际 Gate 的 opaque reference 或 null。Host 对一个物理人�
 available/source_ref/kind；None、读取失败、未知字段、冲突身份、错误绑定或 digest
 不一致提供 unavailable/null/null。错误不回显来源值或异常消息。
 
-计量读取/验证失败仅降低计量字段的可用性。已提交的 execute 结果、Run binding、
+计量读取/验证/投影失败仅降低计量字段的可用性。已提交的 execute 结果、Run binding、
 Runtime 状态、Outcome 和 terminal preparation/delivery 不变；不得据此重做模型
 或设备操作。Runtime fresh readback 不可用时仍保留 Run identity，并清空 W01 的
 权威 Runtime 字段；独立合法的计量事实可保留，但不能证明 Runtime 完成。

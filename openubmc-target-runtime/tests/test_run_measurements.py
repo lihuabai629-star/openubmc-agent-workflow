@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -46,8 +47,8 @@ class RunMeasurementTests(unittest.TestCase):
         return HostContinuity(self.root / "host", measurement_reader=self.reader,
                               record_schema_version=2, **options)
 
-    def endpoint(self, host):
-        service = RuntimeMcpService(self.backend, context_repository=self.repository, host_continuity=host)
+    def endpoint(self, host, **options):
+        service = RuntimeMcpService(self.backend, context_repository=self.repository, host_continuity=host, **options)
         self.addCleanup(service.close)
         return JsonRpcMcpEndpoint(service, session_task_id="task")
 
@@ -426,3 +427,99 @@ class RunMeasurementTests(unittest.TestCase):
                                    "elapsed_seconds": float("inf"), "source_ref": "source"}]
         self.snapshot = {**body, "source_ref": "sha256:" + "0" * 64}
         self.assertEqual(self.handoff(self.host())["task_aggregate"]["measurement_source"]["status"], "unavailable")
+
+    def test_v2_measurements_preserve_workspace_bindings_across_switch_and_restart(self):
+        host = self.host()
+        fixtures = Path(__file__).parent / "fixtures"
+        selected = json.loads((fixtures / "workspace-selection-a.json").read_text())
+        original = copy.deepcopy(selected)
+        endpoint = self.endpoint(host, host_context_provider=lambda _: selected)
+        a = self.start(endpoint)
+        selected = json.loads((fixtures / "workspace-selection-b.json").read_text())
+        b = self.start(endpoint, "start-b")
+        body = self.body(a, b)
+        body["invocations"] = [invocation(a), invocation(b, "call-b", (50, 10, None))]
+        self.snapshot = seal(body)
+        recovered = self.host()
+        result = self.handoff(recovered)
+        records = {row["run_id"]: row["run_record"] for row in result["runs"]}
+        self.assertEqual(records[a]["workspace_binding"]["snapshot"], original)
+        self.assertEqual(records[b]["workspace_binding"]["snapshot"], selected)
+        self.assertEqual(records[a]["usage"]["input_tokens"], 100)
+        self.assertEqual(records[b]["usage"]["input_tokens"], 50)
+
+    def test_model_arguments_and_metadata_cannot_supply_measurement_authority(self):
+        host = self.host()
+        endpoint = self.endpoint(host)
+        run_id = self.start(endpoint)
+        body = self.body(run_id)
+        body["invocations"] = [invocation(run_id)]
+        self.snapshot = seal(body)
+        request = {"jsonrpc": "2.0", "id": "resume", "method": "tools/call",
+            "params": {"name": "execute", "arguments": {"kind": "resume", "run_id": run_id},
+                "_meta": {"threadId": "task", "openubmc/operationId": "resume",
+                          "measurement_snapshot": {"input_tokens": 999}}}}
+        result = endpoint.handle(request)["result"]
+        self.assertFalse(result["isError"], result)
+        request["params"]["arguments"]["measurement_snapshot"] = {"input_tokens": 999}
+        rejected = endpoint.handle(request)["result"]
+        self.assertTrue(rejected["isError"], rejected)
+        self.assertEqual(self.handoff(host)["task_aggregate"]["usage_totals"]["input_tokens"], 100)
+
+    def test_provider_cache_aliases_preserve_known_values_and_reject_conflicts(self):
+        from openubmc_target_runtime.measurements import ProviderReportReader
+
+        run_id = self.start(self.endpoint(self.host()))
+        source = self.root / "provider-report.json"
+        host = HostContinuity(self.root / "host", record_schema_version=2,
+            measurement_reader=ProviderReportReader(source, task_id="task", provider_ref="provider-a",
+                                                    evidence_kind="observed", inventory_complete=True))
+        for flat, nested, expected in ((None, 40, 40), (40, None, 40), (40, 40, 40),
+                                       (None, None, None), (0, None, 0), (39, 40, None)):
+            with self.subTest(flat=flat, nested=nested):
+                source.write_text(json.dumps({"provider_requests": [{"invocation_ref": "request-1",
+                    "run_ref": run_id, "usage": {"input_tokens": 100, "output_tokens": 20,
+                        "cached_tokens": flat, "input_tokens_details": {"cached_tokens": nested}}}]}))
+                result = self.handoff(host)
+                for usage in (result["task_aggregate"]["usage_totals"], result["runs"][0]["run_record"]["usage"]):
+                    self.assertEqual(usage["cached_tokens"], expected)
+                    if flat == 39:
+                        self.assertEqual(usage["status"], "unavailable")
+                    else:
+                        self.assertEqual(usage["input_tokens"], 100)
+                        self.assertEqual(usage["status"], "available" if expected is not None else "partial")
+
+    def test_unserializable_token_total_cannot_break_terminal_handoff(self):
+        host = self.host()
+        endpoint = self.endpoint(host)
+        run_id = self.start(endpoint)
+        gate = self.handoff(host)["runs"][0]["turn"]["gate"]
+        cancelled = endpoint.handle({"jsonrpc": "2.0", "id": "cancel", "method": "tools/call",
+            "params": {"name": "execute", "arguments": {"kind": "control", "run_id": run_id,
+                "command": "cancel", **{key: gate[key] for key in ("gate_id", "gate_version", "schema_digest")}},
+                "_meta": {"threadId": "task", "openubmc/operationId": "cancel"}}})["result"]
+        self.assertFalse(cancelled["isError"], cancelled)
+        baseline = self.handoff(host)["runs"][0]
+        revision = self.repository.current_revision(run_id)
+        digit_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+        digits = min(digit_limit or 4300, 8000)
+        value = 10 ** (digits - 1)
+        expected = None if digit_limit and digit_limit <= digits else value * 10
+        for scope in (run_id, None):
+            with self.subTest(scope=scope):
+                body = self.body(run_id)
+                body["invocations"] = [invocation(scope, "call-" + str(index), (value, 20, 40)) for index in range(10)]
+                self.snapshot = seal(body)
+                result = self.handoff(host)
+                json.dumps(result, allow_nan=False)
+                total = result["task_aggregate"]["usage_totals"]
+                self.assertEqual(total["input_tokens"], expected)
+                self.assertEqual((total["output_tokens"], total["cached_tokens"], total["invocation_count"]), (200, 400, 10))
+                self.assertEqual(total["status"], "partial" if expected is None else "available")
+                run = result["runs"][0]
+                self.assertEqual(run["run_record"]["usage"]["input_tokens"], expected if scope is not None else 0)
+                self.assertEqual(run["run_record"]["measurement_source"]["status"], "available")
+                self.assertEqual(run["run_record"]["outcome_ref"], baseline["run_record"]["outcome_ref"])
+                self.assertEqual(run["run_record"]["runtime_state"], "cancelled")
+                self.assertEqual(run["terminal_answer"], baseline["terminal_answer"])
+        self.assertEqual(self.repository.current_revision(run_id), revision)

@@ -29,6 +29,3 @@ coverage。完整且已观察到的零为 0，未知为 null；Task 汇总不相
 - complete 空集合得到 0；没有 reader、缺 usage、缺 inventory 时得到 null。
 - 既有 execute/capture/restart seam 验证 v1 默认、v2 opt-in、A/B 来源固定、
   恢复不 dispatch 替代 Effect、fresh readback 与计量失效各自显示可用性。
-
-每条新增行为按单场景 red→green 实施，观察公开结果；不通过私有函数或直接
-查询数据库验证新接口。

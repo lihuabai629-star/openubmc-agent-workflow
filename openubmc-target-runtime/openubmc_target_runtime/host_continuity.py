@@ -271,22 +271,24 @@ class HostContinuity:
         if self.record_schema_version == 2:
             from .measurements import MeasurementSnapshot, unavailable_measurements
 
-            snapshot = None
+            measurements = None
             if self.measurement_reader is not None:
                 try:
                     run_refs = tuple(aggregate["run_refs"])
                     raw = self.measurement_reader(task_id, run_refs)
                     if raw is not None:
                         snapshot = MeasurementSnapshot(raw, task_id=task_id, run_refs=run_refs)
+                        measurements = {"runs": [snapshot.project(run["run_id"]) for run in runs],
+                                        "task": snapshot.project()}
                 except Exception:
                     # Optional observations cannot invalidate a committed Run result.
                     # Never expose source values or exception details in the handoff.
-                    snapshot = None
-            for run in runs:
+                    measurements = None
+            for index, run in enumerate(runs):
                 record = run["run_record"]
-                record.update(schema_version=2, **(snapshot.project(run["run_id"]) if snapshot
+                record.update(schema_version=2, **(measurements["runs"][index] if measurements
                                                    else unavailable_measurements()))
-            metrics = snapshot.project() if snapshot else unavailable_measurements(task=True)
+            metrics = measurements["task"] if measurements else unavailable_measurements(task=True)
             aggregate.update(schema_version=2, usage_totals=metrics.pop("usage"), **metrics)
         return {"schema": SCHEMA, "task_id": task_id,
                 "notes_authoritative": False, "notes": json.loads(note["body"]) if note else {},
