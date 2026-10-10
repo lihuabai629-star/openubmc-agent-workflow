@@ -19,7 +19,7 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => {
   try {
     const event = JSON.parse(input);
-    if (!event || !["SessionStart", "Stop"].includes(event.hook_event_name)) {
+    if (!event || !["SessionStart", "UserPromptSubmit", "Stop"].includes(event.hook_event_name)) {
       process.stdout.write("{}\n");
       return;
     }
@@ -30,6 +30,13 @@ process.stdin.on("end", () => {
     });
     const backend = adapter.resolveBackend();
     if (!backend.ok) throw new Error("host_unavailable");
+    if (adapter.hostPlatform === "win32" && backend.selected_wsl && typeof event.cwd === "string") {
+      const converted = adapter.run(process.env.OPENUBMC_PLUGIN_WSL_EXE || "wsl.exe",
+        ["-d", backend.selected_wsl, "--exec", "wslpath", "-a", "-u", event.cwd]);
+      if (converted.error || converted.status !== 0) throw new Error("host_cwd_unavailable");
+      event.cwd = adapter.decodeOutput(converted.stdout).trim();
+      input = JSON.stringify(event);
+    }
     const result = childProcess.spawnSync(backend.command, [...backend.prefix, "host-hook"], {
       input, encoding: "utf8", env: adapter.childEnvironment, timeout: 8000,
       maxBuffer: 65536, windowsHide: true,

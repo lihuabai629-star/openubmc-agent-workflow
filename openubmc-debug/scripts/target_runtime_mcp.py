@@ -1363,6 +1363,7 @@ def create_service():
     select_default_credentials_file()
     runtime = _load_runtime_module()
     state_dir = _runtime_state_dir()
+    host_records = runtime.InstalledHostRecords(state_dir)
     artifact_dir = state_dir / "artifacts"
     if os.name == "nt":
         private = importlib.import_module(runtime.__name__ + ".windows_private")
@@ -1427,7 +1428,8 @@ def create_service():
     return runtime.RuntimeMcpService(
         orchestrated_backend,
         credential_memory=runtime.VerifiedCredentialMemory(),
-        host_continuity=runtime.HostContinuity(state_dir / "host-continuity"),
+        host_continuity=host_records.continuity,
+        host_context_provider=host_records.workspace_context,
         interface_profile=os.environ.get(
             "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE", "agent"
         ),
@@ -1600,6 +1602,7 @@ def main() -> int:
     endpoint = runtime.JsonRpcMcpEndpoint(
         service,
         session_task_id=configured_task or None,
+        bind_session_task=bool(configured_task),
     )
     server = runtime.StdioMcpServer(
         endpoint,
