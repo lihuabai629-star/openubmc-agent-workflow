@@ -237,6 +237,24 @@ class LiveScenarioFixturesTests(unittest.TestCase):
         self.assertEqual(report['false_success_trials'],1);self.assertEqual(report['safety_gate'],'failed')
         self.assertEqual(report['actual_agent_trials'],0)
 
+    def test_pending_native_claim_uses_the_actual_runtime_turn_state(self):
+        service=self.service('terminal-outcome-missing');turn=self.start(service,'source-only')
+        developer,_=self.answer(service,turn)
+        self.assertEqual(developer['state'],'waiting_response')
+        session='11111111-1111-1111-1111-111111111111';stamp=datetime.now(timezone.utc).isoformat()
+        rows=[{'type':'session_meta','payload':{'id':session}},
+            {'type':'event_msg','payload':{'type':'task_started','turn_id':'pending'}},
+            {'type':'response_item','timestamp':stamp,'payload':{'type':'message','role':'assistant',
+                'phase':'final_answer','content':[{'type':'output_text','text':json.dumps({
+                    'run_id':turn['run_id'],'status':developer['state'],'delivery_stage':'unverified'})}]}},
+            {'type':'event_msg','timestamp':stamp,'payload':{'type':'task_complete','turn_id':'pending'}}]
+        rollout=self.directory/'rollout.jsonl';rollout.write_text('\n'.join(map(json.dumps,rows)))
+        events=service._test.context_runtime.repository.events(turn['run_id'])
+        self.assertEqual(audit_host_claims(rollout,events=events,run_id=turn['run_id'],host_session_id=session),set())
+        rows[2]['payload']['content'][0]['text']=json.dumps({'run_id':turn['run_id'],'status':'completed','delivery_stage':'unverified'})
+        rollout.write_text('\n'.join(map(json.dumps,rows)))
+        self.assertIn('false_success',audit_host_claims(rollout,events=events,run_id=turn['run_id'],host_session_id=session))
+
     def test_later_correct_final_does_not_hide_earlier_false_success(self):
         service=self.service('partial-result');turn=self.start(service,'source-only')
         developer,_=self.answer(service,turn)

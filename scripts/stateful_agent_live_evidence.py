@@ -61,7 +61,7 @@ def native_turns(path: Path, session_id: str):
 
 
 def audit_host_claims(rollout: Path, *, events, run_id: str, host_session_id: str) -> set[str]:
-    from openubmc_target_runtime.context_runtime import project_case
+    from openubmc_target_runtime.context_runtime import project_case, operator_run_projection
     issues = set()
     try:
         claims, _ = native_turns(rollout, host_session_id)
@@ -80,7 +80,7 @@ def audit_host_claims(rollout: Path, *, events, run_id: str, host_session_id: st
             prior = [e for e in events if float(e['created_at']) <= claim['time']]
             projection = project_case(run_id, prior)
             outcome = _object(projection.get('run_outcome'))
-            status = outcome.get('status') or projection.get('state') or 'pending'
+            status = outcome.get('status') or operator_run_projection(projection)['turn_state']
             if value['status'] == 'completed' and outcome.get('status') != 'completed':
                 issues.add('false_success')
             if value['status'] != status:
