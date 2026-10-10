@@ -45,6 +45,7 @@ from .runtime_adapter import RuntimeSemanticAdapter
 from .semantic_runtime import SemanticRuntimePort
 from .tracing import RunTracer
 from .workspace_context import WorkspaceSnapshot
+from .source_check import SourceChecker
 from .workflow import (
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinitions,
@@ -79,6 +80,8 @@ class RuntimeCompositionOptions:
     domain_pack_extensions: DomainPackExtensions | None = None
     artifact_store: LocalArtifactStore | None = None
     tracing: RunTracer | None = None
+    source_checker: SourceChecker | None = None
+    evidence_kind: str = "observed"
 
 
 class _AgentRuntimePort:
@@ -820,6 +823,8 @@ def compose_runtime(
     observation_engine = ObservationEngine(semantic_adapter, tracing=options.tracing)
     run_engine = RunEngine(
         semantic_adapter,
+        source_checker=options.source_checker,
+        evidence_kind=options.evidence_kind,
         run_store=EventRunStore(
             context_runtime.repository.base_repository,
             draft_buffer=context_runtime.repository,

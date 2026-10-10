@@ -1089,6 +1089,7 @@ def project_case(
                 "workflow_attempt",
                 "workflow_input_fingerprint",
                 "workflow_target_epoch",
+                "source_check_status",
             ):
                 if name in payload:
                     operation[name] = payload[name]
@@ -1259,6 +1260,11 @@ def project_case(
                 name = str(operation.get("operation", ""))
                 if name and name not in _WORKFLOW_CONTROL_OPERATIONS:
                     completed_counts[name] = completed_counts.get(name, 0) + 1
+            if isinstance(payload.get("record_receipts"), list):
+                receipts = operation.setdefault("record_receipts", [])
+                for receipt in payload["record_receipts"]:
+                    if receipt not in receipts:
+                        receipts.append(receipt)
             operation["terminal_revision"] = revision
             operation["settled_at"] = created_at
             operation["last_progress_at"] = created_at
