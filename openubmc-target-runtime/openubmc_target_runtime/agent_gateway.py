@@ -1827,11 +1827,13 @@ class AgentGateway:
         *,
         task_id: str,
         operation_id: str,
+        workspace_context=None,
     ) -> dict[str, object]:
         raw_run_id = action.get("run_id")
         run_id = raw_run_id if isinstance(raw_run_id, str) else ""
         with self.tracing.span("agent.execute", task_id=task_id, run_id=run_id) as span:
-            command = decode_run_command(action, operation_id=operation_id)
+            command = decode_run_command(action, operation_id=operation_id,
+                                         workspace_context=workspace_context)
             turn = self.runtime.execute(
                 command,
                 task_id=task_id,

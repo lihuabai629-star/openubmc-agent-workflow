@@ -70,8 +70,14 @@ class HostContinuity:
     No method invokes execute, observe, credentials, or a target transport.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, measurement_reader=None, record_schema_version=1):
+        if type(record_schema_version) is not int or record_schema_version not in (1, 2):
+            raise ValueError("Unsupported Run record schema version")
+        if measurement_reader is not None and not callable(measurement_reader):
+            raise ValueError("Host measurement reader must be callable")
         self.root = Path(root).expanduser().resolve()
+        self.measurement_reader = measurement_reader
+        self.record_schema_version = record_schema_version
 
     @contextmanager
     def _database(self):
@@ -198,14 +204,19 @@ class HostContinuity:
             )
 
     def _read(self, task_id, run_id, read_run):
+        from .run_record import project_run_record
+
         projection = read_run(run_id)
         if not isinstance(projection, Mapping):
             return {"run_id": run_id, "status": "runtime_unavailable",
+                    "run_record": project_run_record(task_id, run_id, None),
                     "next": "Restore the Runtime ledger; do not restart the device operation."}
         facts = self._facts(projection, run_id)
         turn = facts["turn"]
         outcome = _mapping(projection.get("run_outcome"))
         current = {"run_id": run_id, "status": "runtime_readback", **facts}
+        current["run_record"] = project_run_record(task_id, run_id, projection,
+                                                  runtime_state=turn.get("state"))
         # Only a persisted Outcome can prepare a final. A blocked tool/error is not one.
         if outcome:
             summary = str(outcome.get("summary") or "Runtime 已记录终态；详细证据见 Run。")
@@ -239,6 +250,8 @@ class HostContinuity:
         return current
 
     def handoff(self, task_id: str, *, read_run) -> dict[str, object]:
+        from .run_record import project_run_record, project_task_aggregate
+
         _identity(task_id)
         with self._database() as connection:
             rows = connection.execute(
@@ -252,11 +265,48 @@ class HostContinuity:
             except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
                 runs.append({"run_id": row["run_id"], "status": "runtime_unavailable",
                              "error_type": type(exc).__name__,
+                             "run_record": project_run_record(task_id, row["run_id"], None),
                              "next": "Restore the ledger/store; do not repeat the device operation."})
+        aggregate = project_task_aggregate(task_id, runs)
+        if self.record_schema_version == 2:
+            from .measurements import MeasurementSnapshot, unavailable_measurements
+
+            measurements = None
+            if self.measurement_reader is not None:
+                try:
+                    run_refs = tuple(aggregate["run_refs"])
+                    raw = self.measurement_reader(task_id, run_refs)
+                    if raw is not None:
+                        snapshot = MeasurementSnapshot(raw, task_id=task_id, run_refs=run_refs)
+                        measurements = {"runs": [snapshot.project(run["run_id"]) for run in runs],
+                                        "task": snapshot.project()}
+                except Exception:
+                    # Optional observations cannot invalidate a committed Run result.
+                    # Never expose source values or exception details in the handoff.
+                    measurements = None
+            for index, run in enumerate(runs):
+                record = run["run_record"]
+                record.update(schema_version=2, **(measurements["runs"][index] if measurements
+                                                   else unavailable_measurements()))
+            metrics = measurements["task"] if measurements else unavailable_measurements(task=True)
+            aggregate.update(schema_version=2, usage_totals=metrics.pop("usage"), **metrics)
         return {"schema": SCHEMA, "task_id": task_id,
                 "notes_authoritative": False, "notes": json.loads(note["body"]) if note else {},
                 "authority_note": "Notes are references only; Runtime validates every action.",
-                "runs": runs}
+                "runs": runs,
+                "task_aggregate": aggregate}
+
+    def export_records(self, task_id: str, *, read_run, producer_commit, evidence_reader=None):
+        from .record_export import export_task_records
+
+        handoff = self.handoff(task_id, read_run=read_run)
+        evidence = None
+        if evidence_reader is not None:
+            try:
+                evidence = evidence_reader(task_id, tuple(handoff["task_aggregate"]["run_refs"]))
+            except Exception:
+                pass
+        return export_task_records(handoff, producer_commit=producer_commit, evidence_snapshot=evidence)
 
     def acknowledge_rollout(self, task_id: str, run_id: str, path: Path, *, read_run):
         _identity(task_id)

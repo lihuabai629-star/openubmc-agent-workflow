@@ -2174,6 +2174,7 @@ class RuntimeMcpService:
         artifact_store: LocalArtifactStore | None = None,
         credential_memory=None,
         host_continuity=None,
+        host_context_provider: Callable[[str], Mapping[str, object] | None] | None = None,
         tracing: RunTracer | None = None,
         **registry_options: object,
     ) -> None:
@@ -2184,6 +2185,9 @@ class RuntimeMcpService:
         self._agent_input = AgentInputAdapter()
         self.credential_memory = credential_memory
         self.host_continuity = host_continuity
+        if host_context_provider is not None and not callable(host_context_provider):
+            raise ValueError("host_context_provider must be callable")
+        self.host_context_provider = host_context_provider
         self.tracing = tracing or RunTracer()
         self.context_mode = selected_context_mode
         self.registry: TaskRunRegistry[TaskT] = TaskRunRegistry(
@@ -3119,11 +3123,21 @@ class RuntimeMcpService:
             if name == "execute":
                 raw_run_id = arguments.get("run_id")
                 run_id = raw_run_id if isinstance(raw_run_id, str) else ""
+                host_options = {}
+                if arguments.get("kind") == "start" and self.host_context_provider is not None:
+                    from .workspace_context import WorkspaceSnapshot, WorkspaceContextError
+                    try:
+                        selected = self.host_context_provider(task_id)
+                    except Exception as exc:
+                        raise WorkspaceContextError("Host workspace snapshot is unavailable") from exc
+                    if selected is not None:
+                        host_options["workspace_context"] = WorkspaceSnapshot(selected)
                 with self.tracing.span("mcp.execute", task_id=task_id, run_id=run_id) as span:
                     result = self._runtime.agent.execute(
                         arguments,
                         task_id=task_id,
                         operation_id=operation_id,
+                        **host_options,
                     )
                     if isinstance(result.get("run_id"), str):
                         span.bind_run(result["run_id"])

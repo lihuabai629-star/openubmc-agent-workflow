@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import io
 import os
 import socket
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -268,6 +270,78 @@ class ParamikoTransportTests(unittest.TestCase):
                 adapter.open_master(target=target, credentials=credentials)
             self.assertIn("authentication failed", caught.exception.completed.stderr)
             self.assertNotIn(credentials.password, repr(caught.exception))
+
+
+@unittest.skipUnless(paramiko is not None, "Paramiko is required")
+class ParamikoScpCleanupTests(unittest.TestCase):
+    """Peer disconnect during close must not change the transfer outcome."""
+
+    def setUp(self):
+        from openubmc_target_runtime.contracts import TargetSpec
+        from openubmc_target_runtime.paramiko_transport import ParamikoMaster, ParamikoSshTransport
+        from openubmc_target_runtime.runtime import ResolvedSshCredentials
+
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.destination = Path(self.directory.name) / "download"
+        self.destination.write_bytes(b"previous")
+        self.adapter = ParamikoSshTransport()
+        self.channel = Mock(spec=paramiko.Channel)
+        self.channel.close.side_effect = EOFError("peer disconnected during close")
+        client = Mock(spec=paramiko.SSHClient)
+        client.open_sftp.side_effect = paramiko.SSHException("SFTP subsystem unavailable")
+        client.get_transport.return_value.is_active.return_value = True
+        client.get_transport.return_value.open_session.return_value = self.channel
+        self.master = ParamikoMaster(
+            target=TargetSpec(host="127.0.0.1", credential_selector_fingerprint="0" * 64),
+            credentials=ResolvedSshCredentials(user="fixture"), client=client)
+
+    def download(self, response=b"C0644 4 fixture\ndata\0", *, exit_status=0):
+        stream = io.BytesIO(response)
+        self.channel.recv.side_effect = stream.read
+        self.channel.recv_exit_status.return_value = exit_status
+        return self.adapter.download_file(self.master, "/fixture", str(self.destination), timeout=3)
+
+    def test_close_eof_preserves_completed_scp_download(self):
+        result = self.download()
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(self.destination.read_bytes(), b"data")
+        self.channel.recv_exit_status.assert_called_once_with()
+        self.channel.close.assert_called_once_with()
+        self.assertEqual(list(Path(self.directory.name).glob(".openubmc-download-*")), [])
+
+    def test_close_eof_keeps_transfer_failures_and_previous_destination(self):
+        cases = [
+            ("truncated", b"C0644 4 fixture\nabc", 0, 255, "SSH download failed"),
+            ("missing_completion", b"C0644 4 fixture\ndata", 0, 255, "SSH download failed"),
+            ("source_exit_failure", b"C0644 4 fixture\ndata\0", 1, 255, "SSH download failed"),
+            ("source_rejection", b"\1permission denied\n", 0, 1, "SCP source rejected the download"),
+        ]
+        for name, response, exit_status, code, message in cases:
+            with self.subTest(name=name):
+                self.channel.reset_mock()
+                result = self.download(response, exit_status=exit_status)
+                self.assertEqual((result.returncode, result.stderr), (code, message))
+                self.assertEqual(self.destination.read_bytes(), b"previous")
+                self.channel.close.assert_called_once_with()
+                self.assertEqual(list(Path(self.directory.name).glob(".openubmc-download-*")), [])
+
+    def test_close_eof_does_not_mask_primary_channel_exception(self):
+        error = paramiko.SSHException("exec request rejected")
+        self.channel.exec_command.side_effect = error
+        with self.assertRaises(paramiko.SSHException) as caught:
+            self.download()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(self.destination.read_bytes(), b"previous")
+        self.channel.close.assert_called_once_with()
+
+    def test_unrelated_close_error_is_not_suppressed(self):
+        error = RuntimeError("unexpected close bug")
+        self.channel.close.side_effect = error
+        with self.assertRaises(RuntimeError) as caught:
+            self.download()
+        self.assertIs(caught.exception, error)
+        self.channel.close.assert_called_once_with()
 
 
 if __name__ == "__main__":
