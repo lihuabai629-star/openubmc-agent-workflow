@@ -21,7 +21,7 @@ def _default_state_dir() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("handoff", "notes", "answer", "audit", "hook"))
+    parser.add_argument("command", choices=("handoff", "notes", "answer", "audit", "hook", "export", "verify", "prune"))
     parser.add_argument("--task-id")
     parser.add_argument("--run-id")
     parser.add_argument("--state-dir", default=os.environ.get(
@@ -30,9 +30,21 @@ def main(argv=None) -> int:
     ))
     parser.add_argument("--notes-file", type=Path)
     parser.add_argument("--rollout", type=Path)
+    parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--record-file", type=Path)
+    parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--producer-commit", default=os.environ.get("OPENUBMC_MCP_SOURCE_COMMIT"))
+    parser.add_argument("--before-timestamp", type=float)
+    parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
-    if args.command != "hook" and not args.task_id:
+    if args.command not in {"hook", "verify", "prune"} and not args.task_id:
         parser.error("--task-id is required")
+    if args.command in {"export", "prune"} and args.output_directory is None:
+        parser.error("--output-directory is required")
+    if args.command == "verify" and args.record_file is None:
+        parser.error("--record-file is required")
+    if args.command == "prune" and args.before_timestamp is None:
+        parser.error("--before-timestamp is required")
     if args.command in {"answer", "audit"} and not args.run_id:
         parser.error("--run-id is required for answer/audit")
     if args.command == "notes" and args.notes_file is None:
@@ -42,19 +54,42 @@ def main(argv=None) -> int:
     runtime = _load_runtime_module()
 
     root = Path(args.state_dir).expanduser().resolve()
-    store = runtime.HostContinuity(root / "host-continuity")
+    host_records = runtime.InstalledHostRecords(root)
+    store = host_records.continuity
 
     def read_run(run_id):
         return runtime.read_runtime_projection(root / "context-runtime.sqlite3", run_id)
 
     try:
-        if args.command == "hook":
+        if args.command in {"export", "verify", "prune"}:
+            JsonMeasurementReader = runtime.JsonMeasurementReader
+            RecordExportStore = runtime.RecordExportStore
+            export_task_records = runtime.export_task_records
+            verify_export = runtime.verify_export
+            if args.command == "verify":
+                value = {"content_digest": verify_export(JsonMeasurementReader(args.record_file)(None, ()))}
+            elif args.command == "prune":
+                value = {"dry_run": not args.apply, "files": RecordExportStore(args.output_directory).prune(
+                    before_timestamp=args.before_timestamp, dry_run=not args.apply)}
+            else:
+                evidence = None
+                if args.evidence:
+                    try:
+                        evidence = JsonMeasurementReader(args.evidence)(None, ())
+                    except Exception:
+                        pass
+                document = export_task_records(store.handoff(args.task_id, read_run=read_run),
+                    producer_commit=args.producer_commit, evidence_snapshot=evidence)
+                path = RecordExportStore(args.output_directory).write(document)
+                value = {"path": str(path), "content_digest": document["content_digest"]}
+        elif args.command == "hook":
             body = sys.stdin.read(64 * 1024 + 1)
             if len(body.encode()) > 64 * 1024:
                 raise ValueError("hook event exceeds 64 KiB")
             event = json.loads(body)
             if not isinstance(event, dict):
                 raise ValueError("hook event must be an object")
+            host_records.capture_selection(event)
             value = store.handle_hook(event, read_run=read_run)
         elif args.command == "notes":
             with args.notes_file.open(encoding="utf-8") as stream:
