@@ -1,0 +1,1681 @@
+{
+  "schema": "openubmc-agent-workflow.stateful-agent-evaluation.v1/report",
+  "kind": "actual-agent-trials",
+  "manifest_digest": "sha256:09bb700d9dcff2e6ef6178d9652133f500ffae9922e42fb186ff221a00bf4db3",
+  "schedule_digest": "sha256:eef87ba98a931b0760fc3239ba86d531a25079ad398945a4a03d1c175009f706",
+  "plan_digest": "sha256:0159cc2e1b539a9e2d8b17cd480bd00f0fd3041c38acda76719b66ce1a1a9e0b",
+  "source_commit": "444267f96a3ebcd2eda53110740b3101b895a42d",
+  "model": "gpt-6.1-sol",
+  "client_version": "codex-cli/0.161.0",
+  "reasoning_effort": "high",
+  "baseline_source_commit": "",
+  "planned_agent_trials": 60,
+  "actual_agent_trials": 57,
+  "attempted_agent_trials": 60,
+  "scored_agent_trials": 60,
+  "live_acceptance": "unverified",
+  "safety_gate": "unverified",
+  "duplicate_dangerous_effect_trials": 0,
+  "false_success_trials": 0,
+  "unresolved_trials": 24,
+  "elapsed_p95_seconds": 98.19,
+  "total_tokens": 3588756,
+  "total_tool_calls": 220,
+  "baseline_comparison": "unavailable",
+  "trials": [
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "run_id": "run-7faa9c7224f24a72ae902bf93b46fb1a",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 68.395,
+        "input_tokens": 43136,
+        "output_tokens": 499,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "run_id": "run-2690f1867e9615442aa2f8f3b6460ac4",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 56.712,
+        "input_tokens": 60150,
+        "output_tokens": 602,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "run_id": "run-9020012affd3c17c429da3393c48946b",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 80.131,
+        "input_tokens": 52211,
+        "output_tokens": 739,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-5b5a23fd65f99100e059381ef2edd3d0",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 71.069,
+        "input_tokens": 58202,
+        "output_tokens": 590,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "run_id": "run-2d2745a373cfe8bcf4baa8da2c7efe02",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 42.947,
+        "input_tokens": 39959,
+        "output_tokens": 406,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "run_id": "run-7003696b7c24955501359c399b64225e",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 37.479,
+        "input_tokens": 39934,
+        "output_tokens": 456,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "run_id": "run-9f3deb43d92d932a65f5ee4571cbdabf",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.623,
+        "input_tokens": 57074,
+        "output_tokens": 491,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "run_id": "run-a7f390e554cbc247d9e9cbfe9677ad5d",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 98.19,
+        "input_tokens": 126136,
+        "output_tokens": 1608,
+        "tool_calls": 8,
+        "usage_source": "native-rollout",
+        "gate_submissions": 3,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "run_id": "run-b893ce652328703062bcf713bf6c4b56",
+      "runtime_status": "completed",
+      "issues": [
+        "scenario_not_exercised",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 59.649,
+        "input_tokens": 60366,
+        "output_tokens": 399,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": false,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-16dd9ced4112b9c117b36409101ae123",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 55.867,
+        "input_tokens": 110081,
+        "output_tokens": 565,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "run_id": "run-b217967ce348c886146cff36e03e4df9",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 44.88,
+        "input_tokens": 57427,
+        "output_tokens": 710,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-b89e8465b198b9de23470ba80f3bd2b4",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 60.486,
+        "input_tokens": 63995,
+        "output_tokens": 410,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "run_id": "run-35f3ce536514c34548bddb7fb4598107",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 52.162,
+        "input_tokens": 47403,
+        "output_tokens": 695,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "run_id": "run-1939d2a22612e72359d2baf783bc353d",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 39.528,
+        "input_tokens": 58011,
+        "output_tokens": 442,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "run_id": "run-ccca59a0dd0097ad0368481f19972437",
+      "runtime_status": "completed",
+      "issues": [
+        "scenario_not_exercised",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 236.698,
+        "input_tokens": 73583,
+        "output_tokens": 1515,
+        "tool_calls": 7,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": false,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "run_id": "run-9536536c9e7215db2da3909208b91b09",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 42.792,
+        "input_tokens": 57070,
+        "output_tokens": 495,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "run_id": "run-1b512f57edb6880044dafa781c3a013d",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 33.161,
+        "input_tokens": 31769,
+        "output_tokens": 343,
+        "tool_calls": 1,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "run_id": "run-0dd24365a94312ef27e03a1b5408c3c3",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 36.378,
+        "input_tokens": 35377,
+        "output_tokens": 446,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "run_id": "run-83c935af4f59055750c32faaaafcb034",
+      "runtime_status": "failed",
+      "issues": [
+        "adapter_failed",
+        "credentials_missing",
+        "host_claim_identity_mismatch",
+        "host_final_unconfirmed",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 5,
+      "issues_truncated": false,
+      "host_final_confirmed": false,
+      "metrics": {
+        "elapsed_seconds": 43.322,
+        "input_tokens": 34486,
+        "output_tokens": 471,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "credentials_missing"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "run_id": "run-11ec8f429b88f28c67c7a124678789c6",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 42.289,
+        "input_tokens": 43771,
+        "output_tokens": 674,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "run_id": "run-64f449cbdfe5fc83a618783ea9f1faaf",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 64.758,
+        "input_tokens": 50304,
+        "output_tokens": 663,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "run_id": "run-a274befaa4a4ce15c7d80d5399202e15",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 43.095,
+        "input_tokens": 45448,
+        "output_tokens": 811,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "run_id": "run-8b1517acc2cc3b97bd9927ad5bed6d20",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 56.281,
+        "input_tokens": 74748,
+        "output_tokens": 1221,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "run_id": "run-6c3dc79c43916ec268d74f997e7dc34a",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 35.891,
+        "input_tokens": 36036,
+        "output_tokens": 552,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "run_id": "run-cce629354fcb458e6d06a4950974e71f",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 48.329,
+        "input_tokens": 60244,
+        "output_tokens": 404,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-35faa491b5f44b66c1bd7aff256f5eef",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.839,
+        "input_tokens": 110521,
+        "output_tokens": 836,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "run_id": "run-fa150a76f0d602f5e73cf88f2c75c188",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 67.922,
+        "input_tokens": 59431,
+        "output_tokens": 786,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "run_id": "run-07d025e6c5a51484937b0aedd8e471c9",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 46.8,
+        "input_tokens": 36033,
+        "output_tokens": 557,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "run_id": "run-7b496c6456ee60be691c954c2832edab",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 51.367,
+        "input_tokens": 57202,
+        "output_tokens": 685,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "run_id": "run-0efcdf5300205b9bf8caab117aded42b",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 41.639,
+        "input_tokens": 57549,
+        "output_tokens": 710,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "run_id": "run-79b40d2a6c879e42fc03e31cc3eb761f",
+      "runtime_status": "failed",
+      "issues": [
+        "adapter_failed",
+        "credentials_missing",
+        "host_claim_identity_mismatch",
+        "host_final_unconfirmed",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 5,
+      "issues_truncated": false,
+      "host_final_confirmed": false,
+      "metrics": {
+        "elapsed_seconds": 39.941,
+        "input_tokens": 34543,
+        "output_tokens": 609,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "credentials_missing"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "run_id": "run-96ad6532357b5420f784329ca95ba22e",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 88.077,
+        "input_tokens": 45684,
+        "output_tokens": 896,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "run_id": "run-6ec8e656235db58b81cb654170162d20",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 31.763,
+        "input_tokens": 35408,
+        "output_tokens": 436,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "run_id": "run-5017514e3624d86d838559569fd0a4e3",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 70.057,
+        "input_tokens": 43720,
+        "output_tokens": 665,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "run_id": "run-84de15eaf0f01017bdbe10e91cd61275",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 46.149,
+        "input_tokens": 43696,
+        "output_tokens": 660,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "run_id": "run-414e6ea64bddcc74024a6193f44edcb1",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 37.813,
+        "input_tokens": 60154,
+        "output_tokens": 600,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "run_id": "run-f963e3082fce907f65f26dda5bf6d174",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.816,
+        "input_tokens": 66020,
+        "output_tokens": 762,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "run_id": "run-8dddad27e584c45919c86f5dc1478617",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 33.859,
+        "input_tokens": 40068,
+        "output_tokens": 469,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "run_id": "run-7d1a51acfc576c7297735e5dcbcaa43b",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.713,
+        "input_tokens": 60141,
+        "output_tokens": 410,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "run_id": "run-e9392b8203921e1e9ff69034291d3de3",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 32.811,
+        "input_tokens": 35526,
+        "output_tokens": 470,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "run_id": "run-c4bc5d6aa4852e41049778d55c5fe3ca",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.318,
+        "input_tokens": 45518,
+        "output_tokens": 827,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "run_id": "run-426beaec12ee2bd7cc9b46cfccf58037",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 42.093,
+        "input_tokens": 57977,
+        "output_tokens": 738,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "run_id": "run-c80f18cb5db40fa15fcaa6bfa92edabd",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 34.623,
+        "input_tokens": 53578,
+        "output_tokens": 640,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "run_id": "run-eae7a0e5696de2667880d1e179df1414",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 53.13,
+        "input_tokens": 57576,
+        "output_tokens": 725,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "run_id": "run-dadf79c434fe19bdcc81de24820820fd",
+      "runtime_status": "failed",
+      "issues": [
+        "adapter_failed",
+        "credentials_missing",
+        "host_claim_identity_mismatch",
+        "host_final_unconfirmed",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 5,
+      "issues_truncated": false,
+      "host_final_confirmed": false,
+      "metrics": {
+        "elapsed_seconds": 46.961,
+        "input_tokens": 34386,
+        "output_tokens": 635,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "credentials_missing"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "run_id": "run-b06f32ae14c3c143fd05765e6f71d1a0",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 39.238,
+        "input_tokens": 47566,
+        "output_tokens": 716,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-628e59aa848c4ef048ec35c9fd1477df",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 68.497,
+        "input_tokens": 52315,
+        "output_tokens": 620,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "run_id": "run-8edb9ac27b26de7d23594820789e6f84",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 104.323,
+        "input_tokens": 125724,
+        "output_tokens": 1603,
+        "tool_calls": 8,
+        "usage_source": "native-rollout",
+        "gate_submissions": 3,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "run_id": "run-6c2973b67c5e5cd26f3f6f4faa03ae3b",
+      "runtime_status": "completed",
+      "issues": [
+        "scenario_not_exercised",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 119.728,
+        "input_tokens": 78758,
+        "output_tokens": 1198,
+        "tool_calls": 7,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": false,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "run_id": "run-434e0f385d7f76072b1e15c7fde70c72",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 74.487,
+        "input_tokens": 60294,
+        "output_tokens": 836,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 0,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "run_id": "run-675ecd71bdffe137736018803560644a",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 52.036,
+        "input_tokens": 87685,
+        "output_tokens": 803,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "run_id": "run-27f114f3183b6870e8d351c8a26f0e43",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 70.371,
+        "input_tokens": 111962,
+        "output_tokens": 1256,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 3,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "run_id": "run-053d4db83cd7eb4e74b195f2ef5f6355",
+      "runtime_status": "partial",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 44.464,
+        "input_tokens": 57790,
+        "output_tokens": 744,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "run_id": "run-d91d4b69685a76b3d3a2de75f4d3a155",
+      "runtime_status": "completed",
+      "issues": [
+        "scenario_not_exercised",
+        "token_budget_exceeded"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 88.624,
+        "input_tokens": 78172,
+        "output_tokens": 1120,
+        "tool_calls": 7,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": false,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "run_id": "run-b09b05a01d0837ff71ad00db5b122d72",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 54.596,
+        "input_tokens": 109917,
+        "output_tokens": 575,
+        "tool_calls": 5,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "run_id": "run-ac7e4d49326736248c0cffe009ee8619",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 92.003,
+        "input_tokens": 35371,
+        "output_tokens": 434,
+        "tool_calls": 2,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 3,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "run_id": "run-5033e6535e79ab21f1d181c8b0a30f20",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 42.297,
+        "input_tokens": 58108,
+        "output_tokens": 528,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "run_id": "run-d86ec5f5ee64d5819f9d6cc4d14eb0bb",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 76.575,
+        "input_tokens": 73999,
+        "output_tokens": 499,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "run_id": "run-c242fdbfd7f97ac433cc03c4c5634639",
+      "runtime_status": "unrecorded",
+      "issues": [
+        "token_budget_exceeded",
+        "unresolved_work"
+      ],
+      "issue_count": 2,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 38.206,
+        "input_tokens": 60004,
+        "output_tokens": 594,
+        "tool_calls": 3,
+        "usage_source": "native-rollout",
+        "gate_submissions": 2,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 1
+      },
+      "scenario_observed": true,
+      "expected_gaps": [
+        "unresolved_work"
+      ],
+      "trial": 1,
+      "kind": "agent-evidence-scored"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "run_id": "run-c2b262f9d30d1614a523e298b5cb9b38",
+      "runtime_status": "completed",
+      "issues": [
+        "token_budget_exceeded"
+      ],
+      "issue_count": 1,
+      "issues_truncated": false,
+      "host_final_confirmed": true,
+      "metrics": {
+        "elapsed_seconds": 52.29,
+        "input_tokens": 58069,
+        "output_tokens": 521,
+        "tool_calls": 4,
+        "usage_source": "native-rollout",
+        "gate_submissions": 1,
+        "dangerous_effect_duplicates": 0,
+        "unresolved_work": 0
+      },
+      "scenario_observed": true,
+      "expected_gaps": [],
+      "trial": 2,
+      "kind": "agent-evidence-scored"
+    }
+  ]
+}
