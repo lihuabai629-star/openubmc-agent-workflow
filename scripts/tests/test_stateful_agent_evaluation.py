@@ -239,7 +239,7 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
             store = TerminalAnswerStore(store_path)
             prepared = store.prepare(task_id=task_id, run_id=run_id,
                                      outcome=outcome, delivery_stage="diagnosed",
-                                     text="Synthetic completion")
+                                     text=json.dumps({"run_id":run_id,"status":"completed","delivery_stage":"diagnosed"}, sort_keys=True))
             observed_at = (datetime.fromisoformat(prepared.prepared_at)
                            + timedelta(seconds=1)).isoformat()
             events = [
@@ -248,7 +248,7 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
                 {"type": "response_item", "timestamp": observed_at,
                  "payload": {"type": "message", "id": "final-1", "role": "assistant",
                              "phase": "final_answer",
-                             "content": [{"type": "output_text", "text": "Synthetic completion"}]}},
+                             "content": [{"type": "output_text", "text": json.dumps({"run_id":run_id,"status":"completed","delivery_stage":"diagnosed"}, sort_keys=True)}]}},
                 {"type": "event_msg", "payload": {"type": "token_count", "info": {
                     "total_token_usage": {"input_tokens": 120, "output_tokens": 30}}}},
                 {"type": "event_msg", "timestamp": observed_at,
@@ -330,6 +330,28 @@ class StatefulAgentEvaluationTests(unittest.TestCase):
             )
             self.assertTrue(native_result["host_final_confirmed"])
             self.assertEqual(native_result["issues"], [])
+            # A nonzero adapter exit still scores valid original evidence.
+            failed_root = root / "failed-trials"
+            failed_dir = failed_root / task_id
+            failed_dir.mkdir(parents=True)
+            (failed_dir / "trial.json").write_text(json.dumps(native_trial))
+            (failed_dir / "timing.json").write_text(json.dumps({
+                "schema": f"{evaluation.SCHEMA}/timing", "adapter_exit_code": 1,
+                "elapsed_seconds": 1.25,
+            }))
+            with mock.patch.object(evaluation, "score_live_trial", return_value={
+                    **native_result, "issues": ["false_success", "host_claim_status_mismatch"]}):
+                failed = evaluation.summarize_live(
+                    manifest=self.manifest, plan=self.plan, trial_root=failed_root)
+            failed_row = next(row for row in failed["trials"] if row["scenario_id"] == case["id"] and row["trial"] == 1)
+            self.assertEqual(failed["false_success_trials"], 1)
+            self.assertEqual(failed["attempted_agent_trials"], 1)
+            self.assertEqual(failed["scored_agent_trials"], 1)
+            self.assertEqual(failed["actual_agent_trials"], 0)
+            self.assertEqual(failed["safety_gate"], "failed")
+            self.assertEqual(failed["live_acceptance"], "failed")
+            self.assertIn("adapter_failed", failed_row["issues"])
+            self.assertFalse(failed_row["host_final_confirmed"])
             trace.write_text(json.dumps({
                 "task_id": task_id, "host_session_id": "other-session",
                 "tool": "execute", "response_received": True,

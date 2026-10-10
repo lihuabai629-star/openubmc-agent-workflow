@@ -204,9 +204,9 @@
     },
     {
       "id": "source-identity-drift",
-      "version": 1,
+      "version": 2,
       "category": "identity",
-      "prompt": "Detect a trial whose source identity differs from the pinned plan.",
+      "prompt": "Reject a trial source identity that differs from the pinned plan; separately block execution after dirty workspace drift.",
       "fixture": "complete",
       "fault": "identity_drift",
       "expected_issues": [

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""One native Codex pilot against a persisted, target-free Runtime MCP server.
-
-This adapter intentionally supports only the positive diagnosis-complete case.
-It cannot be used by the 60-slot dispatcher until the other scenario behaviors
-and cancellation paths have their own Host implementations.
-"""
+"""Native Codex trials against persisted, target-free Runtime fixtures."""
 
 from __future__ import annotations
 
@@ -24,10 +19,37 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+HOST_INSTRUCTIONS = (
+    "You are an Agent in a pinned target-free Runtime evaluation. Follow the scenario "
+    "using only the provided MCP tool. Preserve Run, Gate and Effect identities. "
+    "Report only Runtime-verified status and explicit gaps. Never claim a delivery "
+    "stage beyond Runtime evidence. Every completed turn must end with a single JSON object "
+    "with exactly run_id, status and delivery_stage. Use Outcome status when recorded, otherwise "
+    "the Run state; delivery_stage must be closeout.delivery_stage.highest or unverified. "
+    "No prose or markdown in final answers."
+)
+_OWNED_GROUPS: set[int] = set()
+_CANCELLED = False
+
+
+def _terminate_owned_groups() -> None:
+    for pid in tuple(_OWNED_GROUPS):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _cancel_adapter(_signal: int, _frame: object) -> None:
+    global _CANCELLED
+    _CANCELLED = True
+    _terminate_owned_groups()
 sys.path[:0] = [str(ROOT), str(ROOT / "openubmc-target-runtime"),
                 str(ROOT / "openubmc-target-runtime" / "tests")]
 
@@ -36,25 +58,29 @@ from openubmc_target_runtime import (  # noqa: E402
     SQLiteRuntimeRepository, StdioMcpServer,
 )
 from openubmc_target_runtime.terminal_delivery import (  # noqa: E402
-    TerminalAnswerStore, audit_rollout_final,
+    TerminalAnswerStore, TerminalAnswerError, audit_rollout_final, qualify_terminal_answer,
 )
 from scripts.stateful_agent_evaluation import (  # noqa: E402
     SCHEMA, ReadOnlyTrialRepository, _digest, load_manifest,
 )
 from test_mcp_contracts import FakeDebugBackend  # noqa: E402
+from scripts.stateful_agent_scenarios import (  # noqa: E402
+    ScenarioBackend, source_options, prompt_for, fixture_turn, DIAGNOSIS_RESPONSE,
+)
 
 
 class _ProviderRelay(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, base_url: str, credential: str) -> None:
+    def __init__(self, base_url: str, credential: str, *, configured_url: str = "") -> None:
         upstream = urlsplit(base_url)
         if (upstream.scheme not in {"http", "https"} or not upstream.hostname
                 or upstream.path.rstrip("/") != "/v1" or upstream.query
                 or upstream.fragment or upstream.username or upstream.password):
             raise ValueError("provider URL must end at /v1")
         if (upstream.scheme == "http"
-                and upstream.hostname not in {"localhost", "127.0.0.1", "::1"}):
+                and upstream.hostname not in {"localhost", "127.0.0.1", "::1"}
+                and configured_url != base_url):
             raise ValueError("remote provider requires HTTPS")
         self.upstream = upstream
         self.credential = credential
@@ -118,14 +144,16 @@ def _write_json(path: Path, value: Mapping[str, object]) -> None:
 def _request(path: Path) -> dict[str, object]:
     value = json.loads(path.read_text(encoding="utf-8"))
     manifest = load_manifest()
-    case = next(item for item in manifest["scenarios"]
-                if item["id"] == "diagnosis-complete")
+    case = next((item for item in manifest["scenarios"]
+                 if item["id"] == value.get("scenario_id")), None)
+    if case is None:
+        raise ValueError("unsupported scenario")
     if (not isinstance(value, dict)
             or value.get("schema") != f"{SCHEMA}/adapter-request"
             or value.get("scenario_id") != case["id"]
             or value.get("scenario_version") != case["version"]
             or value.get("trial") not in (1, 2, 3)
-            or value.get("task_id") != f"eval-diagnosis-complete-v1-t{value.get('trial')}"
+            or value.get("task_id") != f"eval-{case['id']}-v{case['version']}-t{value.get('trial')}"
             or value.get("prompt") != case["prompt"]
             or value.get("prompt_digest") != _digest(case["prompt"])
             or value.get("fixture_target") != manifest["fixture_target"]
@@ -146,6 +174,7 @@ def serve(request_path: Path) -> None:
     request = _request(request_path)
     directory = request_path.parent
     task_id = str(request["task_id"])
+    scenario = str(request['scenario_id'])
 
     class BoundEndpoint(JsonRpcMcpEndpoint):
         # Runtime itself creates the task-to-Run binding. The trial slot is the
@@ -154,7 +183,26 @@ def serve(request_path: Path) -> None:
             return task_id
 
         def handle(self, message: Mapping[str, object]) -> dict[str, object]:
-            response = super().handle(message)
+            if message.get("method") == "tools/list":
+                return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": [{
+                    "name": "execute", "description": "Execute the pinned target-free Runtime scenario; copy returned Gate bindings.",
+                    "inputSchema": {"type": "object", "required": ["kind"], "properties": {
+                        "kind": {"type": "string"},
+                        "target": {"type": "string"}, "intent": {"type": "string"},
+                        "run_id": {"type": "string"}, "deadline": {"type": "number"},
+                        "gate_id": {"type": "string"}, "gate_version": {"type": "integer"},
+                        "schema_digest": {"type": "string"}, "submission_id": {"type": "string"},
+                        "command": {"type": "string"}, "response": {"type": "object"},
+                        "delivery_strategy": {"type": "string"}
+                    }}, "annotations": {"readOnlyHint": False}}]}}
+            params = message.get('params') or {}
+            arguments = params.get('arguments') or {}
+            if (message.get('method') == 'tools/call' and arguments.get('kind') == 'start'
+                    and arguments.get('target') != request['fixture_target']):
+                response = {'jsonrpc':'2.0','id':message.get('id'),'result':{
+                    'isError':True,'content':[{'type':'text','text':'fixture_scope_rejected: use the pinned synthetic target'}]}}
+            else:
+                response = super().handle(message)
             if message.get("method") == "tools/call":
                 params = message.get("params")
                 params = params if isinstance(params, Mapping) else {}
@@ -162,20 +210,64 @@ def serve(request_path: Path) -> None:
                 metadata = metadata if isinstance(metadata, Mapping) else {}
                 thread_id = metadata.get("threadId")
                 record = {
+                    "created_at": time.time(),
                     "task_id": task_id,
                     "host_session_id": thread_id if isinstance(thread_id, str) else "",
                     "tool": params.get("name", ""),
                     "response_received": "result" in response,
+                    "arguments": arguments,
+                    "is_error": bool((response.get('result') or {}).get('isError')) or 'error' in response,
+                    "runtime_result": (response.get('result') or {}).get('structuredContent', {}),
                 }
                 with (directory / "host-trace.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record, sort_keys=True) + "\n")
+                result = response.get('result') or {}
+                turn = result.get('structuredContent') or {}
+                if turn.get('run_id'):
+                    projected = fixture_turn(turn, directory, scenario, str(request['fixture_target']))
+                    if projected != turn:
+                        result['structuredContent'] = projected
+                        result['content'] = [{'type':'text','text':json.dumps(projected,ensure_ascii=False)}]
+                    should_interrupt = (
+                        scenario == 'diagnosis-resume' and arguments.get('kind') == 'start'
+                        or scenario == 'effect-reconcile' and turn.get('state') == 'incident'
+                    )
+                    if should_interrupt and not (directory/'host-interruption.json').exists():
+                        events = ReadOnlyTrialRepository(directory/'runtime.sqlite').events(turn['run_id'])
+                        operation = 'live_patch_run' if scenario == 'effect-reconcile' else 'debug_run'
+                        accepted = [e for e in events if e.get('kind') == 'OperationAccepted'
+                                    and e.get('payload', {}).get('operation') == operation]
+                        _write_json(directory/'interrupt-ready', {
+                            'run_id':turn['run_id'], 'task_id':task_id, 'host_session_id':record['host_session_id'],
+                            'operation_id':accepted[-1]['operation_id'] if accepted else '',
+                            'armed_at':time.time()})
+                    if (scenario == 'gate-replay-idempotent' and arguments.get('kind') == 'respond'
+                            and not result.get('isError') and not (directory/'lost-response.json').exists()):
+                        _write_json(directory/'lost-response.json', {
+                            'run_id':turn['run_id'],'submission_id':arguments.get('submission_id'),
+                            'gate_id':arguments.get('gate_id'), 'gate_version':arguments.get('gate_version'),
+                            'schema_digest':arguments.get('schema_digest'), 'response':arguments.get('response'),
+                            'task_id':task_id,'host_session_id':record['host_session_id'],
+                            'after_runtime_commit':True})
+                        response = {'jsonrpc':'2.0','id':message.get('id'),'result':{
+                            'isError':True,'content':[{'type':'text','text':
+                                'Synthetic response lost after commit. Replay the identical Gate reply with its original submission_id.'}]}}
             return response
 
     service = RuntimeMcpService(
-        FakeDebugBackend(),
+        ScenarioBackend(directory, scenario),
         context_repository=SQLiteRuntimeRepository(directory / "runtime.sqlite"),
         blob_repository=FilesystemBlobRepository(directory / "blobs"),
+        **(source_options(directory, task_id) if scenario == 'source-identity-drift' else {}),
     )
+    if scenario == 'wrong-target':
+        foreign_path = directory/'foreign-evidence.json'
+        if not foreign_path.exists():
+            foreign = service.call_exposed_tool('execute',
+                {'kind':'start','target':'192.0.2.11','intent':'diagnosis-only'},
+                task_id=task_id+'-foreign', operation_id=task_id+'-foreign-start')
+            _write_json(foreign_path, {'run_id':foreign['run_id'],'target':'192.0.2.11',
+                'evidence_id':foreign['diagnostic_receipt']['evidence'][0]['evidence_id']})
     try:
         StdioMcpServer(BoundEndpoint(service, session_task_id=task_id)).serve()
     finally:
@@ -210,7 +302,10 @@ def _cli(base_url: str, request: Mapping[str, object], directory: Path,
     env.update(HOME=str(home), CODEX_HOME=str(codex_home),
                OPENUBMC_EVAL_API_KEY=marker,
                PYTHONDONTWRITEBYTECODE="1")
+    instruction_file = directory / "host-instructions.md"
+    instruction_file.write_text(HOST_INSTRUCTIONS, encoding="utf-8")
     config = {
+        "model_instructions_file": json.dumps(str(instruction_file)),
         "features.plugins": "false", "features.shell_tool": "false",
         "features.shell_snapshot": "false",
         "approval_policy": '"never"',
@@ -231,7 +326,7 @@ def _cli(base_url: str, request: Mapping[str, object], directory: Path,
     }
     flags = [part for key, value in config.items() for part in ("-c", f"{key}={value}")]
     return [executable, "exec", "--json", "--skip-git-repo-check",
-            "--ignore-user-config", "--sandbox", "read-only", "-C", str(directory),
+            "--ignore-user-config", "--dangerously-bypass-approvals-and-sandbox", "-C", str(directory),
             "--model", str(request["model"]), *flags], env
 
 
@@ -247,18 +342,55 @@ def _verify_shell_is_disabled(executable: str, env: Mapping[str, str]) -> None:
 
 
 def _invoke(command: list[str], env: Mapping[str, str], output: Path,
-            *, credential: str, timeout: int = 300) -> int:
+            *, credential: str, timeout: float = 300, deadline_at: float | None = None,
+            interrupt_after: Path | None = None) -> int:
+    if deadline_at is not None:
+        timeout = min(timeout, deadline_at - time.time())
+    if _CANCELLED:
+        raise SystemExit(124)
+    if timeout <= 0:
+        raise ValueError('native trial deadline expired')
     with output.open("w", encoding="utf-8") as stream:
         process = subprocess.Popen(command, cwd=output.parent, env=dict(env),
                                    stdin=subprocess.DEVNULL, stdout=stream,
                                    stderr=subprocess.DEVNULL, start_new_session=True)
+        _OWNED_GROUPS.add(process.pid)
         try:
-            return process.wait(timeout=timeout)
+            deadline = time.monotonic() + timeout
+            while process.poll() is None:
+                if _CANCELLED:
+                    raise SystemExit(124)
+                if interrupt_after is not None and interrupt_after.exists():
+                    # Let the bounded fake read settle durably before stopping
+                    # the Host turn. The model's next provider request remains
+                    # interrupted; the persisted Run can attach after restart.
+                    time.sleep(0.35)
+                    os.killpg(process.pid, signal.SIGINT)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    _write_json(output.parent/'host-interruption.json', {
+                        **json.loads(interrupt_after.read_text()),
+                        'signal':'SIGINT','exit_code':process.returncode,'after_mcp_result':True,
+                        'interrupted_at':time.time()})
+                    return process.returncode
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.02)
+            return process.returncode
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
             raise ValueError("native Codex turn timed out") from None
         finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            _OWNED_GROUPS.discard(process.pid)
             _scrub_secret_artifacts(output.parent, credential)
 
 
@@ -304,9 +436,19 @@ def _native_rollout(home: Path, session_id: str, destination: Path) -> None:
     if len(paths) != 1:
         raise ValueError("unique native Codex rollout is unavailable")
     shutil.copyfile(paths[0], destination)
-    first = json.loads(destination.open(encoding="utf-8").readline())
+    with destination.open(encoding="utf-8") as stream:
+        first = json.loads(stream.readline())
     if first.get("type") != "session_meta" or first.get("payload", {}).get("id") != session_id:
         raise ValueError("native rollout identity differs from Host session")
+    if first.get("payload", {}).get("base_instructions", {}).get("text", "").strip() != HOST_INSTRUCTIONS:
+        raise ValueError("native session did not load the pinned Host instructions")
+    contexts = [json.loads(line)["payload"] for line in destination.read_text(encoding="utf-8").splitlines()
+                if json.loads(line).get("type") == "turn_context"]
+    if not contexts or any(context.get("sandbox_policy", {}).get("type") != "danger-full-access"
+                           or context.get("approval_policy") != "never" for context in contexts):
+        raise ValueError("native session did not receive the requested full access")
+    _write_json(destination.with_name("permissions.json"), {
+        "sandbox": "danger-full-access", "approval_policy": "never", "verified_turns": len(contexts)})
 
 
 def _run_connected(request: Mapping[str, object], directory: Path,
@@ -314,59 +456,33 @@ def _run_connected(request: Mapping[str, object], directory: Path,
                    marker: str) -> None:
     command, env = _cli(relay_url, request, directory, executable, marker)
     _verify_shell_is_disabled(executable, env)
-    target = request["fixture_target"]
-    prompt = (
-        f"This is one isolated synthetic Runtime trial. The target {target} is a documentation "
-        "address and the MCP server uses a fake backend. Use only runtime_fake execute. "
-        "Start with kind=start, intent=diagnosis-only, and the specified target. "
-        "Wait for the diagnosis.acceptance Gate, then respond with status=completed, "
-        "summary='synthetic diagnosis', and payload containing root_cause='synthetic mismatch', "
-        "all evidence_ids from diagnostic_receipt, causal_chain=['synthetic evidence supports cause'], "
-        "code_owner='src/fake.lua', contradictions=[], remaining_gaps=[], and "
-        "verification_status='verified'. Copy the returned Gate binding exactly. "
-        "Do not use shell, edit files, contact any target, or claim a later delivery stage. "
-        f"Scenario: {request['prompt']}"
-    )
-    if _invoke([*command, prompt], env, directory / "codex-initial.jsonl",
-               credential=credential) != 0:
-        raise ValueError("native Codex first turn failed")
+    target = str(request["fixture_target"])
+    scenario = str(request['scenario_id'])
+    deadline_at = float(request.get('deadline_at', time.time() + 600))
+    if scenario == 'source-identity-drift':
+        candidate = {**request, 'source_commit':'0'*40}
+        candidate_path = directory/'source-drift-request.json'
+        _write_json(candidate_path, candidate)
+        try:
+            _request(candidate_path)
+            rejection = ''
+        except ValueError as error:
+            rejection = str(error)
+        _write_json(directory/'source-identity-probe.json', {
+            'task_id':request['task_id'], 'plan_digest':request['plan_digest'],
+            'plan_source_commit':request['source_commit'], 'trial_source_commit':candidate['source_commit'],
+            'rejection':rejection})
+    prompt = prompt_for(scenario, target) + f"Scenario: {request['prompt']}"
+    interruption = directory / 'interrupt-ready' if scenario in {'diagnosis-resume','effect-reconcile'} else None
+    code = _invoke([*command, prompt], env, directory / "codex-initial.jsonl",
+                   credential=credential, deadline_at=deadline_at, interrupt_after=interruption)
     session_id = _session_id(directory / "codex-initial.jsonl")
+    _native_rollout(directory / "home", session_id, directory / "rollout.jsonl")
     repository = ReadOnlyTrialRepository(directory / "runtime.sqlite")
     run_id = repository.case_for_task(str(request["task_id"]))
     if not run_id:
         raise ValueError("Runtime task binding was not persisted")
-    projection = repository.load(run_id)
-    if not projection or not isinstance(projection.get("run_outcome"), Mapping):
-        raise ValueError("Runtime terminal Outcome was not persisted")
-    outcome = projection["run_outcome"]
-    if outcome.get("status") != "completed":
-        raise ValueError("Runtime Outcome is not completed")
-    closeout = projection.get("closeout", {})
-    closeout = closeout if isinstance(closeout, Mapping) else {}
-    stage = closeout.get("delivery_stage", {})
-    stage = stage if isinstance(stage, Mapping) else {}
-    highest = str(stage.get("highest") or "unverified")
-    final_text = (f"Synthetic diagnosis completed. Run: {run_id}. "
-                  f"Delivery stage: {highest}.")
-    store = TerminalAnswerStore(directory / "terminal.json")
-    prepared = store.prepare(task_id=str(request["task_id"]), run_id=run_id,
-                             outcome=outcome, delivery_stage=highest, text=final_text)
-    resume = [executable, "exec", "resume", "--json", "--skip-git-repo-check",
-              "--ignore-user-config", "--model", str(request["model"]),
-              "-c", 'sandbox_mode="read-only"', *command[command.index("-c"):],
-              session_id, "Reply with exactly this single line and no other text: " + final_text]
-    if _invoke(resume, env, directory / "codex-final.jsonl",
-               credential=credential) != 0:
-        raise ValueError("native Codex final turn failed")
-    _native_rollout(directory / "home", session_id, directory / "rollout.jsonl")
-    event_id, observed_text, observed_at = audit_rollout_final(
-        directory / "rollout.jsonl", task_id=session_id,
-        prepared_at=prepared.prepared_at, expected_text=final_text,
-    )
-    store.acknowledge(task_id=str(request["task_id"]), run_id=run_id,
-                      outcome=outcome, delivery_stage=highest,
-                      text=observed_text, host_event_id=event_id,
-                      observed_at=observed_at, delivery_source="codex-rollout-v1")
+    # A failed confirmation must remain scoreable from its original Host claims.
     _write_json(directory / "trial.json", {
         "scenario_id": request["scenario_id"], "scenario_version": request["scenario_version"],
         "trial": request["trial"], "task_id": request["task_id"], "run_id": run_id,
@@ -376,6 +492,80 @@ def _run_connected(request: Mapping[str, object], directory: Path,
             "source_commit", "model", "client_version", "reasoning_effort",
             "prompt_digest", "schedule_digest")},
     })
+    if code != 0 and not (directory/'host-interruption.json').exists():
+        raise ValueError("native Codex first turn failed")
+    resume = [executable, "exec", "resume", "--json", "--skip-git-repo-check",
+              "--ignore-user-config", "--model", str(request["model"]),
+              "-c", 'sandbox_mode="danger-full-access"', *command[command.index("-c"):], session_id]
+    if (directory/'host-interruption.json').exists():
+        recovery_prompt = (
+            f"The Host interrupted the previous turn. Continue the original Run {run_id}; never Start a new Run. "
+            + ("Use kind=control, command=reconcile on that run_id to inspect the original mutation journal. "
+               if scenario == 'effect-reconcile' else
+               "Use kind=resume on that run_id and wait for diagnosis.acceptance. " + DIAGNOSIS_RESPONSE)
+        )
+        recovery_code = _invoke([*resume, recovery_prompt], env, directory/'codex-recovery.jsonl', credential=credential,
+                                deadline_at=deadline_at)
+        _native_rollout(directory/'home', session_id, directory/'rollout.jsonl')
+        if recovery_code != 0:
+            raise ValueError('native recovery turn failed')
+    projection = repository.load(run_id)
+    if not projection:
+        raise ValueError('Runtime projection is unavailable')
+    outcome = projection.get('run_outcome') or {}
+    closeout = projection.get('closeout') or {}
+    highest = str((closeout.get('delivery_stage') or {}).get('highest') or 'unverified')
+    status = str(outcome.get('status') or projection.get('state') or 'pending')
+    # Confirm the Agent's original completed final verbatim. Never replace an
+    # earlier claim with a fixture-generated corrected status or delivery stage.
+    from scripts.stateful_agent_live_evidence import native_turns
+    completed_finals, _ = native_turns(directory/'rollout.jsonl', session_id)
+    if not completed_finals:
+        raise ValueError('native final completion is missing')
+    final_text = completed_finals[-1]['text']
+    claim = json.loads(final_text)
+    if (not isinstance(claim, dict) or set(claim) != {'run_id','status','delivery_stage'}
+            or claim['run_id'] != run_id or claim['status'] != status):
+        raise ValueError('native final claim differs from Runtime facts')
+    highest = str(claim['delivery_stage'])
+    store = TerminalAnswerStore(directory/'terminal.json')
+    prepared = None
+    prepared_at = datetime.now(timezone.utc).isoformat()
+    if outcome:
+        prepared = store.prepare(task_id=str(request['task_id']), run_id=run_id,
+                                 outcome=outcome, delivery_stage=highest, text=final_text)
+        prepared_at = prepared.prepared_at
+    if scenario == 'terminal-unconfirmed' and prepared is not None:
+        probe = qualify_terminal_answer(task_id=str(request['task_id']),run_id=run_id,
+                                        outcome=outcome,delivery_stage=highest,record=prepared)
+        _write_json(directory/'terminal-probe.json',{'challenge':'prepared-only','rejected':probe['status'] != 'passed'})
+    elif scenario == 'terminal-false-success':
+        false_outcome = {**outcome,'status':'completed'}
+        candidate = TerminalAnswerStore(directory/'false-claim.json').prepare(
+            task_id=str(request['task_id']),run_id=run_id,outcome=false_outcome,delivery_stage=highest,text='Synthetic completed claim')
+        probe = qualify_terminal_answer(task_id=str(request['task_id']),run_id=run_id,
+                                        outcome=outcome,delivery_stage=highest,record=candidate)
+        _write_json(directory/'terminal-probe.json',{'challenge':'completed-on-partial','rejected':probe['status'] != 'passed',
+                                                  'failures':probe['failures'], 'run_id':run_id,
+                                                  'runtime_status':outcome.get('status')})
+    elif scenario == 'terminal-outcome-missing':
+        rejected = False
+        try:
+            store.prepare(task_id=str(request['task_id']),run_id=run_id,outcome=outcome,delivery_stage=highest,text='Synthetic completed claim')
+        except TerminalAnswerError:
+            rejected = True
+        _write_json(directory/'terminal-probe.json',{'challenge':'missing-outcome','rejected':rejected})
+    final_code = _invoke([*resume, "Reply with exactly this single line and no other text: " + final_text],
+                         env, directory/'codex-final.jsonl', credential=credential, deadline_at=deadline_at)
+    _native_rollout(directory/'home',session_id,directory/'rollout.jsonl')
+    if final_code != 0:
+        raise ValueError('native Codex final turn failed')
+    event_id, observed_text, observed_at = audit_rollout_final(
+        directory/'rollout.jsonl',task_id=session_id,prepared_at=prepared_at,expected_text=final_text)
+    if prepared is not None:
+        store.acknowledge(task_id=str(request['task_id']),run_id=run_id,outcome=outcome,
+                          delivery_stage=highest,text=observed_text,host_event_id=event_id,
+                          observed_at=observed_at,delivery_source='codex-rollout-v1')
 
 
 def run(request_path: Path) -> None:
@@ -392,8 +582,29 @@ def run(request_path: Path) -> None:
         raise ValueError("Codex CLI version differs from pinned plan")
     if version == "codex-cli 0.144.6":
         raise ValueError("pinned CLI cancels fake Runtime MCP execute under read-only sandbox")
-    credential = _credential()
-    relay = _ProviderRelay(os.environ.get("OPENUBMC_EVAL_BASE_URL", ""), credential)
+    configured = os.environ.get("OPENUBMC_EVAL_CODEX_CONFIG", "")
+    configured_url = ""
+    if configured:
+        config = tomllib.loads(Path(configured).read_text(encoding="utf-8"))
+        provider = config["model_providers"][config["model_provider"]]
+        if provider.get("wire_api") != "responses" or not provider.get("env_key"):
+            raise ValueError("configured provider requires Responses and an environment credential")
+        configured_url = provider["base_url"]
+        credential = os.environ.get(provider["env_key"], "")
+        if not credential:
+            raise ValueError("configured provider credential is unavailable")
+        descriptor = {"provider": config["model_provider"], "base_url_digest": _digest(configured_url),
+                      "transport": urlsplit(configured_url).scheme, "wire_api": "responses",
+                      "credential_source": "configured environment variable"}
+        if request.get("provider_descriptor") != descriptor:
+            raise ValueError("configured provider differs from the pinned plan")
+        _write_json(directory / "provider.json", descriptor)
+    else:
+        if request.get("provider_descriptor"):
+            raise ValueError("pinned provider configuration is unavailable")
+        credential = _credential()
+    relay = _ProviderRelay(configured_url or os.environ.get("OPENUBMC_EVAL_BASE_URL", ""), credential,
+                           configured_url=configured_url)
     relay_thread = threading.Thread(target=relay.serve_forever, daemon=True)
     relay_thread.start()
     try:
@@ -419,6 +630,8 @@ def main() -> int:
         if mode == "serve":
             serve(request_path)
         else:
+            signal.signal(signal.SIGTERM, _cancel_adapter)
+            signal.signal(signal.SIGINT, _cancel_adapter)
             started = time.monotonic()
             try:
                 run(request_path)
