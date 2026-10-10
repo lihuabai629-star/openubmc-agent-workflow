@@ -31,7 +31,7 @@ HOST_INSTRUCTIONS = (
     "Report only Runtime-verified status and explicit gaps. Never claim a delivery "
     "stage beyond Runtime evidence. Every completed turn must end with a single JSON object "
     "with exactly run_id, status and delivery_stage. Use Outcome status when recorded, otherwise "
-    "the Run state; delivery_stage must be closeout.delivery_stage.highest or unverified. "
+    "the returned Turn state; delivery_stage must be closeout.delivery_stage.highest or unverified. "
     "No prose or markdown in final answers."
 )
 _OWNED_GROUPS: set[int] = set()
@@ -515,7 +515,8 @@ def _run_connected(request: Mapping[str, object], directory: Path,
     outcome = projection.get('run_outcome') or {}
     closeout = projection.get('closeout') or {}
     highest = str((closeout.get('delivery_stage') or {}).get('highest') or 'unverified')
-    status = str(outcome.get('status') or projection.get('state') or 'pending')
+    from openubmc_target_runtime.context_runtime import operator_run_projection
+    status = str(outcome.get('status') or operator_run_projection(projection)['turn_state'])
     # Confirm the Agent's original completed final verbatim. Never replace an
     # earlier claim with a fixture-generated corrected status or delivery stage.
     from scripts.stateful_agent_live_evidence import native_turns
