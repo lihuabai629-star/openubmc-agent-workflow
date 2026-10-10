@@ -1,12 +1,21 @@
 """Native Windows export ACL, idempotency and explicit retention acceptance."""
 import os
+import importlib
+import runpy
 from pathlib import Path
 import tempfile
 import time
 import unittest
 
-from openubmc_target_runtime.host_continuity import HostContinuity
-from openubmc_target_runtime.record_export import RecordExportStore, export_task_records
+tool = Path(__file__).resolve().parents[1] / "tools/record_export.py"
+if not tool.is_file():
+    tool = Path(__file__).resolve().parents[2] / "plugins/openubmc/skills/openubmc-target-runtime/tools/record_export.py"
+api = runpy.run_path(str(tool))
+RecordExportStore = api["RecordExportStore"]
+export_task_records = api["export_task_records"]
+HostContinuity = importlib.import_module(api["RECORD_PACKAGE_NAME"] + ".host_continuity").HostContinuity
+windows_private = importlib.import_module(api["RECORD_PACKAGE_NAME"] + ".windows_private")
+
 
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows ACL APIs")
@@ -19,7 +28,7 @@ class WindowsRecordExportTests(unittest.TestCase):
         self.document = export_task_records(handoff, producer_commit="b" * 40)
 
     def test_export_creates_private_acl_and_identical_write_reuses_same_file(self):
-        from openubmc_target_runtime.windows_private import verify_private_path
+        verify_private_path = windows_private.verify_private_path
         store = RecordExportStore(self.root / "exports")
         path = store.write(self.document)
         verify_private_path(store.root)
@@ -40,7 +49,7 @@ class WindowsRecordExportTests(unittest.TestCase):
         self.assertTrue(other.exists())
 
     def test_existing_shared_directory_is_rejected_without_repairing_it(self):
-        from openubmc_target_runtime.windows_private import WindowsPrivateError
+        WindowsPrivateError = windows_private.WindowsPrivateError
         target = self.root / "shared"
         target.mkdir()
         with self.assertRaises((ValueError, WindowsPrivateError)):

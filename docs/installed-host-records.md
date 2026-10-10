@@ -39,6 +39,17 @@ snapshot. Only exact Run/repository/clean-commit/command-digest/log-digest bindi
 survive projection. Missing evidence stays unavailable. Export validation checks
 schema and integrity, not the trust of an arbitrary file's producer.
 
+On native Windows, use the dependency-free offline tool with an existing handoff
+exported by the Runtime Host:
+
+```powershell
+python /path/to/installed/openubmc/skills/openubmc-target-runtime/tools/record_export.py export `
+  --handoff handoff.json --producer-commit FULL_SOURCE_COMMIT --output-directory PRIVATE_DIRECTORY
+```
+
+This offline command uses the record modules and current-user ACLs. The public
+plugin's execution backend on Windows remains WSL.
+
 ## Measurement registration
 
 Records use v2. With no trusted source, usage, time and human intervention remain
