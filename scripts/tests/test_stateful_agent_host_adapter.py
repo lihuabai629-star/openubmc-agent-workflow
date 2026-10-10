@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
+import json
 import http.server
 from pathlib import Path
 import tempfile
 import threading
+import signal
+import subprocess
+import sys
+import time
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
@@ -106,10 +111,38 @@ class StatefulAgentHostAdapterTests(unittest.TestCase):
             self.assertNotIn("CLI_PROXY_API_KEY", env)
             self.assertIn("features.shell_tool=false", command)
             self.assertIn("features.shell_snapshot=false", command)
-            self.assertIn("read-only", command)
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
             self.assertIn('mcp_servers.runtime_fake.enabled_tools=["execute"]', command)
             self.assertIn('mcp_servers.runtime_fake.tools.execute.approval_mode="approve"', command)
-            self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
+            self.assertNotIn("read-only", command)
+            self.assertEqual((Path(raw) / 'host-instructions.md').read_text(), adapter.HOST_INSTRUCTIONS)
+            self.assertTrue(any(item.startswith('model_instructions_file=') for item in command))
+
+    def test_selected_http_provider_does_not_authorize_a_different_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires HTTPS"):
+            adapter._ProviderRelay("http://example.com/v1", "fixture-key",
+                                   configured_url="http://other.example/v1")
+        selected = adapter._ProviderRelay("http://example.com/v1", "fixture-key",
+                                          configured_url="http://example.com/v1")
+        selected.server_close()
+
+    def test_native_rollout_rejects_reduced_actual_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            session = '11111111-1111-1111-1111-111111111111'
+            sessions = home / '.codex/sessions'
+            sessions.mkdir(parents=True)
+            source = sessions / (session + '.jsonl')
+            events = [{'type': 'session_meta', 'payload': {'id': session, 'base_instructions': {'text': adapter.HOST_INSTRUCTIONS}}},
+                      {'type': 'turn_context', 'payload': {'sandbox_policy': {'type': 'read-only'},
+                                                          'approval_policy': 'never'}}]
+            source.write_text('\n'.join(map(json.dumps, events))+'\n')
+            with self.assertRaisesRegex(ValueError, 'requested full access'):
+                adapter._native_rollout(home, session, home / 'rollout.jsonl')
+            events[1]['payload']['sandbox_policy']['type'] = 'danger-full-access'
+            source.write_text('\n'.join(map(json.dumps, events))+'\n')
+            adapter._native_rollout(home, session, home / 'rollout.jsonl')
+            self.assertEqual(json.loads((home/'permissions.json').read_text())['verified_turns'], 1)
 
     def test_secret_artifact_is_removed_before_attempt_fails(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -122,6 +155,40 @@ class StatefulAgentHostAdapterTests(unittest.TestCase):
                 adapter._scrub_secret_artifacts(root, "fake-evaluation-key")
             self.assertFalse(leaked.exists())
             self.assertTrue(retained.exists())
+
+    def test_outer_timeout_reaps_owned_native_group_and_preserves_other_process(self) -> None:
+        from scripts import stateful_agent_evaluation as evaluation
+        with tempfile.TemporaryDirectory() as raw:
+            root=Path(raw)
+            worker=root/'worker.py'
+            worker.write_text('import os,subprocess,sys,time\n'
+                'child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(120)"])\n'
+                'open(sys.argv[1],"w").write(str(os.getpid())+"\\n"+str(child.pid))\n'
+                'time.sleep(120)\n')
+            launcher=root/'adapter'
+            launcher.write_text('#!'+sys.executable+'\nimport signal,sys,os\n'
+                'from pathlib import Path\nsys.path.insert(0,'+repr(str(adapter.ROOT))+')\n'
+                'from scripts import stateful_agent_host_adapter as a\n'
+                'signal.signal(signal.SIGTERM,a._cancel_adapter)\n'
+                'p=Path(sys.argv[1]).parent\n'
+                'a._invoke([sys.executable,'+repr(str(worker))+',str(p/"owned-pids")],'
+                'dict(os.environ),p/"native.jsonl",credential="fixture-key",timeout=120)\n')
+            launcher.chmod(0o700)
+            manifest=evaluation.load_manifest()
+            plan=evaluation.build_plan(manifest,model='fixture',client_version='fixture',source_commit='a'*40)
+            other=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)'])
+            try:
+                with mock.patch.object(evaluation,'_git_commit',return_value='a'*40):
+                    result=evaluation.run_one_trial(manifest=manifest,plan=plan,adapter=launcher,
+                        output_root=root/'trials',timeout_seconds=2,scenario_id='diagnosis-complete',trial=1)
+                self.assertEqual(result['attempts'][0]['adapter_exit_code'],124)
+                self.assertIsNone(other.poll())
+                pids=[int(v) for v in (root/'trials/eval-diagnosis-complete-v1-t1/owned-pids').read_text().splitlines()]
+                for pid in pids:
+                    stat=Path(f'/proc/{pid}/stat')
+                    self.assertTrue(not stat.exists() or stat.read_text().split()[2]=='Z', f'owned child {pid} remains running')
+            finally:
+                other.kill();other.wait()
 
 
 if __name__ == "__main__":
