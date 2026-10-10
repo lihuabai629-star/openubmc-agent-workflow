@@ -22,6 +22,7 @@ FILES = {
     'behavior/test_plugin_credentials.py': 'scripts/tests/test_plugin_credentials.py',
     'behavior/test_plugin_disable_migration.py': 'scripts/tests/test_plugin_disable_migration.py',
     'behavior/test_plugin_python_entrypoints.py': 'scripts/tests/test_plugin_python_entrypoints.py',
+    'behavior/test_plugin_skill_entry.py': 'scripts/tests/test_plugin_skill_entry.py',
     'behavior/config.test.mjs': 'openubmc-kb-mcp/test/config.test.js',
 }
 

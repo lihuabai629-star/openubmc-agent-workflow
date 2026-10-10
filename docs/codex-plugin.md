@@ -27,6 +27,24 @@ It migrates legacy Codex entries only when the previous installer state proves t
 A conflicting or subsequently edited configuration produces an error and retains its recovery journal.
 Restart the Codex task after installation so it loads the selected plugin.
 
+Trusted `SessionStart` and `UserPromptSubmit` hooks point openUBMC tasks to the
+packaged [workflow entry](../openubmc-debug/references/skill-routing.md).
+Prompt-submit guidance remains available when Python or prepared Runtime
+dependencies are unavailable. It does not inspect the prompt, connect a target,
+or write configuration; the existing Host workspace capture still receives the
+event when its backend is available.
+Python discovery, probes and backend execution share a ten-second deadline,
+leaving time to return local guidance before the Host's fifteen-second timeout.
+Each workflow Skill links the same reference for phase changes. Other tasks
+and fully specified mechanical edits keep their ordinary execution path.
+Actual Skill reads and stage behavior must still be checked in the Host trace;
+hook registration or a displayed Skill name does not establish compliance.
+On Hosts that enforce Hook trust, check the native `hooks/list` result as well:
+an installed, enabled handler can still be `untrusted` or `modified` and will
+not run. Trust applies to each reviewed handler's current hash in the Host's
+user configuration; a package upgrade can require a new review. Keep normal
+Hook trust enforcement active when qualifying delivery of the entry hint.
+
 For a separate installation, supply `--home /absolute/home --codex-home /absolute/codex-home`.
 The same paths must be used for audit, update, rollback, and removal.
 

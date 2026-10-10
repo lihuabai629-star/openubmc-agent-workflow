@@ -239,6 +239,14 @@ class PluginPackageTests(unittest.TestCase):
                 return json.loads(result.stdout)
             context = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'SessionStart'})
             self.assertIn('cancelled', context['hookSpecificOutput']['additionalContext'])
+            self.assertIn('skill-routing.md', context['hookSpecificOutput']['additionalContext'])
+            submitted = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'UserPromptSubmit',
+                                     'cwd': str(self.source)})
+            self.assertIn('skill-routing.md', submitted['hookSpecificOutput']['additionalContext'])
+            from openubmc_target_runtime.host_records import InstalledHostRecords
+            selection = InstalledHostRecords(state).workspace_context('fixture-task')
+            self.assertEqual(selection['repositories'][0]['commit'], subprocess.check_output(
+                ['git', '-C', str(self.source), 'rev-parse', 'HEAD'], text=True).strip())
             pending = invoke_hook({'session_id': 'fixture-task', 'hook_event_name': 'Stop',
                                    'last_assistant_message': None, 'stop_hook_active': False})
             self.assertEqual(pending['decision'], 'block')
