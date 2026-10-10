@@ -1,0 +1,20 @@
+[
+  {
+    "batch": "initial-60",
+    "source_commit": "b56b1fa17c9af97d9962826ffe0cb98063e5f58e",
+    "raw_file_count": 4839,
+    "private_file_index_sha256": "40173538036f55449e3eb81b8e1694e6384825940e21e18adebdd1df7346efd3",
+    "summary_sha256": "51086784c3fdb4226de29a45da2994573cef8212e7bab69fea774ee46d78b856",
+    "plan_sha256": "310547cc336a0dcad17a66836da1c62ad14ba96b846d425c85505400d97765ff",
+    "raw_transcripts_published": false
+  },
+  {
+    "batch": "audited-60",
+    "source_commit": "892f2cd8ac5c8d04a4ec81635a2aaf4edee7d513",
+    "raw_file_count": 4863,
+    "private_file_index_sha256": "1b31941d18605691a3569f8ffa3dec1255be1547abe53553607b97195efcb7d8",
+    "summary_sha256": "79d5bb9006294cd499b134fe8e5cd2e64109d6e9497091e37c5cbaa77077db69",
+    "plan_sha256": "637261c262ced67fa1571c89d8c7306f28863b4ad8c39619ba53645ba9154b3a",
+    "raw_transcripts_published": false
+  }
+]

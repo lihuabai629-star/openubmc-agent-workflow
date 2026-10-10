@@ -1,0 +1,442 @@
+{
+  "schema": "openubmc-agent-workflow.stateful-agent-evaluation.v1/plan",
+  "manifest_digest": "sha256:09bb700d9dcff2e6ef6178d9652133f500ffae9922e42fb186ff221a00bf4db3",
+  "source_commit": "892f2cd8ac5c8d04a4ec81635a2aaf4edee7d513",
+  "model": "gpt-6.1-sol",
+  "client_version": "codex-cli/0.161.0",
+  "reasoning_effort": "high",
+  "baseline_source_commit": "",
+  "seed": 285,
+  "schedule_digest": "sha256:eef87ba98a931b0760fc3239ba86d531a25079ad398945a4a03d1c175009f706",
+  "trials_per_scenario": 3,
+  "schedule": [
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-terminal-outcome-missing-v1-t2",
+      "prompt_digest": "sha256:7f2fe3000a93695f4a8329f0cdad1bd52fe7ed334f59ea75c0845e03b3934a5c"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-build-verification-gate-v1-t2",
+      "prompt_digest": "sha256:48052bc1bbe2bcbace918f9362dd2ad09b80a44e2a2159721f103647dd11e47e"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-terminal-unconfirmed-v1-t1",
+      "prompt_digest": "sha256:216e2fe158d15d84eab1114f97dee18c4ebd1fa31c345847d7868caa39ecb667"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-gate-submission-duplicate-v1-t2",
+      "prompt_digest": "sha256:0e3c41dc9f4c0da954da8dff4874ec15473855f6064f215b8767009a1b1bcccd"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-diagnosis-complete-v1-t2",
+      "prompt_digest": "sha256:2913d74e721d28ebf8da7da2cc15acf10a64edc7b9954a3d3b355960d633bb80"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-terminal-unconfirmed-v1-t2",
+      "prompt_digest": "sha256:216e2fe158d15d84eab1114f97dee18c4ebd1fa31c345847d7868caa39ecb667"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-terminal-false-success-v1-t2",
+      "prompt_digest": "sha256:51ba5047955c7101a4985e6b225d58c6a265d123593c2bebd85e44ca0f18be5f"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-upgrade-acceptance-gate-v1-t1",
+      "prompt_digest": "sha256:da2fc677cac190fc8e92045cc414b28401ba8aacb1d57487c7fc5a437887e9ef"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-gate-replay-idempotent-v1-t3",
+      "prompt_digest": "sha256:9a400278943ad126bada9923e984a4056ef5667295701d853355336ce07670d2"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-dangerous-effect-duplicate-v1-t1",
+      "prompt_digest": "sha256:25b837fa1037a7fd0585cb08f39c7d6831b96cec3cb73468b2d1088465f00c65"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-partial-result-v1-t2",
+      "prompt_digest": "sha256:d7b42ded6d9343da8a312cd0c7d5de49d526a2a59372446007f1bc221039e6f8"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-gate-submission-duplicate-v1-t3",
+      "prompt_digest": "sha256:0e3c41dc9f4c0da954da8dff4874ec15473855f6064f215b8767009a1b1bcccd"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-wrong-target-v1-t2",
+      "prompt_digest": "sha256:66905e3aae6f62c0f9593f6bb6a20188e56fbccda43fa25478a460f5b3ad820a"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-shell-fallback-loop-v1-t3",
+      "prompt_digest": "sha256:f9c67eefc776b19800891296a748f3cbb013245a300c44785a2f67ff26e172fa"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-diagnosis-resume-v1-t2",
+      "prompt_digest": "sha256:080ac4b3833b91d7a6d2d9194754a6623e1b8b690c4d6eea2f49c7efc9b7ca81"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-partial-result-v1-t1",
+      "prompt_digest": "sha256:d7b42ded6d9343da8a312cd0c7d5de49d526a2a59372446007f1bc221039e6f8"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-degraded-optional-service-v1-t3",
+      "prompt_digest": "sha256:44f68123e225bff46a4d43e990625dc39a48c91a4510f9524c59c2e9e40d60fe"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-cost-budget-v1-t1",
+      "prompt_digest": "sha256:5d4c56d1137bc64912b74100bb66478127ebeada6bc00860242b5644a3f5c26e"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-missing-credentials-v1-t3",
+      "prompt_digest": "sha256:bd5238180a0c7d0daa55960d10881d30e1418590146559113643341ecb9221f8"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-wrong-evidence-v1-t1",
+      "prompt_digest": "sha256:3a7eb6abb767d3c3d6e7ec799ae8c844c952e96a41f1e11cb9700105d36ed781"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "trial": 3,
+      "task_id": "eval-source-identity-drift-v2-t3",
+      "prompt_digest": "sha256:4ef1ea9bf84960116e680333e8ac2310a17d2df670d52d640622530326cc2969"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-terminal-false-success-v1-t1",
+      "prompt_digest": "sha256:51ba5047955c7101a4985e6b225d58c6a265d123593c2bebd85e44ca0f18be5f"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-effect-reconcile-v1-t3",
+      "prompt_digest": "sha256:ee03525f745319a2117f88bcbabd04a92fe8af918ff67f36236116f1ca2eeffd"
+    },
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-terminal-outcome-missing-v1-t1",
+      "prompt_digest": "sha256:7f2fe3000a93695f4a8329f0cdad1bd52fe7ed334f59ea75c0845e03b3934a5c"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-gate-replay-idempotent-v1-t1",
+      "prompt_digest": "sha256:9a400278943ad126bada9923e984a4056ef5667295701d853355336ce07670d2"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-dangerous-effect-duplicate-v1-t2",
+      "prompt_digest": "sha256:25b837fa1037a7fd0585cb08f39c7d6831b96cec3cb73468b2d1088465f00c65"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "trial": 2,
+      "task_id": "eval-source-identity-drift-v2-t2",
+      "prompt_digest": "sha256:4ef1ea9bf84960116e680333e8ac2310a17d2df670d52d640622530326cc2969"
+    },
+    {
+      "scenario_id": "terminal-outcome-missing",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-terminal-outcome-missing-v1-t3",
+      "prompt_digest": "sha256:7f2fe3000a93695f4a8329f0cdad1bd52fe7ed334f59ea75c0845e03b3934a5c"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-degraded-optional-service-v1-t1",
+      "prompt_digest": "sha256:44f68123e225bff46a4d43e990625dc39a48c91a4510f9524c59c2e9e40d60fe"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-source-change-gate-v1-t1",
+      "prompt_digest": "sha256:721f5a58c72668e28e2424f50899eee4687c512c9e8f65db89bcb81687c329b9"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-missing-credentials-v1-t1",
+      "prompt_digest": "sha256:bd5238180a0c7d0daa55960d10881d30e1418590146559113643341ecb9221f8"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-cost-budget-v1-t2",
+      "prompt_digest": "sha256:5d4c56d1137bc64912b74100bb66478127ebeada6bc00860242b5644a3f5c26e"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-diagnosis-complete-v1-t3",
+      "prompt_digest": "sha256:2913d74e721d28ebf8da7da2cc15acf10a64edc7b9954a3d3b355960d633bb80"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-wrong-evidence-v1-t2",
+      "prompt_digest": "sha256:3a7eb6abb767d3c3d6e7ec799ae8c844c952e96a41f1e11cb9700105d36ed781"
+    },
+    {
+      "scenario_id": "wrong-evidence",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-wrong-evidence-v1-t3",
+      "prompt_digest": "sha256:3a7eb6abb767d3c3d6e7ec799ae8c844c952e96a41f1e11cb9700105d36ed781"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-build-verification-gate-v1-t3",
+      "prompt_digest": "sha256:48052bc1bbe2bcbace918f9362dd2ad09b80a44e2a2159721f103647dd11e47e"
+    },
+    {
+      "scenario_id": "degraded-optional-service",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-degraded-optional-service-v1-t2",
+      "prompt_digest": "sha256:44f68123e225bff46a4d43e990625dc39a48c91a4510f9524c59c2e9e40d60fe"
+    },
+    {
+      "scenario_id": "terminal-unconfirmed",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-terminal-unconfirmed-v1-t3",
+      "prompt_digest": "sha256:216e2fe158d15d84eab1114f97dee18c4ebd1fa31c345847d7868caa39ecb667"
+    },
+    {
+      "scenario_id": "gate-replay-idempotent",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-gate-replay-idempotent-v1-t2",
+      "prompt_digest": "sha256:9a400278943ad126bada9923e984a4056ef5667295701d853355336ce07670d2"
+    },
+    {
+      "scenario_id": "diagnosis-complete",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-diagnosis-complete-v1-t1",
+      "prompt_digest": "sha256:2913d74e721d28ebf8da7da2cc15acf10a64edc7b9954a3d3b355960d633bb80"
+    },
+    {
+      "scenario_id": "terminal-false-success",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-terminal-false-success-v1-t3",
+      "prompt_digest": "sha256:51ba5047955c7101a4985e6b225d58c6a265d123593c2bebd85e44ca0f18be5f"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-source-change-gate-v1-t3",
+      "prompt_digest": "sha256:721f5a58c72668e28e2424f50899eee4687c512c9e8f65db89bcb81687c329b9"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-wrong-target-v1-t3",
+      "prompt_digest": "sha256:66905e3aae6f62c0f9593f6bb6a20188e56fbccda43fa25478a460f5b3ad820a"
+    },
+    {
+      "scenario_id": "partial-result",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-partial-result-v1-t3",
+      "prompt_digest": "sha256:d7b42ded6d9343da8a312cd0c7d5de49d526a2a59372446007f1bc221039e6f8"
+    },
+    {
+      "scenario_id": "missing-credentials",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-missing-credentials-v1-t2",
+      "prompt_digest": "sha256:bd5238180a0c7d0daa55960d10881d30e1418590146559113643341ecb9221f8"
+    },
+    {
+      "scenario_id": "wrong-target",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-wrong-target-v1-t1",
+      "prompt_digest": "sha256:66905e3aae6f62c0f9593f6bb6a20188e56fbccda43fa25478a460f5b3ad820a"
+    },
+    {
+      "scenario_id": "gate-submission-duplicate",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-gate-submission-duplicate-v1-t1",
+      "prompt_digest": "sha256:0e3c41dc9f4c0da954da8dff4874ec15473855f6064f215b8767009a1b1bcccd"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-upgrade-acceptance-gate-v1-t3",
+      "prompt_digest": "sha256:da2fc677cac190fc8e92045cc414b28401ba8aacb1d57487c7fc5a437887e9ef"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-diagnosis-resume-v1-t1",
+      "prompt_digest": "sha256:080ac4b3833b91d7a6d2d9194754a6623e1b8b690c4d6eea2f49c7efc9b7ca81"
+    },
+    {
+      "scenario_id": "source-identity-drift",
+      "scenario_version": 2,
+      "trial": 1,
+      "task_id": "eval-source-identity-drift-v2-t1",
+      "prompt_digest": "sha256:4ef1ea9bf84960116e680333e8ac2310a17d2df670d52d640622530326cc2969"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-effect-reconcile-v1-t2",
+      "prompt_digest": "sha256:ee03525f745319a2117f88bcbabd04a92fe8af918ff67f36236116f1ca2eeffd"
+    },
+    {
+      "scenario_id": "upgrade-acceptance-gate",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-upgrade-acceptance-gate-v1-t2",
+      "prompt_digest": "sha256:da2fc677cac190fc8e92045cc414b28401ba8aacb1d57487c7fc5a437887e9ef"
+    },
+    {
+      "scenario_id": "source-change-gate",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-source-change-gate-v1-t2",
+      "prompt_digest": "sha256:721f5a58c72668e28e2424f50899eee4687c512c9e8f65db89bcb81687c329b9"
+    },
+    {
+      "scenario_id": "diagnosis-resume",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-diagnosis-resume-v1-t3",
+      "prompt_digest": "sha256:080ac4b3833b91d7a6d2d9194754a6623e1b8b690c4d6eea2f49c7efc9b7ca81"
+    },
+    {
+      "scenario_id": "dangerous-effect-duplicate",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-dangerous-effect-duplicate-v1-t3",
+      "prompt_digest": "sha256:25b837fa1037a7fd0585cb08f39c7d6831b96cec3cb73468b2d1088465f00c65"
+    },
+    {
+      "scenario_id": "cost-budget",
+      "scenario_version": 1,
+      "trial": 3,
+      "task_id": "eval-cost-budget-v1-t3",
+      "prompt_digest": "sha256:5d4c56d1137bc64912b74100bb66478127ebeada6bc00860242b5644a3f5c26e"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-shell-fallback-loop-v1-t1",
+      "prompt_digest": "sha256:f9c67eefc776b19800891296a748f3cbb013245a300c44785a2f67ff26e172fa"
+    },
+    {
+      "scenario_id": "effect-reconcile",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-effect-reconcile-v1-t1",
+      "prompt_digest": "sha256:ee03525f745319a2117f88bcbabd04a92fe8af918ff67f36236116f1ca2eeffd"
+    },
+    {
+      "scenario_id": "build-verification-gate",
+      "scenario_version": 1,
+      "trial": 1,
+      "task_id": "eval-build-verification-gate-v1-t1",
+      "prompt_digest": "sha256:48052bc1bbe2bcbace918f9362dd2ad09b80a44e2a2159721f103647dd11e47e"
+    },
+    {
+      "scenario_id": "shell-fallback-loop",
+      "scenario_version": 1,
+      "trial": 2,
+      "task_id": "eval-shell-fallback-loop-v1-t2",
+      "prompt_digest": "sha256:f9c67eefc776b19800891296a748f3cbb013245a300c44785a2f67ff26e172fa"
+    }
+  ],
+  "provider_descriptor": {
+    "provider": "cliproxy",
+    "base_url_digest": "sha256:31849100d420e5a86b960057069f0651cb7496f6f00b54ecdb7a5c9c7f8d8639",
+    "transport": "http",
+    "wire_api": "responses",
+    "credential_source": "configured environment variable"
+  },
+  "plan_digest": "sha256:ae45bd4d1e9357667cb265def562702f68c32cbb185b036a454fea77b09bdffa"
+}

@@ -11,7 +11,40 @@ can replace the required Windows-native device row. The original #284 scope is
 archived in [the platform acceptance issue](issues/platform-acceptance-matrix.md);
 [ADR-0009](adr/0009-native-windows-device-backend.md) governs device execution.
 
-## Current observation (2026-09-29, Asia/Shanghai)
+## Observation on 2026-10-10 (Asia/Shanghai)
+
+Runtime/plugin [2.1.5 is published](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.5).
+The released payload source is `b5c933c3b60d8ba89dbcd67257bb95a05c5ff8d8`;
+its archive SHA256 is
+`49e2664d8c77f88db7ff8b744680936724025e770cec34f46ae21244fbfce22a`.
+The published qualification and all seven release assets were downloaded and
+checked. These observations retain distinct source pins; they do not establish
+that every platform row passes for one final candidate.
+
+| Observation | Result | Identity and limitation |
+| --- | --- | --- |
+| Linux x86_64 immutable plugin installation, restart and native Codex tools | Passed | Released payload `b5c933c3`; CLI 0.153.4; local hermetic Responses fixture; no real model or device calls. |
+| Workflow complete hosted validation and Windows marketplace bootstrap | Passed | Source `892f2cd8ac5c8d04a4ec81635a2aaf4edee7d513`, [run 38032186094](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/38032186094). |
+| Stateful Turn fix complete hosted validation | Passed | Source `444267f96a3ebcd2eda53110740b3101b895a42d`, [run 38033114648](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/38033114648); merged by PR #307. |
+| Released plugin hosted CI | Passed | PR head `c960a06706d805daddcc92db0f1fc97d3bd4b9e5`, [run 38026890074](https://github.com/lihuabai629-star/openubmc-codex-plugins/actions/runs/38026890074). |
+| Actual Windows → selected WSL upgrade and Task/session recovery | Passed within isolated scope | Host payload `42c19030058a60eef89a84499a5b73f970b1fde8`; actual `wsl.exe` routing; model restore uses a substitute; zero model replay after upgrade. |
+| Isolated native NSIS installation and installed Windows GUI | Passed within qualification scope | Independent application ID; exit 0; 200 matching payload files; driver `afe614cec1c2c5a41ffb2232f125e2921f0cedee`; same Run/Outcome across recovery and second window reopen. |
+| Production-identity installer package | Payload readback passed; execution unverified | Complete extracted payload matches the tested client. Production installation/replacement and signature verification were not performed. |
+| Windows-native installed device workflows | Unverified | Transport tests and Windows bootstrap do not replace a complete native device Run. |
+| Physical BMC | Unverified | Device transport uses a network-denied fixture. |
+
+The release tag and merge point are `4c59effc90cf6c70f82c253d738e9083a4924527`;
+the hosted plugin observation above belongs to its separately identified PR head.
+
+The installed GUI preserved a **failed** Runtime Outcome rather than displaying
+success. Its Runtime and GUI hashes match:
+`16a9dd9b01d01f56fb5de8d9957e7e3da90af85d3b79d6ef9bf470eba01b7a32`.
+Screenshots, package/source identities, historical GUI failures and installer
+boundaries are recorded in [Desktop PR #64](https://github.com/lihuabai629-star/openubmc-agent-desktop/pull/64).
+The formal Desktop Runtime pin remains 2.1.1; qualification selected 2.1.5
+explicitly. The complete native platform matrix remains open in #284.
+
+## Historical observation (2026-09-29, Asia/Shanghai)
 
 | Row | Host and package identity | Result and reason |
 | --- | --- | --- |

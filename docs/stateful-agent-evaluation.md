@@ -169,6 +169,12 @@ percentage is inferred from the offline fixtures.
 
 ## Current result
 
+The [2026-10-10 fixed-source observation](../evaluation/stateful-agent/observations/2026-10-10/README.md)
+attempted and scored all 60 slots, confirmed 57 Host finals and retained all
+60 token-budget failures. The aggregate gate and baseline comparison remain
+unverified/unavailable. The records below and the older top-level JSON reports
+are historical observations.
+
 The committed offline report is a deterministic scorer result. It records
 20/20 expected fixture verdicts; it predates the authenticated pilot below. Live
 acceptance and the prior-source comparison are explicitly unverified. The historical pilot covered only `diagnosis-complete`. The expanded adapter

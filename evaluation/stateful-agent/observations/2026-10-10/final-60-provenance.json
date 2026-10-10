@@ -1,0 +1,29 @@
+{
+  "source_commit": "444267f96a3ebcd2eda53110740b3101b895a42d",
+  "raw_file_count": 4855,
+  "private_file_index_sha256": "767f6626505655d38744486526106350ff960f1ef37937eac7f5a884aa16f615",
+  "summary_sha256": "b6b8575034bcd989fd8398737a6fb840aa292c2f322876325eb8b58ba880b98b",
+  "plan_sha256": "b3675681c54eabc4d6e92b8a843b7587f74fa74cb1f5e2a1df3ffad8cdeda3ce",
+  "raw_transcripts_published": false,
+  "permission_records": 60,
+  "approval_policy": "never",
+  "sandbox": "danger-full-access",
+  "permission_verified_turns": 123,
+  "token_budget_per_trial": 10000,
+  "tool_call_budget_per_trial": 32,
+  "execution": {
+    "parallel_trials": 3,
+    "deadline_seconds_per_trial": 600,
+    "fixture_backend": "runtime-fake",
+    "live_bmc": false
+  },
+  "aggregate_issue_counts": {
+    "token_budget_exceeded": 60,
+    "unresolved_work": 24,
+    "scenario_not_exercised": 4,
+    "adapter_failed": 3,
+    "credentials_missing": 3,
+    "host_claim_identity_mismatch": 3,
+    "host_final_unconfirmed": 3
+  }
+}
