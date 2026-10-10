@@ -1430,6 +1430,8 @@ def create_service():
         credential_memory=runtime.VerifiedCredentialMemory(),
         host_continuity=host_records.continuity,
         host_context_provider=host_records.workspace_context,
+        source_checker=host_records.check_source,
+        operation_evidence_kind=os.environ.get("OPENUBMC_HOST_EVIDENCE_KIND", "observed"),
         interface_profile=os.environ.get(
             "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE", "agent"
         ),

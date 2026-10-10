@@ -747,5 +747,6 @@ from .systemd_contract import UNIT as SYSTEMD_UNIT, validate_systemd_names
 from .redaction import redact_text
 
 from .host_records import InstalledHostRecords
+from .test_records import TestRecordRunner
 from .measurements import JsonMeasurementReader
 from .record_export import RecordExportStore, export_task_records, verify_export

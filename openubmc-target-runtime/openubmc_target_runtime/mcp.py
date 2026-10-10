@@ -2175,6 +2175,8 @@ class RuntimeMcpService:
         credential_memory=None,
         host_continuity=None,
         host_context_provider: Callable[[str], Mapping[str, object] | None] | None = None,
+        source_checker=None,
+        operation_evidence_kind="observed",
         tracing: RunTracer | None = None,
         **registry_options: object,
     ) -> None:
@@ -2235,6 +2237,8 @@ class RuntimeMcpService:
                     or getattr(backend, "artifact_store", None)
                 ),
                 tracing=self.tracing,
+                source_checker=source_checker,
+                evidence_kind=operation_evidence_kind,
             ),
         )
         bind_artifact_store = getattr(backend, "bind_artifact_store", None)

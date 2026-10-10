@@ -33,7 +33,11 @@ New-Item -ItemType Directory -Path $runtime | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Windows Python archive extraction failed" }
 $python = Join-Path $runtime "python/python.exe"
 $probe = 'import json,struct,sys; assert sys.implementation.name == "cpython" and sys.platform == "win32" and struct.calcsize("P") == 8 and sys.version_info[:3] == tuple(map(int,sys.argv[1].split("."))) and not hasattr(sys,"gettotalrefcount"); print(json.dumps({"version":sys.version.split()[0],"platform":sys.platform,"executable":sys.executable}))'
-$identity = & $python -I -B -c $probe $pin.version
+# Windows PowerShell 5.1 strips embedded native-argument quotes. A file
+# preserves the same interpreter probe under both PowerShell 5.1 and pwsh.
+$probePath = Join-Path $OutputDirectory "verify-interpreter.py"
+[IO.File]::WriteAllText($probePath, $probe, (New-Object System.Text.UTF8Encoding($false)))
+$identity = & $python -I -B $probePath $pin.version
 if ($LASTEXITCODE -ne 0) { throw "Windows Python interpreter identity mismatch" }
 $identity = $identity | ConvertFrom-Json
 if ($ExportToGitHubActions) {
