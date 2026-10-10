@@ -243,3 +243,19 @@ class SourceOperationTests(unittest.TestCase):
             self.bound['repositories'][0]['repo_ref'], 'test:overflow',
             [sys.executable, '-c', 'import sys; sys.stdout.write("x" * (17 * 1024 * 1024))'])
         self.assertEqual(result['status'], 'unavailable')
+
+    def test_bound_source_without_registered_checker_opens_gate(self):
+        service = RuntimeMcpService(self.backend, context_repository=self.repository,
+            host_context_provider=lambda _: self.bound, host_continuity=self.host.continuity)
+        self.addCleanup(service.close)
+        turn = self.start(service)
+        self.assertEqual(turn['gate']['name'], 'source.context')
+        self.assertEqual(self.projection(turn['run_id'])['operations'], [])
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX process group cleanup; Windows timeout covered separately')
+    def test_inherited_output_handle_cannot_become_passed_after_forced_cleanup(self):
+        turn = self.start(self.service())
+        script = 'import subprocess,sys; subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); print("parent complete")'
+        result = TestRecordRunner(self.host, evidence_kind='synthetic').run('task', turn['run_id'],
+            self.bound['repositories'][0]['repo_ref'], 'test:inherited-pipe', [sys.executable, '-c', script], timeout=0.25)
+        self.assertEqual(result['status'], 'unavailable')

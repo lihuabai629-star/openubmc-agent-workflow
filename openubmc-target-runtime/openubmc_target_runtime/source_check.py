@@ -33,6 +33,6 @@ def check_source(projection: Mapping[str, object], checker: SourceChecker | None
         return SourceCheck("unavailable", "repository_unavailable")
 
 
-def requires_source_check(projection: Mapping[str, object], checker: SourceChecker | None) -> bool:
+def requires_source_check(projection: Mapping[str, object]) -> bool:
     raw = projection.get("start_input", {}).get("workspace_context")
-    return checker is not None and isinstance(raw, Mapping) and bool(raw.get("repositories"))
+    return isinstance(raw, Mapping) and bool(raw.get("repositories"))

@@ -2592,7 +2592,7 @@ class RunEngine:
                 state = _mapping(_mapping(projection.get("workflow_step_states")).get(workflow_step_id))
                 source = check_source(projection, self.source_checker)
                 if (state.get("status") not in {"accepted", "running"}
-                        and requires_source_check(projection, self.source_checker)):
+                        and requires_source_check(projection)):
                     if source.status != "matched" or _mapping(projection.get("current_gate")).get("name") == "source.context":
                         gate = self._source_gate(snapshot, operation_id=f"{operation_id}-source-gate",
                                                  reason=source.reason)

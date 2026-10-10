@@ -42,6 +42,18 @@ def _git(root, *arguments):
         return output.read(64 * 1024).decode("utf-8", errors="strict")
 
 
+def _git_metadata(root):
+    # One status observation contains HEAD, branch and worktree state.
+    lines = _git(root, "status", "--porcelain=v2", "--branch", "--untracked-files=normal").splitlines()
+    headers = dict(line[2:].split(" ", 1) for line in lines if line.startswith("# "))
+    commit, branch = headers.get("branch.oid"), headers.get("branch.head")
+    commit = commit if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit or "") else None
+    return {"commit": commit,
+            "branch": branch if branch != "(detached)" and _branch_is_representable(branch) else None,
+            "dirty": any(not line.startswith("# ") for line in lines),
+            "identity_availability": "available" if commit else "partial"}
+
+
 class InstalledHostRecords:
     def __init__(self, state_dir, *, environment=None):
         self.state_dir = Path(state_dir)
@@ -105,17 +117,7 @@ class InstalledHostRecords:
                     "commit": None, "branch": None, "dirty": None,
                     "identity_availability": "unavailable", "identity_source_ref": "host:git-status-v2"}
             try:
-                # One status observation contains HEAD, branch and worktree state.
-                lines = _git(root, "status", "--porcelain=v2", "--branch",
-                             "--untracked-files=normal").splitlines()
-                headers = dict(line[2:].split(" ", 1) for line in lines if line.startswith("# "))
-                commit = headers.get("branch.oid")
-                repo["commit"] = commit if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit or "") else None
-                branch = headers.get("branch.head")
-                repo["branch"] = (branch if branch != "(detached)" and _branch_is_representable(branch)
-                                  else None)
-                repo["dirty"] = any(not line.startswith("# ") for line in lines)
-                repo["identity_availability"] = "available" if repo["commit"] else "partial"
+                repo.update(_git_metadata(root))
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass
             repositories.append(repo)
@@ -159,12 +161,10 @@ class InstalledHostRecords:
                 try:
                     if _git(root, "rev-parse", "--show-toplevel").strip() != root:
                         return SourceCheck("unavailable", "repository_unavailable")
-                    lines = _git(root, "status", "--porcelain=v2", "--branch",
-                                 "--untracked-files=normal").splitlines()
-                    headers = dict(line[2:].split(" ", 1) for line in lines if line.startswith("# "))
-                    if headers.get("branch.oid") != repo["commit"]:
+                    current = _git_metadata(root)
+                    if current["commit"] != repo["commit"]:
                         return SourceCheck("drift", "commit_changed")
-                    if any(not line.startswith("# ") for line in lines) != repo["dirty"]:
+                    if current["dirty"] != repo["dirty"]:
                         return SourceCheck("drift", "dirty_changed")
                 except (OSError, ValueError, subprocess.SubprocessError):
                     return SourceCheck("unavailable", "repository_unavailable")

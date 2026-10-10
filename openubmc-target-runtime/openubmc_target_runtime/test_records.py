@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 import uuid
 
 from .host_continuity import _identity, read_runtime_projection
@@ -56,6 +57,8 @@ class TestRecordRunner:
         digest = hashlib.sha256()
         count, overflow = [0], [False]
         exit_code = None
+        capture_interrupted = False
+        deadline = time.monotonic() + timeout
         try:
             process = subprocess.Popen(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        start_new_session=os.name != "nt")
@@ -81,15 +84,17 @@ class TestRecordRunner:
             reader = threading.Thread(target=consume, daemon=True)
             reader.start()
             try:
-                exit_code = process.wait(timeout=timeout)
+                exit_code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
+                capture_interrupted = True
                 stop()
                 process.wait(timeout=5)
-            reader.join(timeout=5)
+            reader.join(timeout=max(0, min(5, deadline - time.monotonic())))
             if reader.is_alive():
+                capture_interrupted = True
                 stop()
                 reader.join(timeout=1)
-            complete = not reader.is_alive() and not overflow[0] and exit_code is not None
+            complete = not capture_interrupted and not reader.is_alive() and not overflow[0] and exit_code is not None
             if not reader.is_alive():
                 process.stdout.close()
             # Closing a pipe while another thread is reading it may block on a
