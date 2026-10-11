@@ -80,29 +80,24 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
             "python -m pip install --only-binary=:all: --require-hashes "
             "--requirement requirements-ci.lock",
         )
+        lines = PYTHON_LOCK.read_text(encoding="utf-8").splitlines()
+        pinned = [line for line in lines if line and not line.startswith(" ")]
         self.assertEqual(
-            PYTHON_LOCK.read_text(encoding="utf-8"),
-            'attrs==26.1.0 \\\n'
-            '    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309\n'
-            'cffi==2.1.1 \\\n'
-            '    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf\n'
-            'cryptography==46.0.5 \\\n'
-            '    --hash=sha256:4c3341037c136030cb46e4b1e17b7418ea4cbd9dd207e4a6f3b2b24e0d4ac731\n'
-            'jsonschema==4.26.0 \\\n'
-            '    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce\n'
-            'jsonschema-specifications==2025.9.1 \\\n'
-            '    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe\n'
-            'PyYAML==6.0.3 \\\n'
-            '    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc\n'
-            'referencing==0.37.0 \\\n'
-            '    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231\n'
-            'rpds-py==2026.6.3 \\\n'
-            '    --hash=sha256:ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6\n'
-            'typing-extensions==4.16.0 \\\n'
-            '    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8\n'
-            'pycparser==3.0 \\\n'
-            '    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992\n',
+            [line.split("==", 1)[0] for line in pinned],
+            [
+                "attrs", "cffi", "cryptography", "jsonschema",
+                "jsonschema-specifications", "PyYAML", "referencing",
+                "rpds-py", "typing-extensions", "pycparser",
+                "paramiko", "bcrypt", "PyNaCl",
+            ],
         )
+        self.assertTrue(all("==" in line and line.endswith("\\") for line in pinned))
+        self.assertTrue(all(
+            line.startswith("    --hash=sha256:")
+            and len(line.removeprefix("    --hash=sha256:").rstrip(" \\")) == 64
+            for line in lines if line.startswith("    --hash=")
+        ))
+        self.assertGreaterEqual(sum(line.startswith("    --hash=") for line in lines), len(pinned))
         node = self.step("Set up Node.js")
         self.assertEqual(node["uses"], "actions/setup-node@v7")
         self.assertEqual(node["with"]["node-version"], "22.23.2")

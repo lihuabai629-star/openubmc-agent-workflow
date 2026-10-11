@@ -700,6 +700,7 @@ def _scenario_acceptance_issues(
                     event_id, event_text, event_time = audit_rollout_final(
                         Path(rollout_path), task_id=str(plan.get("execution_id", "")),
                         prepared_at=prepared_at,
+                        expected_text=str(final_answer.get("text", "")),
                     )
                 except TerminalAnswerError:
                     issues.append("final answer has no matching host final event")

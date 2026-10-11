@@ -819,7 +819,6 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         commits = {
             merge_commit,
             source_commit,
-            lock_commit,
             published_source_commit,
             published_lock_commit,
             continuous_source,
@@ -859,12 +858,29 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
                 raise SystemExit(
                     f"invalid roadmap completion commit ancestry: {ancestor} -> {descendant}"
                 )
-        locked_release = _verified_lock_only_release(
-            lock_commit=lock_commit,
-            source_commit=source_commit,
-            changed_files=list(lock_topology["changed_files"]),
-            description="roadmap completion",
-        )
+        # This detached lock-only candidate was superseded before publication.
+        # A branch-only clone may omit its unreachable object. Keep checking its
+        # recorded identity above, and verify its object whenever it is present.
+        historical_lock_available = subprocess.run(
+            ["git", "-C", str(ROOT), "cat-file", "-e", f"{lock_commit}^{{commit}}"],
+            check=False,
+            capture_output=True,
+        ).returncode == 0
+        if historical_lock_available:
+            locked_release = _verified_lock_only_release(
+                lock_commit=lock_commit,
+                source_commit=source_commit,
+                changed_files=list(lock_topology["changed_files"]),
+                description="roadmap completion",
+            )
+            expected_lock = {
+                "release_version": qualification["release_version"],
+                "source_commit": source_commit,
+                "lock_digest": qualification["release_lock_digest"],
+                "source_tree_digest": qualification["source_tree_digest"],
+            }
+            if any(locked_release.get(key) != value for key, value in expected_lock.items()):
+                raise SystemExit("invalid roadmap completion historical release lock")
         published_lock = _verified_lock_only_release(
             lock_commit=published_lock_commit,
             source_commit=published_source_commit,
@@ -873,20 +889,12 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         )
         published_tag = subprocess.run(
             ["git", "-C", str(ROOT), "rev-parse", "v2.0.0^{commit}"],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
-        ).stdout.strip()
-        if published_tag != published_lock_commit:
+        )
+        if published_tag.returncode or published_tag.stdout.strip() != published_lock_commit:
             raise SystemExit("invalid published release tag identity")
-        expected_lock = {
-            "release_version": qualification["release_version"],
-            "source_commit": source_commit,
-            "lock_digest": qualification["release_lock_digest"],
-            "source_tree_digest": qualification["source_tree_digest"],
-        }
-        if any(locked_release.get(key) != value for key, value in expected_lock.items()):
-            raise SystemExit("invalid roadmap completion historical release lock")
         if (
             published_lock.get("release_version") != "2.0.0"
             or published_lock.get("source_commit") != published_source_commit

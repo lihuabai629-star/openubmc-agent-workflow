@@ -5,6 +5,11 @@ description: "Build and test openUBMC components or firmware: 编译组件、生
 
 # openUBMC Build
 
+When the task enters another workflow stage, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>)
+and load its owner before acting; carry the existing Run and authorization.
+
+Before dependency-resolving builds or UT/IT, read [dependency and profile compatibility](references/dependency-profile-compatibility.md).
+
 ## Boundary
 
 Own the local build lifecycle: select one build mode, bind the chosen checkout and exact command, execute checked attempts, and return locally finalized build evidence.
@@ -24,6 +29,13 @@ reason before local command fallback. Local fallback output is build evidence
 only; it does not close a deployment or runtime-verification Gate. A complete
 tool-equivalence claim remains pending until the Build Plan binds it to actual
 checkout, command, dependency lock, artifact, and release gates.
+
+On native Windows, device Runtime remains available without a compiler, Conan,
+or Bingo. If a build request has no selected capable build host, return the
+typed `build_environment_unavailable` blocker with the actual host and missing
+tools; leave any Build Gate pending. Use WSL only when the task explicitly
+selects it as a build environment. Device operations stay on their bound
+Windows Runtime.
 
 Choose one mode before any persistent write:
 

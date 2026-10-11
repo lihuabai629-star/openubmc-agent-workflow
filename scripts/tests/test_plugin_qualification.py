@@ -3,15 +3,41 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import subprocess
 import sys
+import threading
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
-from qualify_plugin import select_runtime_lifecycle  # noqa: E402
+from qualify_plugin import select_runtime_lifecycle, wait_for_process_exit  # noqa: E402
 
 
 class PluginQualificationLifecycleTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux process-exit evidence')
+    def test_delayed_physical_exit_is_observed_before_qualification(self) -> None:
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(0.15)'])
+        reaper = threading.Thread(target=child.wait)
+        reaper.start()
+        try:
+            wait_for_process_exit(child.pid, timeout=2)
+            self.assertEqual(child.returncode, 0)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            reaper.join(timeout=2)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux process-exit evidence')
+    def test_live_child_still_blocks_qualification_at_the_deadline(self) -> None:
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        try:
+            with self.assertRaisesRegex(ValueError, 'survived its Codex parent'):
+                wait_for_process_exit(child.pid, timeout=0.02)
+            self.assertIsNone(child.poll())
+        finally:
+            child.kill()
+            child.wait(timeout=2)
+
     def record(self, **overrides: object) -> dict[str, object]:
         record: dict[str, object] = {
             "component": "target-runtime",

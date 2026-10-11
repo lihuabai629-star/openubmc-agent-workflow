@@ -43,6 +43,9 @@ from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .run_store import EventRunStore
 from .runtime_adapter import RuntimeSemanticAdapter
 from .semantic_runtime import SemanticRuntimePort
+from .tracing import RunTracer
+from .workspace_context import WorkspaceSnapshot
+from .source_check import SourceChecker
 from .workflow import (
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinitions,
@@ -76,6 +79,9 @@ class RuntimeCompositionOptions:
     orchestrated_backend: bool = False
     domain_pack_extensions: DomainPackExtensions | None = None
     artifact_store: LocalArtifactStore | None = None
+    tracing: RunTracer | None = None
+    source_checker: SourceChecker | None = None
+    evidence_kind: str = "observed"
 
 
 class _AgentRuntimePort:
@@ -110,11 +116,13 @@ class _AgentRuntimePort:
         *,
         task_id: str,
         operation_id: str,
+        workspace_context: WorkspaceSnapshot | None = None,
     ) -> dict[str, object]:
         return self._gateway.execute(
             arguments,
             task_id=task_id,
             operation_id=operation_id,
+            workspace_context=workspace_context,
         )
 
     def error(
@@ -510,11 +518,21 @@ class _RuntimeTransportPort:
 
 
 class _RuntimeLifecyclePort:
-    def __init__(self, effect_runner: LocalEffectRunner) -> None:
+    def __init__(
+        self,
+        effect_runner: LocalEffectRunner,
+        context_repository: RuntimeRepository,
+    ) -> None:
         self._effect_runner = effect_runner
+        self._context_repository = context_repository
 
     def close(self) -> None:
-        self._effect_runner.close()
+        try:
+            self._effect_runner.close()
+        finally:
+            closer = getattr(self._context_repository, "close", None)
+            if callable(closer):
+                closer()
 
 
 class _RuntimeTestSupport:
@@ -800,10 +818,13 @@ def compose_runtime(
     effect_runner = LocalEffectRunner(
         semantic_adapter.execute_effect,
         semantic_adapter.recover_effect,
+        tracing=options.tracing,
     )
-    observation_engine = ObservationEngine(semantic_adapter)
+    observation_engine = ObservationEngine(semantic_adapter, tracing=options.tracing)
     run_engine = RunEngine(
         semantic_adapter,
+        source_checker=options.source_checker,
+        evidence_kind=options.evidence_kind,
         run_store=EventRunStore(
             context_runtime.repository.base_repository,
             draft_buffer=context_runtime.repository,
@@ -813,6 +834,7 @@ def compose_runtime(
         effect_runner=effect_runner,
         fact_projector=agent_projector.run_facts,
         workflow_definitions=workflow_definitions,
+        tracing=options.tracing,
     )
     semantic_runtime = SemanticRuntime(
         observation_engine,
@@ -822,8 +844,11 @@ def compose_runtime(
     agent_gateway = AgentGateway(
         semantic_runtime,
         projector=agent_projector,
+        tracing=options.tracing,
     )
-    lifecycle = _RuntimeLifecyclePort(effect_runner)
+    lifecycle = _RuntimeLifecyclePort(
+        effect_runner, context_runtime.repository.base_repository
+    )
     return _RuntimeComposition(
         agent=_AgentRuntimePort(
             semantic_runtime,

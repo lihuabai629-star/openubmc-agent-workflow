@@ -8,5 +8,11 @@ version = "0.1.0"
 description = "Internal task-scoped runtime primitives for openUBMC tooling"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+tracing = [
+    "opentelemetry-sdk>=1.43,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.43,<2",
+]
+
 [tool.setuptools]
 packages = ["openubmc_target_runtime"]

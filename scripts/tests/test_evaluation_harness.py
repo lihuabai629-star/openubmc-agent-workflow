@@ -185,9 +185,12 @@ class EvaluationHarnessRunTests(unittest.TestCase):
             rollout = root / "rollout.jsonl"
             rollout.write_text("\n".join(json.dumps(event) for event in (
                 {"type": "session_meta", "payload": {"id": "task-3"}},
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-3"}},
                 {"type": "response_item", "timestamp": observed_at,
                  "payload": {"type": "message", "id": "final-3", "role": "assistant",
                              "phase": "final_answer", "content": [{"type": "output_text", "text": "done"}]}},
+                {"type": "event_msg", "timestamp": observed_at,
+                 "payload": {"type": "task_complete", "turn_id": "turn-3"}},
             )) + "\n", encoding="utf-8")
             final = store.acknowledge_rollout(rollout, task_id="task-3", run_id="run-3",
                                               outcome=outcome, delivery_stage="runtime-verified")
@@ -197,6 +200,11 @@ class EvaluationHarnessRunTests(unittest.TestCase):
                        "accepted": True, "terminal_outcome": outcome,
                        "final_answer": final.to_public_dict(), "rollout_path": str(rollout)}
             self.assertEqual(harness._scenario_acceptance_issues(plan, receipt), [])
+            events = [json.loads(line) for line in rollout.read_text().splitlines()]
+            events[-1]["payload"]["type"] = "turn_aborted"
+            rollout.write_text("\n".join(map(json.dumps, events)) + "\n")
+            self.assertIn("final answer has no matching host final event",
+                          harness._scenario_acceptance_issues(plan, receipt))
 
     def test_formal_dsh_run_is_isolated_and_records_reproducible_identity(self) -> None:
         commit = "a" * 40

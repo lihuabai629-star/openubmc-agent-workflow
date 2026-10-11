@@ -33,14 +33,18 @@ class CompatibilityTelemetryTests(unittest.TestCase):
                 self.closed = True
 
         connection = FailingConnection()
+        if sys.platform == "win32":
+            from openubmc_target_runtime.windows_private import harden_new_file
         with tempfile.TemporaryDirectory() as raw, mock.patch(
             "openubmc_target_runtime.compatibility.sqlite3.connect",
             return_value=connection,
         ):
+            database = Path(raw) / "runtime.sqlite3"
+            if sys.platform == "win32":
+                database.touch()
+                harden_new_file(database)
             with self.assertRaisesRegex(OSError, "sqlite pragma failed"):
-                SQLiteCompatibilityTelemetryRepository(
-                    Path(raw) / "runtime.sqlite3"
-                )
+                SQLiteCompatibilityTelemetryRepository(database)
 
         self.assertTrue(connection.closed)
 

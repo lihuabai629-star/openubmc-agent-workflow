@@ -147,6 +147,11 @@ In short:
 
 ## Immutable releases
 
+The development source version is 2.1.7. The current public Codex plugin release is
+[2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
+Use the archive and checksum attached to that release for installation. Development
+versions become releases only after immutable source qualification and publication.
+
 Managed releases use a two-commit topology. The source commit contains the final code and the
 following lock-only commit adds `release-lock.json`; the release tag points to the lock-only commit.
 The lock records the source commit, workflow and schema identities, every Skill package digest, the
