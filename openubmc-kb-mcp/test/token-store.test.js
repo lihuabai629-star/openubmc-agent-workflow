@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { privateFixtureDirectory } from "../test-support/private-fixture.js";
 
 import { createTokenOwner, FileTokenStore } from "../src/auth/token-store.js";
 
@@ -13,7 +13,7 @@ const ownerConfig = {
 };
 
 test("persists tokens only for the matching account and protects the cache on POSIX", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "openubmc-token-store-"));
+  const dir = await privateFixtureDirectory("openubmc-token-store-");
   const path = join(dir, "nested", "token-cache.json");
   const owner = createTokenOwner(ownerConfig);
   const store = new FileTokenStore(path, owner);

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import json
 import os
@@ -12,6 +11,23 @@ import tempfile
 import tomllib
 from typing import NamedTuple
 import uuid
+import sys
+
+if sys.platform != 'win32':
+    import fcntl
+
+
+def _lock_stream(stream) -> None:
+    if sys.platform == 'win32':
+        import msvcrt
+        stream.seek(0)
+        if os.fstat(stream.fileno()).st_size == 0:
+            stream.write('\0')
+            stream.flush()
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(stream, fcntl.LOCK_EX)
 
 
 def digest(data: bytes) -> str:
@@ -37,6 +53,8 @@ def save(path: Path, value: dict) -> None:
 
 
 def journal_root(home: Path) -> Path:
+    if sys.platform == 'win32':
+        return Path(os.environ.get('LOCALAPPDATA') or home/'AppData/Local')/'openubmc/migrations'
     return home/'.local/share/openubmc/migrations'
 
 
@@ -151,12 +169,13 @@ def recognized_override_servers(document: dict, codex_root: Path, target_plugin:
         if not path.is_absolute() and isinstance(cwd, str):
             path = Path(cwd)/path
         try:
-            relative = path.relative_to(cache)
+            relative = path.resolve().relative_to(cache.resolve())
         except ValueError:
             raise ValueError('MCP override is outside the selected plugin cache: ' + name) from None
         if len(relative.parts) != 3 or relative.parts[1:] != ('scripts', 'pluginctl.py') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', relative.parts[0]):
             raise ValueError('MCP override has an unrecognized version path: ' + name)
-        if cwd is not None and (not isinstance(cwd, str) or Path(cwd) != path.parent.parent):
+        if cwd is not None and (not isinstance(cwd, str)
+                                or Path(cwd).resolve() != path.parent.parent.resolve()):
             raise ValueError('MCP override has a custom working directory: ' + name)
         index = args.index(paths[0])
         flags = args[:index]
@@ -246,8 +265,13 @@ def actionable_loose_skill_overlaps(home: Path, skill_paths: list[str], codex_ho
         row.get('path') for row in document.get('skills', {}).get('config', [])
         if row.get('enabled') is False
     }
+    disabled_names = {
+        row.get('name') for row in document.get('skills', {}).get('config', [])
+        if row.get('enabled') is False and isinstance(row.get('name'), str)
+    }
     return [path for path in loose_skill_overlaps(
-        home, skill_paths, codex_root, skill_names=skill_names) if path not in disabled]
+        home, skill_paths, codex_root, skill_names=skill_names)
+        if path not in disabled and declared_skill_name(Path(path)) not in disabled_names]
 
 
 class PlanSnapshot(NamedTuple):
@@ -306,6 +330,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
     targets = set(state.get('codex_skill_center', {}).get('targets', []))
     if source:
         targets.update(str(Path(source)/name) for name in skill_paths)
+    # Filesystem identity can differ from the spelling saved in old config
+    # (for example macOS /var versus /private/var). Keep raw spellings for
+    # configuration removal, but compare links against canonical targets.
+    resolved_targets = {str(Path(target).resolve()) for target in targets}
     links = []
     exact_skill_files = set(actionable_loose_skill_overlaps(
         home, skill_paths, codex_root, skill_names=skill_names))
@@ -320,10 +348,10 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
             # Exact-name loose Skills compete with the marketplace Skill even
             # when an older installer left no usable ownership record.  A
             # config-only disable is reversible and does not claim the files.
-            if path.is_symlink() and str(path.resolve()) in targets:
+            if path.is_symlink() and str(path.resolve()) in resolved_targets:
                 links.append({'path': str(path), 'target': os.readlink(path)})
             elif mode == 'disable-only' and not exact_overlap and str(path) in state.get('links', {}):
-                if str(path.resolve()) not in targets:
+                if str(path.resolve()) not in resolved_targets:
                     raise ValueError('Skill installation ownership conflicts at: ' + str(path))
     changes = {'skills': [], 'mcp_servers': sorted(owned_servers), 'plugins': []}
     if mode == 'disable-only':
@@ -351,6 +379,7 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
 def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
          mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public',
          skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
+    home = home.resolve()
     return _plan(home, skill_paths, codex_home, mode=mode, target_plugin=target_plugin,
                  skill_names=skill_names)
 
@@ -359,6 +388,7 @@ def activation_plan(home: Path, skill_paths: list[str], codex_home: Path | None 
                     target_plugin: str = 'openubmc@openubmc-public',
                     skill_names: list[str] | None = None) -> tuple[dict, bytes, bytes]:
     """Compose legacy migration with recognized native-cache override repair."""
+    home = home.resolve()
     codex_root = (codex_home or home/'.codex').resolve()
     snapshot = load_plan_snapshot(home, codex_root)
     probe_document = copy.deepcopy(snapshot.document)
@@ -459,7 +489,7 @@ def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None, 
     journals = journal_root(home)
     journals.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (journals/'migration.lock').open('a') as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+        _lock_stream(mutex)
         pending = pending_migration(home, codex_home, mode, target_plugin)
         if pending:
             root, record = pending
@@ -510,7 +540,7 @@ def restore(home: Path, transaction: str, codex_home: Path | None = None) -> dic
     if root.is_symlink() or root.resolve().parent != journals.resolve():
         raise ValueError('transaction escapes the migration journal')
     with (journals/'migration.lock').open('a') as mutex:
-        fcntl.flock(mutex, fcntl.LOCK_EX)
+        _lock_stream(mutex)
         record = json.loads((root/'transaction.json').read_bytes())
         if record.get('transaction') != transaction or record.get('home') != str(home) or record.get('codex_home') != str((codex_home or home/'.codex').resolve()) or record.get('schema') != 'openubmc.plugin-migration.v1':
             raise ValueError('migration journal identity mismatch')

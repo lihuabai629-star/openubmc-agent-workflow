@@ -1965,6 +1965,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             ["observe", "execute"],
         )
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux /proc parent identity qualification")
     def test_stdio_entrypoint_records_task_scoped_process_lifecycle(self) -> None:
         request = {
             "jsonrpc": "2.0",
@@ -2023,6 +2024,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(lifecycle["lifecycle_state"], "stopped")
         self.assertEqual(lifecycle["exit_reason"], "stdin-closed")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux /proc parent identity qualification")
     def test_stdio_entrypoint_exits_when_recorded_parent_is_gone(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

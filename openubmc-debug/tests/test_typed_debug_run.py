@@ -371,6 +371,26 @@ class PreflightTelnetTransport(FakeTelnetTransport):
 
 
 class TypedDebugRunTests(unittest.TestCase):
+    def test_source_failure_preserves_device_lanes_and_freshness(self):
+        args = workflow_remote.parse_args([
+            "--ip", TEST_IP, "--source-root", "/synthetic/source", "--keyword", "NIC", "--json",
+        ])
+        outputs = []
+        runner = FakeTypedToolRunner()
+        with mock.patch("_workflow_correlation.search_source_terms", side_effect=OSError("index unavailable")):
+            code = workflow_remote._execute_workflow(
+                args, source_root_source="explicit", engine="v1", env={}, tool_runner=runner,
+                parallel_lanes=False, emit_output=False, output_handler=outputs.append,
+            )
+        self.assertEqual(code, 1)  # Partial evidence is not falsely promoted to complete.
+        self.assertEqual(outputs[0]["code"], "workflow_partial_failure")
+        self.assertIn("source_search", outputs[0]["result"]["summary"]["failed"])
+        self.assertIn("preflight_end", runner.calls)
+        self.assertIn("version_end", runner.calls)
+        self.assertIn("active_alarms", runner.calls)
+        self.assertEqual(runner.calls.count("active_alarms"), 1)
+        self.assertTrue(outputs[0]["result"]["lanes"]["ssh"]["active_alarms"]["ok"])
+
     def test_workflow_request_excludes_source_correlation_without_source_root(
         self,
     ) -> None:

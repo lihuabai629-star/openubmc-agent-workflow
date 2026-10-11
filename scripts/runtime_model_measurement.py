@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -55,7 +56,39 @@ class Relay(http.server.ThreadingHTTPServer):
         self.upstream=urlsplit(upstream)
         self.env_key=env_key
         self.records=[]
+        self.provider_ref='provider:'+uuid.uuid4().hex
+        self.attempts={}
+        self.record_lock=threading.RLock()
         super().__init__(('127.0.0.1',0),Handler)
+
+    def begin_attempt(self, path, task_id, *, evidence_kind='observed'):
+        with self.record_lock:
+            if task_id in self.attempts:
+                raise ValueError('attempt identity already registered')
+            context={'path':Path(path),'task_ref':task_id,'evidence_kind':evidence_kind,
+                     'accepting':True,'active':0,'records':[],'inventory_complete':False}
+            self.attempts[task_id]=context
+            self.persist(context)
+
+    def persist(self, context):
+        document={'schema':'openubmc.provider-requests/v1','task_ref':context['task_ref'],
+                  'provider_ref':self.provider_ref,'evidence_kind':context['evidence_kind'],
+                  'inventory_complete':context['inventory_complete'],'provider_requests':context['records']}
+        target=context['path'];temporary=target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
+        try:
+            with temporary.open('x') as stream:
+                os.chmod(temporary,0o600)
+                json.dump(document,stream,allow_nan=False);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+            os.replace(temporary,target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def close_attempt(self, task_id):
+        with self.record_lock:
+            context=self.attempts[task_id]
+            context['accepting']=False
+            context['inventory_complete']=context['active']==0
+            self.persist(context)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -63,15 +96,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def do_POST(self):
         started=time.perf_counter()
-        record={'started_at':time.time(), 'first_byte_seconds':None, 'duration_seconds':None, 'status':None,
+        task_id=self.path.split('/')[2] if self.path.startswith('/tasks/') else None
+        with self.server.record_lock:
+            context=self.server.attempts.get(task_id)
+            if context is None or not context['accepting']:
+                self.send_error(409);return
+            record={'invocation_ref':'invocation:'+uuid.uuid4().hex,'task_ref':task_id,
+                'provider_ref':self.server.provider_ref,
+                'started_at':time.time(), 'first_byte_seconds':None, 'duration_seconds':None, 'status':None,
                 'requested_model':None,'response_model':None, 'usage':None}
-        self.server.records.append(record)
+            self.server.records.append(record)
+            context['records'].append(record);context['active']+=1
+            # Persist the physical invocation before forwarding it. A crash
+            # retains an incomplete observation, never a fabricated zero.
+            self.server.persist(context)
         upstream=self.server.upstream
         connection=(http.client.HTTPSConnection if upstream.scheme=='https' else http.client.HTTPConnection)(upstream.hostname,upstream.port,timeout=180)
         try:
             body=self.rfile.read(int(self.headers.get('Content-Length','0')))
             request=json.loads(body)
-            record['requested_model']=request.get('model')
+            model=request.get('model')
+            record['requested_model']=model if isinstance(model,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',model) else None
             path=upstream.path.rstrip('/')+'/responses'
             connection.request('POST',path,body,{'Content-Type':'application/json','Authorization':'Bearer '+os.environ[self.server.env_key], 'Accept':'text/event-stream'})
             response=connection.getresponse();record['status']=response.status
@@ -94,30 +139,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if event.get('type')=='response.completed':record['stream_completed']=True
                     if event.get('type') in {'response.failed','error'}:record['error_class']='ProviderResponseFailed'
                     data=event.get('response',{})
-                    if data.get('model'): record['response_model']=data['model']
+                    model=data.get('model')
+                    if isinstance(model,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',model): record['response_model']=model
                     if data.get('usage'):
-                        record['usage']={key:value for key,value in data['usage'].items() if key!='attribution'}
+                        usage=data['usage']
+                        record['usage']={key:usage.get(key) if type(usage.get(key)) is int and usage[key]>=0 else None
+                            for key in ('input_tokens','output_tokens','total_tokens','cached_tokens')}
+                        details=usage.get('input_tokens_details')
+                        if isinstance(details,dict):
+                            cached=details.get('cached_tokens')
+                            record['usage']['input_tokens_details']={'cached_tokens':cached if type(cached) is int and cached>=0 else None}
         except Exception as error:
             record['error_class']=type(error).__name__
             self.close_connection=True
         finally:
             record['duration_seconds']=time.perf_counter()-started
             connection.close()
+            with self.server.record_lock:
+                context['active']-=1
+                self.server.persist(context)
 
 
 def _attempt(args, output, relay, model, pair, arm, ordinal):
     root=output/f'{model}-{pair:02d}-{arm}'
     home=root/'home';home.mkdir();codex_home=home/'.codex';codex_home.mkdir()
     trace=root/'mcp.jsonl';events=root/'events.jsonl'
+    task_id=json.loads((root/'started.json').read_text())['attempt_id']
     env=dict(os.environ, HOME=str(home),CODEX_HOME=str(codex_home),PYTHONDONTWRITEBYTECODE='1')
     config=['features.plugins=false','features.shell_tool=false','model_reasoning_effort="low"',
             'model_provider="measurement"','model_providers.measurement.name="Measurement relay"',
-            f'model_providers.measurement.base_url="http://127.0.0.1:{relay.server_port}/v1"',
+            f'model_providers.measurement.base_url="http://127.0.0.1:{relay.server_port}/tasks/{task_id}/v1"',
             f'model_providers.measurement.env_key="{args.env_key}"','model_providers.measurement.wire_api="responses"',
             'model_providers.measurement.supports_websockets=false','model_providers.measurement.request_max_retries=0',
             'model_providers.measurement.stream_max_retries=0',
             f'mcp_servers.openubmc-target-runtime.command={json.dumps(sys.executable)}',
-            'mcp_servers.openubmc-target-runtime.args='+json.dumps([str(Path(__file__).with_name('runtime_measurement_server.py')),'--source',str(args.source),'--trace',str(trace)]),
+            'mcp_servers.openubmc-target-runtime.args='+json.dumps([str(Path(__file__).with_name('runtime_measurement_server.py')),'--source',str(args.source),'--trace',str(trace),'--task-id',task_id]),
             'mcp_servers.openubmc-target-runtime.required=true']
     argv=[args.codex,'exec','--ephemeral','--json','--skip-git-repo-check','--sandbox','danger-full-access','-C',str(root),'-m',model]
     for item in config: argv+=['-c',item]
@@ -160,12 +216,19 @@ def attempt(args, output, relay, model, pair, arm, ordinal):
     root=output/f'{model}-{pair:02d}-{arm}';root.mkdir()
     identity={'attempt_id':str(uuid.uuid4()),'model':model,'pair':pair,'arm':arm,'ordinal':ordinal,'started_at':time.time()}
     (root/'started.json').write_text(json.dumps(identity,indent=2)+'\n')
+    registered=hasattr(relay,'begin_attempt')
+    if registered:
+        relay.begin_attempt(root/'provider-requests.json',identity['attempt_id'])
     row={**identity,'valid':False,'failure_class':'harness','failure_reason':'interrupted','mcp_calls':0,'duration_seconds':None}
     try:
         row.update(_attempt(args,output,relay,model,pair,arm,ordinal))
     except Exception as error:
         row.update(failure_reason=type(error).__name__)
     finally:
+        if registered:
+            relay.close_attempt(identity['attempt_id'])
+            row.update(task_ref=identity['attempt_id'],provider_ref=relay.provider_ref,
+                       provider_report='provider-requests.json')
         with (root/'result.json').open('x') as result:
             json.dump(row,result,indent=2);result.write('\n')
     return row

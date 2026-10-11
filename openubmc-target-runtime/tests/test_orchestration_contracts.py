@@ -95,6 +95,14 @@ class RecordingMcpBackend:
 
 class OrchestrationContractTests(unittest.TestCase):
     def setUp(self) -> None:
+        # These legacy-loader fixtures must not select the operator's active
+        # structured credential source on a configured development host.
+        credential_source = mock.patch(
+            "openubmc_target_runtime.credentials.LocalCredentialSource.select_path",
+            return_value=None,
+        )
+        credential_source.start()
+        self.addCleanup(credential_source.stop)
         self.ssh_selector = CredentialSelector.for_ssh(
             user="Administrator",
             user_env="",

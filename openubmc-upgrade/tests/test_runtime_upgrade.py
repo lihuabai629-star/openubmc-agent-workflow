@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
@@ -172,7 +173,7 @@ class UpgradeRuntimeTransactionTests(unittest.TestCase):
                 "upgrade-and-verify"
             ),
             artifact=self.module.UpgradeArtifact(
-                path="/tmp/openubmc.hpm",
+                path=str(Path(tempfile.gettempdir()) / "openubmc.hpm"),
                 sha256=artifact_sha,
                 product_version="2.0.0",
             ),

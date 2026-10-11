@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 import uuid
 
@@ -87,6 +88,17 @@ def select_runtime_lifecycle(
             "native Codex invocation did not own exactly one supervised Runtime process"
         )
     return matched[0]
+
+
+def wait_for_process_exit(process_id: int, *, timeout: float = 5) -> None:
+    """Wait for physical exit after the process has written its stopped receipt."""
+    deadline = time.monotonic() + timeout
+    process_path = Path('/proc') / str(process_id)
+    while process_path.exists():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError(f'process {process_id} survived its Codex parent')
+        time.sleep(min(0.05, remaining))
 
 
 def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180, persistent: bool = False) -> dict:
@@ -176,11 +188,10 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
             )
             if lifecycle.get('source_commit') != source_commit or lifecycle.get('client') != 'codex' or not lifecycle.get('formal_run') or lifecycle.get('active_requests') != 0 or lifecycle.get('lifecycle_state') != 'stopped' or lifecycle.get('exit_reason') != 'client-terminated' or not lifecycle.get('parent_identity_verified'):
                 raise ValueError('native Runtime lifecycle failed to close: '+str({key:lifecycle.get(key) for key in ('source_commit','client','formal_run','active_requests','lifecycle_state','exit_reason','parent_identity_verified')}))
-            if Path('/proc').joinpath(str(lifecycle['process_id'])).exists():
-                raise ValueError('Runtime process survived its Codex parent')
+            wait_for_process_exit(int(lifecycle['process_id']))
             supervisor_pid = int(lifecycle['parent_pid'])
-            if supervisor_pid != process.pid and Path('/proc').joinpath(str(supervisor_pid)).exists():
-                raise ValueError('Runtime bootstrap supervisor survived its Codex parent')
+            if supervisor_pid != process.pid:
+                wait_for_process_exit(supervisor_pid)
             events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
             thread_id = next(event['thread_id'] for event in events if event.get('type') == 'thread.started')
             runs.append({'thread_id': thread_id, 'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
@@ -250,8 +261,8 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-BASELINE_VERSION = '2.1.1'
-BASELINE_SHA256 = '6e1fb278c308b8c8b104ddb1a0205258a1333084a589c51ede845fc30bfb56e8'
+BASELINE_VERSION = '2.1.2'
+BASELINE_SHA256 = '9d454a5afc1eb5f7deb05e1acffc12e90945c73fd19e3d26c40c41623726d448'
 
 
 def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:

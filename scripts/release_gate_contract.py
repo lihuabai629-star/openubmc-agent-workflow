@@ -36,6 +36,9 @@ REQUIRED_RELEASE_GATES = (
     "codex_adoption_qualification",
     "agent_gateway_ab_evidence",
 )
+INSTALLED_CANDIDATE_RELEASE_GATES = (
+    "installed_candidate", *REQUIRED_RELEASE_GATES[1:]
+)
 RETIREMENT_RELEASE_ARTIFACTS = (
     "runtime_qualification",
     "codex_adoption_qualification",
@@ -122,12 +125,23 @@ def verify_release_gate_report(
     *,
     expected_source_commit: str | None = None,
     require_promotable: bool = False,
-    required_gates: Sequence[str] = REQUIRED_RELEASE_GATES,
+    required_gates: Sequence[str] | None = None,
     required_artifacts: Sequence[str] = (),
 ) -> None:
     schema = report.get("schema")
     if schema not in {LEGACY_RELEASE_GATE_SCHEMA, RELEASE_GATE_SCHEMA}:
         raise ValueError("Release Gate schema is unsupported")
+    validation_mode = report.get("validation_mode", "hosted-ci")
+    if validation_mode not in ("hosted-ci", "installed-candidate"):
+        raise ValueError("Release Gate validation mode is unsupported")
+    if schema == LEGACY_RELEASE_GATE_SCHEMA and validation_mode != "hosted-ci":
+        raise ValueError("Legacy Release Gate cannot use installed candidate validation")
+    if required_gates is None:
+        required_gates = (
+            INSTALLED_CANDIDATE_RELEASE_GATES
+            if validation_mode == "installed-candidate"
+            else REQUIRED_RELEASE_GATES
+        )
     expected_digest = report.get("evidence_digest")
     unsigned = dict(report)
     unsigned.pop("evidence_digest", None)
@@ -208,6 +222,24 @@ def verify_release_gate_report(
     missing = [name for name in required_gates if name not in gates]
     if missing:
         raise ValueError("Release Gate is incomplete: " + ", ".join(missing))
+    other_gate = (
+        "github_ci" if validation_mode == "installed-candidate"
+        else "installed_candidate"
+    )
+    if other_gate in gates:
+        raise ValueError("Release Gate contains conflicting validation paths")
+    if gates.get("installed_candidate") == "passed":
+        for name in ("platform_acceptance", "candidate_archive", "candidate_qualification"):
+            if name not in artifacts:
+                raise ValueError(f"Release Gate lacks {name} evidence")
+        qualification = artifacts["candidate_qualification"]
+        archive = artifacts["candidate_archive"]
+        if (
+            qualification.get("source_commit") != source_commit
+            or qualification.get("archive_sha256") != archive.get("sha256")
+            or qualification.get("qualified") is not True
+        ):
+            raise ValueError("Release Gate candidate qualification binding is invalid")
     if (
         gates.get("codex_adoption_qualification") == "passed"
         and "codex_adoption_qualification" not in artifacts

@@ -13,6 +13,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source',type=Path,required=True)
     parser.add_argument('--trace',type=Path,required=True)
+    parser.add_argument('--task-id',default='model-measurement')
     args=parser.parse_args()
     sys.path.insert(0,str(args.source/'openubmc-target-runtime'))
     from openubmc_target_runtime import FilesystemBlobRepository, JsonRpcMcpEndpoint, RuntimeMcpService, SQLiteRuntimeRepository
@@ -28,7 +29,7 @@ def main():
                     output.write(json.dumps({'request':message,'response':response,'runtime_wall_seconds':time.perf_counter()-started})+'\n')
             return response
     try:
-        StdioMcpServer(Endpoint(service,session_task_id='model-measurement')).serve()
+        StdioMcpServer(Endpoint(service,session_task_id=args.task_id,bind_session_task=True)).serve()
     finally:
         service.close()
 

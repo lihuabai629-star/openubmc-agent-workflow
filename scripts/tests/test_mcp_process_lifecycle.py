@@ -77,6 +77,9 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
         )
         self.assertTrue(payload["task_closeout_ready"])
 
+    @unittest.skipUnless(
+        Path("/proc/sys/kernel/pid_max").is_file(), "requires Linux procfs"
+    )
     def test_cleanup_dry_run_then_retires_one_confirmed_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "processes"
@@ -191,6 +194,9 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     child.terminate()
                     child.wait(timeout=5)
 
+    @unittest.skipUnless(
+        Path("/proc/sys/kernel/pid_max").is_file(), "requires Linux procfs"
+    )
     def test_cleanup_preserves_unbound_orphan_and_reports_it_unattributed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "processes"

@@ -38,6 +38,19 @@ class CapturedSsh:
 
 
 class SystemdCollectorTests(unittest.TestCase):
+    def test_journal_boot_selector_uses_systemd_249_hex_identity(self):
+        ssh = CapturedSsh()
+        def transport(command, **limits):
+            if 'journalctl' in command:
+                selector = next(token for token in command.split() if token.startswith('--boot='))
+                if selector != '--boot=' + BOOT.replace('-', ''):
+                    return subprocess.CompletedProcess(command, 1, '', 'Failed to parse boot descriptor')
+            return ssh(command, **limits)
+        result = collect_systemd(['fan.service'], transport, deadline=time.monotonic() + 10)
+        self.assertTrue(result['complete'], result['gaps'])
+        self.assertEqual(result['boot_id'], BOOT)
+        self.assertEqual(result['units'][0]['journal'][0]['_BOOT_ID'], BOOT.replace('-', ''))
+
     def test_failed_discovery_distinguishes_empty_success_and_failure(self):
         for code, output, complete, gap in (
             (0, '', True, []),
