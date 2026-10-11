@@ -27,6 +27,24 @@ It migrates legacy Codex entries only when the previous installer state proves t
 A conflicting or subsequently edited configuration produces an error and retains its recovery journal.
 Restart the Codex task after installation so it loads the selected plugin.
 
+Trusted `SessionStart` and `UserPromptSubmit` hooks point openUBMC tasks to the
+packaged [workflow entry](../openubmc-debug/references/skill-routing.md).
+Prompt-submit guidance remains available when Python or prepared Runtime
+dependencies are unavailable. It does not inspect the prompt, connect a target,
+or write configuration; the existing Host workspace capture still receives the
+event when its backend is available.
+Python discovery, probes and backend execution share a ten-second deadline,
+leaving time to return local guidance before the Host's fifteen-second timeout.
+Each workflow Skill links the same reference for phase changes. Other tasks
+and fully specified mechanical edits keep their ordinary execution path.
+Actual Skill reads and stage behavior must still be checked in the Host trace;
+hook registration or a displayed Skill name does not establish compliance.
+On Hosts that enforce Hook trust, check the native `hooks/list` result as well:
+an installed, enabled handler can still be `untrusted` or `modified` and will
+not run. Trust applies to each reviewed handler's current hash in the Host's
+user configuration; a package upgrade can require a new review. Keep normal
+Hook trust enforcement active when qualifying delivery of the entry hint.
+
 For a separate installation, supply `--home /absolute/home --codex-home /absolute/codex-home`.
 The same paths must be used for audit, update, rollback, and removal.
 
@@ -132,3 +150,31 @@ locked native Codex executable, and a local Responses fixture. It checks package
 MCP discovery, `observe`/`execute` request validation, two independent Codex processes and their
 Runtime shutdown records, uninstall, reinstall, and preservation of external configuration.
 Published archives additionally pass the repository's immutable release gate.
+
+For a local, qualified archive, write the package, qualification report and provenance manifest
+outside the source checkout:
+
+```bash
+python3 scripts/qualify_plugin.py --source . --source-ref HEAD \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --output /tmp/plugin-qualification.json
+python3 scripts/plugin_provenance.py create --source . \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --qualification /tmp/plugin-qualification.json \
+  --manifest /tmp/plugin-provenance.json
+python3 scripts/plugin_provenance.py verify --source . \
+  --archive /tmp/openubmc-plugin.tar.gz \
+  --qualification /tmp/plugin-qualification.json \
+  --manifest /tmp/plugin-provenance.json
+```
+
+The manifest records the clean Git commit and tree, exact archive digest, plugin-lock content
+digest, the SHA-256 inventory of the packaged Python and knowledge MCP dependency locks, and
+the exact qualification report digest. Verification checks the package's existing file inventory,
+rebuilds the archive from the clean commit, and checks the passing qualification report against
+that archive. Modified or missing evidence and a dirty checkout fail. The inventory covers the two
+lockfiles, not a full transitive SBOM. The manifest stores no local paths or credentials.
+
+This is local, unsigned linkage evidence with the explicit `local-unpublished` claim. It does not
+verify a hosted CI run or publish a release. Managed release identity and eligibility continue to
+come from the existing `release-lock.json` verification and Release Gate.

@@ -5,15 +5,16 @@ description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感�
 
 # openUBMC Runtime Debug
 
+At a stage change, read [the phase handoff](<references/skill-routing.md>) and its owner; carry the Run and authorization.
+
 ## Scope and ownership
 
-Own read-only diagnosis and post-change verification. The request is:
+Own read-only diagnosis and post-change verification:
 
 - diagnosis: explain and localize a current or reproduced symptom;
 - delivery verification: verify requested behavior on the deployed target.
 
-Accept prose or handoffs without a transport envelope. Keep diagnosis separate
-from implementation:
+Accept prose or handoffs. Route implementation to its owner:
 
 - source or design change -> `openubmc-developer` or the matching specialist;
 - component or product build -> `openubmc-build`;
@@ -28,8 +29,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 
 - For current systemd service failures, use a `systemd` selector with literal `.service` names
   or `["failed"]` discovery; see the Agent semantic interface reference below.
-- Call `observe` for an exact read-only question. Declare only the selectors needed for the
-  answer. A narrow MDB or capability query should complete in one call and return an inline
+- Call `observe` for an exact read-only question using only required selectors.
+  A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.
 - Treat one answer as one observation: combine related capability, MDB and systemd selectors needed for
   the answer in the same `observe` call. Do not run a separate capability preflight; the internal
@@ -58,9 +59,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   binding instead of issuing another resume.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
-- In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; the short `content`
-  text is only a state summary. If the receipt exists, do not report that `execute` returned only
-  generic completion. Treat every result with `status=available` and a substantive `value` or
+- In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; `content` is a state
+  summary, not the full result. Treat every result with `status=available` and a substantive `value` or
   bounded `summary` as citable visible evidence. Raw Evidence bytes do not need a separate read.
   `projection_truncated` and `content_compacted` describe the display; determine source
   completeness from the receipt's `truncated`, `content_complete`, freshness, coverage, and gaps.
@@ -135,7 +135,7 @@ identity separate from local source or package evidence.
 
 ## Result contract
 
-Return a concise report unless machine-readable output was requested:
+Report concisely unless machine-readable output was requested:
 
 1. status and shortest evidence-backed conclusion;
 2. target/source scope and freshness boundary;
@@ -159,9 +159,9 @@ business acceptance.
 
 ## Reference routing
 
-Read only the directly relevant one-hop references:
+Read the relevant one-hop references:
 
-- Agent semantic interface and Runtime continuation: `references/agent-gateway.md`
+- Run, Gate and recovery: `references/agent-gateway.md`, `references/host-continuity.md`
 - Remote credentials, preflight, helpers, concurrency, and target automation: `references/remote-automation.md`
 - Evidence selection and correlation: `references/evidence-workflow.md`
 - Hypothesis-directed Drive diagnosis and fault-chain comparison: `references/diagnostic-advice.md`

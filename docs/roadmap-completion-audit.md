@@ -59,3 +59,7 @@ The earlier detached `e7dc74c -> 7dc350c` Release candidate remains historical
 `f27db4f` and lock-only commit `c0e095a`; `v2.0.1` was published on 2026-08-28 after its complete
 Release Gate passed. The next planned maintenance release is `v2.0.2`; it becomes a Release
 candidate only after a Final source is qualified and its lock-only child is created.
+
+A branch-only clone may omit the unpublished detached lock commit. The roadmap validator verifies
+that historical object when present, while always requiring the published source, lock-only commit,
+and `v2.0.0` tag identity.
