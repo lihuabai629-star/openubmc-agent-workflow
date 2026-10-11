@@ -2549,6 +2549,18 @@ class RuntimeMcpService:
                                     "bounded by the task deadline."
                                 ),
                             },
+                            "upgrade_protocol": {
+                                "type": "string",
+                                "enum": ["auto", "redfish", "webui"],
+                                "default": "auto",
+                                "description": "Select before upload; auto uses WebUI for legacy staged FirmwareInventory endpoints.",
+                            },
+                            "verification_mode": {
+                                "type": "string",
+                                "enum": ["auto", "manager-version"],
+                                "default": "manager-version",
+                                "description": "Require a fresh installed BMC Manager version after activation.",
+                            },
                             "transport": {
                                 "type": "string",
                                 "enum": ["redfish"],

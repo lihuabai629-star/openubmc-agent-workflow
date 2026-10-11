@@ -1,6 +1,6 @@
 ---
 name: openubmc-upgrade
-description: Use when an already-built openUBMC HPM must be uploaded, activated, monitored, and version-verified on a specific BMC through Redfish, including a typed build-upgrade handoff from an existing diagnose-and-fix task. Also assess an explicit firmware rollback request against a separately available recovery path; the current production backend does not expose a standalone firmware rollback action. Requires current-task mutation authorization, a target, and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.
+description: Use when an already-built openUBMC HPM must be uploaded, activated, monitored, and version-verified on a specific BMC through Redfish or its same-origin WebUI, including a typed build-upgrade handoff. Also assess an explicit firmware rollback request against a separately available recovery path; the backend does not expose a standalone firmware rollback action. Requires current-task mutation authorization, a target, and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.
 ---
 
 # openUBMC Upgrade
@@ -116,6 +116,11 @@ requested only when the caller explicitly needs pre-upgrade runtime evidence.
 1. Query the target's own Redfish UpdateService.
 2. Select only an upload method advertised by that response, preferring
    MultipartHttpPushUri, then HttpPushUri, then SimpleUpdate.
+   `upgrade_protocol=auto` selects the same-origin WebUI when the legacy
+   HttpPushUri ends in `/FirmwareInventory` without MultipartHttpPushUri.
+   Explicit `webui` selects it directly; explicit `redfish` rejects that legacy
+   endpoint before upload. Protocol selection cannot change after upload.
+   Read [WebUI upgrade flow](references/webui-upgrade.md) before that write.
 3. For SimpleUpdate, use only an image URI that the target can reach; do not
    pretend a local HPM path is a reachable URI.
 4. Upload once through an in-process HTTP client that keeps credentials out of

@@ -19,6 +19,21 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 import uuid
 
+from .webui import (
+    SameOriginRedirectHandler,
+    WebUiHttpSession,
+    WebUiHttpError,
+    WebUiTransportError,
+    classify_tasks,
+    matching_tasks,
+    normalized_tasks,
+    task_id_from_start,
+    task_identity_signature,
+    tasks_added_since,
+    upload_multipart_parts,
+    uploaded_file_path,
+)
+
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = SKILL_ROOT / "scripts"
@@ -115,6 +130,8 @@ class RedfishHttpSession:
         ).decode("ascii")
         self.authorization = f"Basic {token}"
         self.timeout = timeout
+        self.credentials = credentials
+        self.verify_tls = verify_tls
         self.context = (
             ssl.create_default_context()
             if verify_tls
@@ -122,6 +139,7 @@ class RedfishHttpSession:
         )
         self.opener = urlrequest.build_opener(
             urlrequest.ProxyHandler({}),
+            SameOriginRedirectHandler(),
             urlrequest.HTTPSHandler(context=self.context),
         )
 
@@ -455,6 +473,7 @@ class UpgradeMcpBackend:
         ] = _default_credential_loader,
         redfish_transport_factory: Callable[[Mapping[str, object]], object]
         | None = None,
+        webui_session_factory: Callable[[object], object] | None = None,
         max_cached_bindings: int = 32,
     ) -> None:
         if max_cached_bindings < 1:
@@ -462,6 +481,7 @@ class UpgradeMcpBackend:
         self.journal_store = journal_store
         self.credential_loader = credential_loader
         self.redfish_transport_factory = redfish_transport_factory
+        self.webui_session_factory = webui_session_factory
         self.max_cached_bindings = int(max_cached_bindings)
 
     def open_task(self, task_id: str) -> _UpgradeTask:
@@ -842,6 +862,12 @@ class UpgradeMcpBackend:
         context,
     ) -> dict[str, object]:
         context.raise_if_stopped()
+        protocol = _argument_text(arguments, "upgrade_protocol") or "auto"
+        if protocol not in {"auto", "redfish", "webui"}:
+            raise ValueError("upgrade_protocol must be auto, redfish or webui")
+        verification_mode = _argument_text(arguments, "verification_mode") or "manager-version"
+        if verification_mode not in {"auto", "manager-version"}:
+            raise ValueError("this BMC backend requires Manager version verification")
         artifact_path = Path(
             _argument_text(arguments, "artifact_path")
         ).expanduser()
@@ -902,6 +928,8 @@ class UpgradeMcpBackend:
         mutation_options = {
             "image_uri": _argument_text(arguments, "image_uri"),
         }
+        if "upgrade_protocol" in arguments:
+            mutation_options["upgrade_protocol"] = protocol
         matching_journal = next(
             (
                 journal
@@ -1128,6 +1156,13 @@ class UpgradeMcpBackend:
         discovery = session.request_json("GET", "/redfish/v1/UpdateService")
         if not isinstance(discovery.payload, Mapping):
             raise ValueError("Redfish UpdateService response must be an object")
+        protocol = _argument_text(arguments, "upgrade_protocol") or "auto"
+        uri = discovery.payload.get("HttpPushUri")
+        legacy = isinstance(uri, str) and uri.rstrip("/").endswith("/FirmwareInventory") and not discovery.payload.get("MultipartHttpPushUri")
+        if protocol == "webui" or protocol == "auto" and legacy:
+            return self._apply_webui(session, artifact, artifact_bytes, arguments, context, mark_effects_started)
+        if legacy:
+            raise ValueError("legacy staged firmware requires upgrade_protocol=webui")
         upload_timeout = min(
             configured_upload_timeout,
             context.remaining(),
@@ -1158,3 +1193,65 @@ class UpgradeMcpBackend:
             "artifact_sha256": artifact.sha256,
             "product_version": artifact.product_version,
         }
+
+    def _apply_webui(self, session, artifact, artifact_bytes, arguments, context, mark_effects_started):
+        """Upload and activate once within the existing mutation transaction."""
+        if self.webui_session_factory is not None:
+            web = self.webui_session_factory(session)
+        else:
+            web = WebUiHttpSession(
+                origin=session.origin,
+                username=session.credentials.user,
+                password=session.credentials.password,
+                verify_tls=session.verify_tls,
+                timeout=min(session.timeout, context.remaining()),
+                redfish_request=session.request_json,
+            )
+        observation = {}
+        try:
+            web.login()
+            baseline_tasks = normalized_tasks(web.progress().payload)
+            if any(str(task.get("TaskState", "")).lower() in {"running", "starting", "pending"} for task in baseline_tasks):
+                raise ValueError("an existing WebUI firmware task is active")
+            baseline = task_identity_signature(baseline_tasks)
+            prefix, suffix, boundary = upload_multipart_parts(Path(artifact.path).name)
+            timeout = min(_argument_timeout(arguments, "upload_timeout", 600), context.remaining())
+            context.raise_if_stopped()
+            mark_effects_started()
+            try:
+                uploaded = web.upload(body=(prefix, artifact_bytes, suffix), boundary=boundary,
+                                      content_length=len(prefix)+len(artifact_bytes)+len(suffix), timeout=timeout)
+            except WebUiHttpError as exc:
+                if 400 <= exc.status < 500:
+                    raise MutationEffectsRejected(f"WebUI upload rejected with HTTP {exc.status}") from exc
+                raise
+            path = uploaded_file_path(uploaded.payload, Path(artifact.path).name)
+            observation.update(protocol="webui", method="WebUiFirmwareInventory", http_status=uploaded.status,
+                               upload_timeout_seconds=timeout, artifact_path=artifact.path,
+                               artifact_sha256=artifact.sha256, product_version=artifact.product_version)
+            try:
+                started = web.start(path)
+            except WebUiTransportError:
+                observation["monitor"] = {"state": "connection_lost", "activation_connection_lost": True}
+                return observation
+            task_id = task_id_from_start(started.payload)
+            observation["task_uri"] = task_id
+            while True:
+                context.raise_if_stopped()
+                try:
+                    progress = web.progress(task_id).payload
+                except (WebUiTransportError, WebUiHttpError):
+                    observation["monitor"] = {"state": "connection_lost", "task_uri": task_id}
+                    return observation
+                tasks = matching_tasks(progress, Path(artifact.path).name, allow_unnamed=bool(task_id))
+                if not task_id:
+                    tasks = tasks_added_since(tasks, baseline)
+                state = classify_tasks(tasks)
+                if state == "failed":
+                    raise RuntimeError("WebUI firmware task failed")
+                if state == "completed":
+                    observation["monitor"] = {"state": "completed", "task_uri": task_id, "tasks": tasks}
+                    return observation
+                context.wait(min(2.0, context.remaining()))
+        finally:
+            observation["web_session_cleanup"] = web.close()
