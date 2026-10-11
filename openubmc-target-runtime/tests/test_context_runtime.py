@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -1470,10 +1471,11 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "runtime.sqlite3"
             SQLiteRuntimeRepository(path)
-            with sqlite3.connect(path) as connection:
-                connection.execute(
-                    "UPDATE runtime_meta SET value = '999' WHERE key = 'storage_version'"
-                )
+            with closing(sqlite3.connect(path)) as connection:
+                with connection:
+                    connection.execute(
+                        "UPDATE runtime_meta SET value = '999' WHERE key = 'storage_version'"
+                    )
             with self.assertRaisesRegex(Exception, "unsupported.*storage version"):
                 SQLiteRuntimeRepository(path)
 

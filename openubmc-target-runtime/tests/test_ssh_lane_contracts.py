@@ -518,6 +518,7 @@ class SshLaneContractTests(unittest.TestCase):
         self.assertEqual(result.lane_epochs["ssh"], 1)
 
 
+@unittest.skipIf(sys.platform == "win32", "POSIX OpenSSH ControlMaster only")
 class OpenSshEnvironmentContractTests(unittest.TestCase):
     def test_control_master_receives_only_the_selected_password_secret(self) -> None:
         selector = CredentialSelector.for_ssh(

@@ -5,15 +5,15 @@ description: "Use only for unresolved openUBMC decisions about source ownership,
 
 # OpenUBMC Developer
 
-Fit requested behavior into the repository's current structure. Own source
-analysis, design, implementation in existing components, and component-local
-verification. Scale the work to the uncertainty and risk instead of imposing a
-fixed ceremony on every change.
+At a stage change, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>) and its owner; carry the Run and authorization.
+
+Fit behavior into the current repository structure. Own source analysis, design,
+implementation and component-local verification. Scale work to uncertainty and
+risk.
 
 ## Keep the primary owner clear
 
-Own work whose primary deliverable is understanding or changing behavior
-controlled by existing openUBMC source. This includes component code, models,
+Own understanding or changing existing openUBMC source: component code, models,
 service metadata, manifests, and declarative configuration.
 
 If the request also includes a later build, live patch, upgrade, or publication,

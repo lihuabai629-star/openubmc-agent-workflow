@@ -15,7 +15,7 @@ import tempfile
 SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
-from execution_router import ExecutionRouter, probe_protocol
+from execution_router import ExecutionRouter, SUPPORTED_OPERATIONS, probe_protocol
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "openubmc-target-runtime"
 if str(RUNTIME_ROOT) not in sys.path:
@@ -81,16 +81,34 @@ def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
             raise ReplayError("execution-route probe tools must be a list")
         router = ExecutionRouter(environment=environment)
+        health = probe_protocol(
+            operation, host=str(probe.get("host", router.expected_host)),
+            initialize=lambda: ({"protocolVersion": "2025-03-26"}
+                                if probe.get("initialized", True) else {}),
+            list_tools=lambda: {"tools": [{"name": name} for name in raw_tools]},
+        )
+        fallback_host = (str(probe.get("shell_host", router.expected_host))
+                         if (not health.ready or health.host != router.expected_host
+                             or operation not in SUPPORTED_OPERATIONS) else None)
         route = router.choose(
             operation,
-            probe=probe_protocol(operation, host=router.expected_host,
-                                 list_tools=lambda: raw_tools),
+            probe=health,
             requested_scope="sanitized fixture", evidence_boundary="router receipt",
+            shell_host=fallback_host,
         )
-        observed["execution_host"] = {
+        route_observation = {
             "host": route["execution_host"],
             "route": "structured-runtime" if route["path"] == "structured-runtime-mcp" else "shell-fallback",
         }
+        if route["path"] == "shell-fallback":
+            fallback = route["fallback"]
+            route_observation.update({
+                "reason_code": fallback["reason_code"],
+                "requested_scope": route["requested_scope"],
+                "evidence_boundary": route["evidence_boundary"],
+                "call_budget": fallback["budget"],
+            })
+        observed["execution_host"] = route_observation
     elif probe.get("kind") == "terminal-answer":
         task_id = str(case.get("case_id", ""))
         outcome = {"status": "completed", "summary": "fixture"}
@@ -103,10 +121,16 @@ def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
             if probe.get("delivered") is True:
                 prepared = store.get(task_id)
                 event_time = (datetime.fromisoformat(prepared.prepared_at) + timedelta(seconds=1)).isoformat()
+                events.append({"type": "event_msg", "payload": {
+                    "type": "task_started", "turn_id": "fixture-turn",
+                }})
                 events.append({"type": "response_item", "timestamp": event_time, "payload": {
                     "type": "message", "id": "fixture-host-final", "role": "assistant",
                     "phase": "final_answer",
                     "content": [{"type": "output_text", "text": "fixture final"}],
+                }})
+                events.append({"type": "event_msg", "timestamp": event_time, "payload": {
+                    "type": "task_complete", "turn_id": "fixture-turn",
                 }})
             rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n",
                                encoding="utf-8")
@@ -139,10 +163,17 @@ def sanitization_issues(value: object, path: str = "$") -> list[str]:
     if isinstance(value, Mapping):
         for key, item in value.items():
             key_text = str(key)
+            unsafe_key = bool(
+                _SENSITIVE_VALUE.search(key_text) or _PRIVATE_ENDPOINT.search(key_text)
+                or "/home/" in key_text or "\\Users\\" in key_text
+            )
+            if unsafe_key:
+                issues.append(f"{path}.<sensitive-key>: sensitive key")
+            display_key = "<sensitive-key>" if unsafe_key else key_text[:128]
             if re.search(r"(?i)^(?:password|passwd|secret|token|clientSecret|apiKey)$", key_text):
                 if item not in (None, "", "<redacted>", "credential_ref"):
-                    issues.append(f"{path}.{key_text}: secret value")
-            issues.extend(sanitization_issues(item, f"{path}.{key_text}"))
+                    issues.append(f"{path}.{display_key}: secret value")
+            issues.extend(sanitization_issues(item, f"{path}.{display_key}"))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, item in enumerate(value):
             issues.extend(sanitization_issues(item, f"{path}[{index}]"))
@@ -186,13 +217,38 @@ def _dimension(case: Mapping[str, object], name: str) -> dict[str, object]:
             failures.append(f"{key}: expected {wanted!r}, observed {observed.get(key)!r}")
     if name == "evidence_lineage":
         identity = expected.get("identity", {})
+        if not isinstance(identity, Mapping):
+            failures.append("expected evidence identity is not an object")
+            identity = {}
+        interval = identity.get("observation_interval")
+        interval_start = interval_end = None
+        if interval is not None:
+            if not isinstance(interval, Mapping):
+                failures.append("observation interval is not an object")
+            else:
+                try:
+                    interval_start = datetime.fromisoformat(str(interval["start"]).replace("Z", "+00:00"))
+                    interval_end = datetime.fromisoformat(str(interval["end"]).replace("Z", "+00:00"))
+                    if (interval_start.tzinfo is None or interval_end.tzinfo is None
+                            or interval_start > interval_end):
+                        raise ValueError("invalid observation interval")
+                except (KeyError, ValueError, TypeError):
+                    failures.append("observation interval is invalid")
+                    interval_start = interval_end = None
         for index, item in enumerate(observed.get("evidence", [])):
             if not isinstance(item, Mapping):
                 failures.append(f"evidence[{index}] is not an object")
                 continue
-            for key in ("target", "address", "version", "operation"):
+            for key in ("target", "address", "version", "operation", "observed_at"):
                 if key in identity and item.get(key) != identity[key]:
                     failures.append(f"evidence[{index}].{key} is not bound to fixture identity")
+            if interval_start is not None and interval_end is not None:
+                try:
+                    observed_at = datetime.fromisoformat(str(item["observed_at"]).replace("Z", "+00:00"))
+                    if observed_at.tzinfo is None or not interval_start <= observed_at <= interval_end:
+                        raise ValueError("outside observation interval")
+                except (KeyError, ValueError, TypeError):
+                    failures.append(f"evidence[{index}].observed_at is outside the observation interval")
     if name == "release_gates":
         gates = observed.get("gates", [])
         if expected.get("required") is True and (
@@ -212,17 +268,30 @@ def _dimension(case: Mapping[str, object], name: str) -> dict[str, object]:
         failures.extend(sanitization_issues(observed))
     if name == "convergence_cost":
         actions = observed.get("actions", [])
-        budget = int(expected.get("budget", 0))
+        budget = expected.get("budget")
+        if type(budget) is not int or not 0 <= budget <= 32:
+            failures.append("action budget must be an integer between 0 and 32")
+            budget = 0
+        if not isinstance(actions, list):
+            failures.append("actions must be a list")
+            actions = []
         if len(actions) > budget:
             failures.append(f"action budget exceeded: {len(actions)}>{budget}")
         seen: dict[str, str] = {}
-        for item in actions:
+        for index, item in enumerate(actions):
             if not isinstance(item, Mapping):
+                failures.append(f"action[{index}] is not an object")
                 continue
             command = str(item.get("command", ""))
             evidence = str(item.get("evidence_digest", ""))
-            if command in seen and evidence == seen[command] and item.get("justified_retry") is not True:
-                failures.append(f"equivalent action repeated without changed evidence: {command}")
+            if not command or not evidence:
+                failures.append(f"action[{index}] is missing command or evidence digest")
+                continue
+            if command in seen:
+                if evidence == seen[command]:
+                    failures.append(f"equivalent action repeated without changed evidence: {command}")
+                elif item.get("justified_retry") is not True:
+                    failures.append(f"action repeated without a justified retry: {command}")
             seen[command] = evidence
     return {
         "status": "passed" if not failures else "failed",
@@ -235,9 +304,11 @@ def _dimension(case: Mapping[str, object], name: str) -> dict[str, object]:
 
 def evaluate_case(case: Mapping[str, object]) -> dict[str, object]:
     case_id = str(case.get("case_id", ""))
-    if not case_id:
-        raise ReplayError("case_id is required")
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", case_id) is None:
+        raise ReplayError("case_id must be a bounded safe identifier")
     failures = sanitization_issues(case)
+    if failures:
+        raise ReplayError("fixture contains sensitive data at: " + ", ".join(failures))
     try:
         observed = _live_observation(case)
     except (ReplayError, ValueError, subprocess.TimeoutExpired) as exc:

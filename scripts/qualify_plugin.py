@@ -250,8 +250,8 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-BASELINE_VERSION = '2.1.1'
-BASELINE_SHA256 = '6e1fb278c308b8c8b104ddb1a0205258a1333084a589c51ede845fc30bfb56e8'
+BASELINE_VERSION = '2.1.2'
+BASELINE_SHA256 = '9d454a5afc1eb5f7deb05e1acffc12e90945c73fd19e3d26c40c41623726d448'
 
 
 def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:

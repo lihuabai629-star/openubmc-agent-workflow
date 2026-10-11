@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -738,7 +739,7 @@ class PlanResolverTests(unittest.TestCase):
             tampered_record = first.record.to_public_dict()
             tampered_record["result_digest"] = tampered_proposal_digest
             tampered_record["plan_revision_id"] = tampered_revision_id
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute(
                     "DELETE FROM model_planning_revisions WHERE revision_id = ?",
                     (first.revision.revision_id,),
@@ -820,7 +821,7 @@ class PlanResolverTests(unittest.TestCase):
             mismatched = first.record.to_public_dict()
             mismatched["plan_revision_id"] = second.revision.revision_id
             mismatched["result_digest"] = second.revision.proposal_digest
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute(
                     "UPDATE model_planning_invocations SET document_json = ? "
                     "WHERE invocation_id = ?",
@@ -1214,7 +1215,7 @@ class PlanResolverTests(unittest.TestCase):
                         ),
                     )
                 )
-                with sqlite3.connect(database) as connection:
+                with closing(sqlite3.connect(database)) as connection, connection:
                     document = connection.execute(
                         "SELECT document_json FROM model_planning_invocations "
                         "WHERE invocation_id = ?",

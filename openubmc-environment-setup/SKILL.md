@@ -5,6 +5,9 @@ description: Automatically install, inspect, repair, update, or uninstall the sh
 
 # openUBMC Environment Setup
 
+When the task enters another workflow stage, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>)
+and load its owner before acting; carry the existing Run and authorization.
+
 Use the bundled installer as the only writer for this workflow. It installs
 Skill links, the standalone Target Runtime, the bundled `openubmc-kb` stdio
 MCP, their launchers, a small shell hook, private credential-file selection,

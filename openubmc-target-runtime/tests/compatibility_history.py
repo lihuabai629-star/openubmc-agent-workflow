@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 
@@ -15,7 +16,7 @@ def seed_compatibility_history(
     """Seed pre-retirement rows without restoring a production writer API."""
 
     SQLiteCompatibilityTelemetryRepository(database)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.executemany(
             "INSERT INTO compatibility_telemetry "
             "(metric_kind, metric_name, count, updated_at) "

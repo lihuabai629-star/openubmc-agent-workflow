@@ -71,7 +71,7 @@ class SelectedCredentialTests(unittest.TestCase):
             artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
             transport = ControlledTransport()
             backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journal'), redfish_transport_factory=lambda _args: transport)
-            environment = {'HOME': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_SELECTED_PASSWORD': 'fictional-selected', 'OPENUBMC_REDFISH_PASSWORD': 'fictional-default'}
+            environment = {'HOME': raw, 'LOCALAPPDATA': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_SELECTED_PASSWORD': 'fictional-selected', 'OPENUBMC_REDFISH_PASSWORD': 'fictional-default'}
             with mock.patch.dict(os.environ, environment, clear=True):
                 service = RuntimeMcpService(OrchestratedMcpBackend({'upgrade_run': backend}))
                 try:
