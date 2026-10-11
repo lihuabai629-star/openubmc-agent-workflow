@@ -10,10 +10,21 @@ After MCP `execute`, a best-effort bookmark records the task and Run identities.
 No target credentials are copied to this store. Host storage failure is metadata,
 not a failed device operation. Multiple Runs stay separate within one task.
 
-The plugin's trusted `SessionStart` hook rereads current Runtime facts. The trusted
+The plugin's trusted `SessionStart` hook supplies the local workflow entry and
+rereads current Runtime facts. `UserPromptSubmit` supplies the same bounded entry
+even when Python or prepared dependencies are unavailable; the Agent reads the
+current owner's Skill according to [the phase handoff](skill-routing.md).
+These hints are advisory and do not prove a Skill was read. The trusted
 `Stop` hook can ask for one text-only final from a persisted terminal Outcome.
 Do not call `execute`, `resume` or `observe` to deliver that text. An untrusted or
 unavailable hook does not block the existing workflow; use the local CLI below.
+
+If continuity or entry hints are missing, inspect the Host's native hook list.
+An enabled plugin can have `untrusted` or `modified` handlers that do not run.
+Package integrity and MCP readiness do not prove Hook trust. After reviewing
+the installed handler and its package identity within the user's authorization,
+use the Host's trust configuration for that handler's exact current hash.
+Verify the returned trust status; do not infer activation from installation.
 Hooks do not prepare dependencies, choose a build host, or grant trust.
 
 ## Explicit local recovery

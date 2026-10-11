@@ -78,19 +78,20 @@ function createSetupOperations(adapter, capability) {
   }
 
   function preflightBackend(backend) {
-    const cleanup = adapter.run(backend.command, [...backend.prefix, "cleanup-retired"], { timeout: 15_000 });
-    const cleanupReport = parseJsonOutput(adapter, cleanup.stdout);
     const checked = adapter.run(backend.command,
-      [...backend.prefix, "doctor", "--capability", "all", ...backend.configurationArgs], { timeout: 45_000 });
+      [...backend.prefix, "doctor", "--cleanup-retired", "--capability", capability, ...backend.configurationArgs], { timeout: 45_000 });
     const report = parseJsonOutput(adapter, checked.stdout);
+    const cleanupReport = report?.cleanup;
     const selected = report?.capabilities?.[capability];
-    if (selected?.startup_ready && report?.codex_configuration?.ready
+    if (!checked.error && selected?.startup_ready && report?.codex_configuration?.ready
         && checked.status === 0 && report?.mcp_health?.[capability]?.ok === true) {
       return { ok: true, cleanup: cleanupReport, report };
     }
     const rawError = String(selected?.error || "").toLowerCase();
     let reason = "dependency_preflight_failed";
     if (report?.error_code === "windows_private_root_conflict") reason = "windows_private_root_conflict";
+    else if (checked.error?.code === "ETIMEDOUT") reason = "dependency_preflight_timeout";
+    else if (report?.mcp_health?.[capability]?.timed_out) reason = "mcp_protocol_timeout";
     else if (rawError.includes("not prepared")) reason = "dependencies_not_prepared";
     else if (rawError.includes("cache drift")) reason = "dependency_cache_drift";
     else if (rawError.includes("node 20")) reason = "node_unavailable";
