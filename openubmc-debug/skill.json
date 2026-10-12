@@ -92,7 +92,9 @@
     "scripts/target_runtime_cli.py",
     "scripts/target_runtime_mcp.py",
     "scripts/workflow_remote.py",
-    "scripts/systemd_observation.py"
+    "scripts/systemd_observation.py",
+    "scripts/mdb_property_backend.py",
+    "references/property-modification.md"
   ],
   "keywords": [
     "openubmc",

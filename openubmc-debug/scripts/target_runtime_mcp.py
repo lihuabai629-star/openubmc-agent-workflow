@@ -1390,6 +1390,10 @@ def create_service():
         "debug_run": debug_backend,
         "debug_collect": debug_backend,
     }
+    from mdb_property_backend import MdbPropertyBackend
+    property_backend = MdbPropertyBackend(journal_store=journal_store)
+    tool_backends["mdb_property_modify"] = property_backend
+    tool_backends["mdb_property_verify"] = property_backend
     log_backend = _load_log_analyzer_backend(artifact_store=artifact_store)
     if log_backend is not None:
         for operation in (

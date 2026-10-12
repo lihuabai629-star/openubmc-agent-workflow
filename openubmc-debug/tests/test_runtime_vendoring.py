@@ -30,6 +30,13 @@ def load_script(name: str):
 
 
 class RuntimeVendoringTests(unittest.TestCase):
+    def test_typed_authorization_keyword_is_not_a_literal_credential_header(self):
+        packager = load_script("package_skill")
+        safe = 'driver.run(authorization=task_policy)\n'
+        self.assertEqual(packager._unsafe_header_values(safe, ".py"), [])
+        unsafe = 'driver.run(authorization=task_policy, headers={"Authorization": "Bearer real-secret"})\n'
+        self.assertNotEqual(packager._unsafe_header_values(unsafe, ".py"), [])
+
     def test_case_literal_scanner_distinguishes_code_types_from_named_alarms(self) -> None:
         package_skill = load_script("package_skill")
 
