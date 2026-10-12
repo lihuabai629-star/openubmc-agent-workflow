@@ -7,9 +7,8 @@ description: "Use only for unresolved openUBMC decisions about source ownership,
 
 At a stage change, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>) and its owner; carry the Run and authorization.
 
-Fit behavior into the current repository structure. Own source analysis, design,
-implementation and component-local verification. Scale work to uncertainty and
-risk.
+Fit source work and component-local verification into the current repository structure.
+Scale analysis, design and implementation to the task's uncertainty and risk.
 
 ## Keep the primary owner clear
 
@@ -148,6 +147,9 @@ confirming the workspace is no longer needed.
 
 ## Verify and hand off
 
+Use the supplied output path and schema, with source-expression fields limited to the source expression.
+Put explanations in summary or evidence fields; check saved required fields, types, enums and expressions.
+
 Run the smallest sufficient repository-selected checks that prove the changed
 contract. Repository-local generation, compilation, unit-test builds, tests,
 and validators remain source verification. Prefer executing changed behavior or
@@ -161,10 +163,8 @@ Review the completed diff against the selected precedent for misplaced logic,
 duplicate ownership, layer leakage, bypassed interfaces, unnecessary public
 abstractions, incomplete generation, and missed consumers.
 
-For a straightforward implementation, hand off concisely: changed behavior,
-key files, focused checks and results, workspace state, and any remaining gap.
-For read-only work, report the responsible area, relevant flow and precedent,
-recommended change surface, material alternatives, and unresolved evidence.
+Hand off source changes with behavior, files, focused checks, workspace state and remaining gaps.
+For read-only work, report ownership, flow, precedent, change surface, alternatives and evidence gaps.
 
 Source completion alone does not authorize dependency resolution, a product or
 package build, a live-target patch, firmware upgrade, or publication. When the
