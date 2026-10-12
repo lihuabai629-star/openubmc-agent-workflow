@@ -81,7 +81,7 @@ if control.get('FAKE_PYTHON_ENV_LOG'):
     with open(control['FAKE_PYTHON_ENV_LOG'], 'a') as stream:
         stream.write(json.dumps({name: os.environ.get(name) for name in (
             'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_KB_PASSWORD',
-            'OPENUBMC_MCP_TASK_ID', 'OPENUBMC_EXECUTION_HOST')}) + '\\n')
+            'OPENUBMC_MCP_TASK_ID', 'OPENUBMC_EXECUTION_HOST', 'OPENUBMC_MDB_PROPERTY_CONTRACTS')}) + '\\n')
 if '-c' in args or 'prepare' in args or 'cleanup-retired' in args:
     if 'prepare' in args and control.get('FAKE_PYTHON_PREPARE_ERROR'):
         print(control['FAKE_PYTHON_PREPARE_ERROR'], file=sys.stderr)
@@ -275,6 +275,7 @@ for line in sys.stdin:
             LOCALAPPDATA=str(self.base / "identity-local-app-data"),
             OPENUBMC_MCP_TASK_ID="task-fixture",
             OPENUBMC_MCP_SESSION_ID="session-fixture",
+            OPENUBMC_MDB_PROPERTY_CONTRACTS="operator-reviewed-property-contract.json",
             OPENUBMC_CREDENTIALS_FILE="private-password-fixture",
             OPENUBMC_KB_PASSWORD="kb-password-fixture",
             OPENUBMC_KB_CLIENT_SECRET="kb-client-secret-fixture",
@@ -286,6 +287,10 @@ for line in sys.stdin:
         child_environments = environment_log.read_text()
         self.assertIn("task-fixture", child_environments)
         self.assertIn("windows-native", child_environments)
+        self.assertIn("operator-reviewed-property-contract.json", child_environments)
+        manifest = json.loads((self.plugin / ".mcp.json").read_text())
+        self.assertIn("OPENUBMC_MDB_PROPERTY_CONTRACTS",
+                      manifest["mcpServers"]["openubmc-target-runtime"]["env_vars"])
         self.assertNotIn("private-password-fixture", child_environments)
         self.assertNotIn("kb-password-fixture", child_environments)
         self.assertNotIn("kb-client-secret-fixture", child_environments)
