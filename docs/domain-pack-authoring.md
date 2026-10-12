@@ -7,6 +7,13 @@ Domain Pack 是 Runtime Core 内部的领域扩展 Module。作者只需要声�
 Domain Pack 不会增加 Agent-facing operation。默认 Agent Interface 始终只有
 `observe` 与 `execute`。
 
+内置 MDB 属性 Pack 使用 `property-update-and-verify`，先运行 `mdb_property_modify`，
+再运行绑定同一任务和 MutationJournal 的只读 `mdb_property_verify`。单属性计划记录
+`property-state-v1`，与文件校验和、备份和回滚字段分离；普通文件 journal 的 JSON
+形状保持兼容。未知属性结果只允许相同 Effect 的只读查证，不按旧值推断未执行，
+也不自动重发或补偿。目标、类型、权限和 owner proof 契约见
+[属性修改](../openubmc-debug/references/property-modification.md)。
+
 ## READ_ONLY Pack
 
 ```python

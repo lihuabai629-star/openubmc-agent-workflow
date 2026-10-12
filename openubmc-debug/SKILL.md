@@ -1,6 +1,6 @@
 ---
 name: openubmc-debug
-description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感器异常、告警、服务启动失败、接口报错、两台 BMC 对比。Use for live target symptoms, a supplied BMC IP, diagnostic handoff, or post-upgrade verification; correlate source, MDB/D-Bus, Redfish, logs, and optional OS evidence. Remote diagnosis is read-only; route implementation, builds, upgrades, and file replacement to their owning skills."
+description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感器异常、告警、服务启动失败、接口报错、两台 BMC 对比。Use for live symptoms, diagnostic handoff, delivery verification, or authorized MDB property adjustment. Diagnosis is read-only; assignments use Runtime execute. Route source, builds, upgrades, and patches to their owners."
 ---
 
 # openUBMC Runtime Debug
@@ -14,8 +14,7 @@ Own read-only diagnosis and post-change verification:
 - diagnosis: explain and localize a current or reproduced symptom;
 - delivery verification: verify requested behavior on the deployed target.
 
-Accept prose or handoffs. Route implementation to its owner:
-
+Route implementation to its owner:
 - source or design change -> `openubmc-developer` or the matching specialist;
 - component or product build -> `openubmc-build`;
 - firmware upgrade or rollback -> `openubmc-upgrade`;
@@ -35,8 +34,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 - Treat one answer as one observation: combine related capability, MDB and systemd selectors needed for
   the answer in the same `observe` call. Do not run a separate capability preflight; the internal
   Observation Adapter performs it.
-- Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
-  recovery, verification, or acceptance phases, including a read-only diagnosis Run.
+- Call `execute` for diagnosis Runs, source changes, builds, patches, upgrades, verification
+  or an authorized MDB assignment. Read its property reference before any assignment.
 - A build-upgrade Run that requires exact Drive convergence may carry a bounded
   `hardware_acceptance.devices` declaration in its Debug entry arguments. It is validated
   before mutation but applied only to post-upgrade `debug_collect`: missing, unhealthy,
@@ -150,8 +149,8 @@ business acceptance.
 
 ## Read-only invariants
 
-- Keep all remote actions read-only: no restart, mutation, upload, upgrade, replacement, or
-  arbitrary method. BMC SSH and `doctor.py --os-check` use `insecure`.
+- Keep all remote actions read-only in diagnostic helpers and `observe`. Diagnostic SSH uses
+  `insecure`; the typed property workflow requires strict host verification.
 - Bound object trees, logs, files, source searches, deadlines, and output. Preserve timestamps and
   relevant excerpts.
 - Treat current alarm reads as current state and historical event APIs as history.
@@ -172,6 +171,7 @@ Read the relevant one-hop references:
 - Optional user-configured integrations: `references/optional-integrations.md`
 - Component ownership hints: `references/components.md`
 - MDB access: `references/mdbctl-access.md`
+- Authorized MDB assignment and recovery: `references/property-modification.md`
 - D-Bus access: `references/busctl-access.md`
 - Generic object access: `references/object-access.md`
 - Active alarm access: `references/alarm-access.md`
