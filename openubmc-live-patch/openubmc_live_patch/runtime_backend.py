@@ -330,7 +330,7 @@ def _atomic_restore_command(
 ) -> str:
     parent = posixpath.dirname(remote)
     name = posixpath.basename(remote)
-    work = f".openubmc-live-patch-restore-{token}"
+    work = f".openubmc-r-{token}"
     payload = f"{work}/payload"
     return (
         f"(cd -P {shlex.quote(parent)} && "
@@ -1816,6 +1816,20 @@ class LivePatchMcpBackend:
                             },
                         )
                     )
+                command = _compressed_shell_command(
+                    _atomic_remove_command(remote, expected_current_sha)
+                    if remove_created
+                    else _atomic_restore_command(
+                        backup,
+                        remote,
+                        mode,
+                        token,
+                        str(rollback_backup["sha256"]),
+                        int(rollback_backup["uid"]),
+                        int(rollback_backup["gid"]),
+                    ),
+                    phase="r",
+                )
                 _prepare_root_mount(
                     execution,
                     context,
@@ -1825,13 +1839,7 @@ class LivePatchMcpBackend:
                 execution.mark_effects_started()
                 if remove_created:
                     removed = execution.run_telnet(
-                        _compressed_shell_command(
-                            _atomic_remove_command(
-                                remote,
-                                expected_current_sha,
-                            ),
-                            phase="r",
-                        ),
+                        command,
                         timeout=min(40.0, context.remaining()),
                     )
                     restored_text = _telnet_stdout(removed, marker="remove_ok")
@@ -1846,18 +1854,7 @@ class LivePatchMcpBackend:
                     )
                 else:
                     restored = execution.run_telnet(
-                        _compressed_shell_command(
-                            _atomic_restore_command(
-                                backup,
-                                remote,
-                                mode,
-                                token,
-                                str(rollback_backup["sha256"]),
-                                int(rollback_backup["uid"]),
-                                int(rollback_backup["gid"]),
-                            ),
-                            phase="r",
-                        ),
+                        command,
                         timeout=min(40.0, context.remaining()),
                     )
                     restored_text = _telnet_stdout(restored, marker="restore_ok")
