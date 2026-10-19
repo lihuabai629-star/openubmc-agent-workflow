@@ -40,6 +40,7 @@ from openubmc_target_runtime.capability import (  # noqa: E402
 from openubmc_live_patch.runtime_backend import (  # noqa: E402
     LivePatchMcpBackend,
     _LivePatchTask,
+    _inspect_live_patch_recovery,
 )
 
 
@@ -702,6 +703,52 @@ class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_recovery_reads_bound_business_and_long_backup_paths(self) -> None:
+        digest = "a" * 64
+        paths = (
+            (
+                "/opt/bmc/apps/network_adapter/lualib/ncsi/ncsi_comm.lua",
+                "/tmp/ncsi_comm.lua.bak.6cf07d669b4b9616",
+            ),
+            ("/opt/bmc/apps/demo/unit.lua", "/tmp/unit.lua.bak." + "1" * 100),
+        )
+        for remote, backup in paths:
+            with self.subTest(remote=remote, backup=backup):
+                transport = FakeTelnetTransport(digest, target_exists=True)
+                commands: list[str] = []
+
+                class BoundedReadLane:
+                    def run_command(lane_self, command: str, **kwargs):
+                        commands.append(command)
+                        self.assertLessEqual(len(command.encode()), 700)
+                        inspected = (
+                            decoded_shell_script(command)
+                            if "busybox base64 -d" in command
+                            else command
+                        )
+                        self.assertNotIn("mount -o remount", inspected)
+                        self.assertNotIn("cp -", inspected)
+                        self.assertNotIn("restart", inspected)
+                        return transport.run_command(None, inspected, **kwargs)
+
+                snapshot = _inspect_live_patch_recovery(
+                    BoundedReadLane(),
+                    recovery_context("bounded-recovery", "same-effect"),
+                    remote=remote,
+                    remote_root="/opt/bmc/apps",
+                    backup=backup,
+                    guard_backup=True,
+                    root_mount_mode="rw",
+                    unknown_mount_restored=None,
+                    restart_scope="none",
+                    restart_state="",
+                )
+                self.assertEqual(snapshot.remote_checksum, digest)
+                self.assertEqual(snapshot.backup_checksum, digest)
+                self.assertEqual(snapshot.remote_metadata, {"mode": "440", "uid": 104, "gid": 104})
+                self.assertTrue(snapshot.recovery_safe)
+                self.assertTrue(any("busybox base64 -d" in command for command in commands))
+
     def test_backend_rejects_a_missing_health_anchor_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

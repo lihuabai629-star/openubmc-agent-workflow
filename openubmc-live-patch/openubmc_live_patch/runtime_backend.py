@@ -777,7 +777,9 @@ def _inspect_live_patch_recovery(
         )
 
     target_identity = _inspect_live_patch_target_identity(lane, context)
-    remote_result = lane.run_command(
+    remote_result = _run_bounded_lane_command(
+        lane,
+        context,
         "if test -L {remote}; then echo remote_symlink; "
         "elif test -f {remote}; then "
         "remote_sha=$(sha256sum {remote} | awk '{{print $1}}'); "
@@ -788,7 +790,7 @@ def _inspect_live_patch_recovery(
         '"$remote_sha" "$remote_mode" "$remote_uid" "$remote_gid"; '
         "echo remote_exists; else echo remote_missing; fi; "
         "echo live_patch_recovery_inspected".format(remote=shlex.quote(remote)),
-        timeout=min(20.0, context.remaining()),
+        phase="r",
     )
     remote_text = _telnet_stdout(
         remote_result,
@@ -812,7 +814,9 @@ def _inspect_live_patch_recovery(
     backup_checksum = ""
     backup_metadata: dict[str, int | str] = {}
     if backup:
-        backup_result = lane.run_command(
+        backup_result = _run_bounded_lane_command(
+            lane,
+            context,
             "if test -L {backup}; then echo backup_symlink; "
             "elif test -f {backup}; then "
             "backup_sha=$(sha256sum {backup} | awk '{{print $1}}'); "
@@ -824,7 +828,7 @@ def _inspect_live_patch_recovery(
             "echo backup_exists; else echo backup_missing; fi".format(
                 backup=shlex.quote(backup)
             ),
-            timeout=min(20.0, context.remaining()),
+            phase="r",
         )
         backup_text = _telnet_text(
             backup_result,

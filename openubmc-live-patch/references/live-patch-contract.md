@@ -67,6 +67,8 @@ Before any remount, staging, backup, deploy, or rollback mutation, the remote si
 
 Rollback validates its complete encoded command against the 700-byte Telnet body limit before changing the root mount or marking effects started. An oversized command fails before any remount, restore, removal, or restart; it does not create an uncertain mutation outcome.
 
+Recovery checksum and metadata reads use the same bounded codec when a target or backup path makes the inspection command exceed the Telnet body limit. These inspections do not remount, replace a file, or restart the framework.
+
 When Apply observes that the target did not exist, return a rollback plan using
 `--remove-created --expected-current-sha256 <deployed-sha256>`. That rollback
 must require the current regular file to match the deployed checksum, remove
