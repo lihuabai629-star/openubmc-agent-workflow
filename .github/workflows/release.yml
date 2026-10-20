@@ -38,9 +38,14 @@ permissions:
   checks: read
   actions: read
 
+concurrency:
+  group: release-${{ github.workflow }}-${{ inputs.current_ref }}
+  cancel-in-progress: false
+
 jobs:
   release-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     outputs:
       release_tag: ${{ steps.candidate.outputs.release_tag }}
     permissions:
@@ -48,16 +53,17 @@ jobs:
       checks: read
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ inputs.current_ref == 'HEAD' && github.sha || inputs.current_ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12.13"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.23.2"
           cache: npm
@@ -121,14 +127,17 @@ jobs:
 
       - name: Run immutable release gates
         env:
+          CURRENT_REF: ${{ inputs.current_ref }}
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
           FORMAL_MODEL_IDENTITY: ${{ inputs.model_identity }}
           FORMAL_CODEX_IDENTITY: ${{ inputs.codex_identity }}
         run: >-
           python3 scripts/release_gate.py
-          --current-ref "${{ inputs.current_ref }}"
-          --release-tag "${{ steps.candidate.outputs.release_tag }}"
-          --previous-ref "${{ inputs.previous_ref }}"
+          --current-ref "$CURRENT_REF"
+          --release-tag "$RELEASE_TAG"
+          --previous-ref "$PREVIOUS_REF"
           --model-identity "$FORMAL_MODEL_IDENTITY"
           --codex-identity "$FORMAL_CODEX_IDENTITY"
           --github-repository "${{ github.repository }}"
@@ -138,21 +147,50 @@ jobs:
           --output "$RUNNER_TEMP/release-gate.json"
 
       - name: Upload release evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-gate-${{ inputs.current_ref }}
-          path: |
-            ${{ runner.temp }}/agent-gateway-ab-evidence/summary.json
-            ${{ runner.temp }}/agent-gateway-ab-evidence/all_metrics.json
-            ${{ runner.temp }}/agent-gateway-ab-evidence/run_evidence.json
-            ${{ runner.temp }}/agent-gateway-ab-evidence/schedule.json
-            ${{ runner.temp }}/agent-gateway-ab-evidence.tar.xz
-            ${{ runner.temp }}/release-gate.json
-            ${{ runner.temp }}/release-gate-work/github-ci-evidence.json
-            ${{ runner.temp }}/release-gate-work/runtime-qualification.json
-            ${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json
-          if-no-files-found: error
+        if: ${{ !cancelled() && steps.candidate.outputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.release_tag }}
+          EVIDENCE_PATHS: |
+            agent-gateway-ab-evidence/summary.json
+            agent-gateway-ab-evidence/all_metrics.json
+            agent-gateway-ab-evidence/run_evidence.json
+            agent-gateway-ab-evidence/schedule.json
+            agent-gateway-ab-evidence.tar.xz
+            release-gate.json
+            release-gate-work/github-ci-evidence.json
+            release-gate-work/runtime-qualification.json
+            release-gate-work/codex-adoption-qualification.json
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          cd "$RUNNER_TEMP"
+          EVIDENCE_ARCHIVE="release-gate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar.gz"
+          python3 - "$EVIDENCE_ARCHIVE" <<'PYCODE'
+          import os, sys, tarfile
+          from pathlib import Path
+          files = set()
+          for entry in os.environ["EVIDENCE_PATHS"].splitlines():
+              root = Path(entry)
+              if not entry or root.is_absolute() or ".." in root.parts:
+                  raise SystemExit("Release evidence paths must be relative to RUNNER_TEMP")
+              if any(path.is_symlink() for path in [root, *root.parents]):
+                  raise SystemExit("Release evidence must not contain symbolic links")
+              if not root.exists():
+                  continue
+              for path in [root, *root.rglob("*")] if root.is_dir() else [root]:
+                  if path.is_symlink():
+                      raise SystemExit("Release evidence must not contain symbolic links")
+                  if path.is_file():
+                      files.add(path)
+          if not files:
+              raise SystemExit("No release evidence was produced")
+          with tarfile.open(sys.argv[1], "w:gz") as archive:
+              for path in sorted(files):
+                  archive.add(path, arcname=str(path), recursive=False)
+          PYCODE
+          sha256sum "$EVIDENCE_ARCHIVE" > "$EVIDENCE_ARCHIVE.sha256"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            "$EVIDENCE_ARCHIVE" "$EVIDENCE_ARCHIVE.sha256"
 
       - name: Install locked Codex plugin host
         run: |
@@ -183,14 +221,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ needs.release-gate.outputs.release_tag }}
           fetch-depth: 0
 
       - name: Check out public marketplace release
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           repository: lihuabai629-star/openubmc-codex-plugins
           ref: ${{ needs.release-gate.outputs.release_tag }}
           path: public-marketplace
@@ -200,7 +240,7 @@ jobs:
         shell: pwsh
         run: ./scripts/setup_windows_python.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP "openubmc-python-3.12.15") -ExportToGitHubActions
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22.23.2"
 
@@ -225,14 +265,16 @@ jobs:
             -VerifyPublicIdentity
 
   promote:
+    timeout-minutes: 5
     if: ${{ inputs.promote }}
     needs: [release-gate, windows-plugin-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ needs.release-gate.outputs.release_tag }}
           fetch-depth: 0
 

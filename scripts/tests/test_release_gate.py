@@ -1524,30 +1524,31 @@ class ReleaseGateTests(unittest.TestCase):
         )
 
         steps = {
-            step.get("name", step.get("uses", "")): step
+            step.get("name", step.get("uses", "").split("@", 1)[0]): step
             for step in workflow["jobs"]["release-gate"]["steps"]
         }
-        self.assertIn("actions/checkout@v7", steps)
+        self.assertIn("actions/checkout", steps)
         self.assertEqual(
-            steps["actions/checkout@v7"]["with"]["ref"],
+            steps["actions/checkout"]["with"]["ref"],
             "${{ inputs.current_ref == 'HEAD' && github.sha || inputs.current_ref }}",
         )
         self.assertEqual(
-            steps["actions/setup-python@v7"]["with"]["python-version"],
+            steps["actions/setup-python"]["with"]["python-version"],
             "3.12.13",
         )
         self.assertEqual(
-            steps["actions/setup-node@v7"]["with"]["node-version"],
+            steps["actions/setup-node"]["with"]["node-version"],
             "22.23.2",
         )
         self.assertEqual(
             steps["Install locked Node validation dependencies"]["run"],
             "npm ci --no-audit --no-fund --prefix openubmc-kb-mcp",
         )
-        self.assertEqual(
-            steps["Upload release evidence"]["uses"],
-            "actions/upload-artifact@v7",
-        )
+        evidence = steps["Upload release evidence"]
+        self.assertNotIn("uses", evidence)
+        self.assertIn("gh release upload", evidence["run"])
+        self.assertIn("--json isDraft", evidence["run"])
+        self.assertNotIn("continue-on-error", evidence)
         resolve = steps["Resolve release candidate identity"]
         self.assertEqual(resolve["id"], "candidate")
         self.assertIn('git rev-parse "${REQUESTED_REF}^{commit}"', resolve["run"])
@@ -1591,11 +1592,11 @@ class ReleaseGateTests(unittest.TestCase):
             "${{ inputs.codex_identity }}",
         )
         self.assertIn(
-            '--current-ref "${{ inputs.current_ref }}"',
+            '--current-ref "$CURRENT_REF"',
             gate,
         )
         self.assertIn(
-            '--release-tag "${{ steps.candidate.outputs.release_tag }}"',
+            '--release-tag "$RELEASE_TAG"',
             gate,
         )
         self.assertIn('--model-identity "$FORMAL_MODEL_IDENTITY"', gate)
@@ -1611,20 +1612,20 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("--github-repository \"${{ github.repository }}\"", gate)
         self.assertIn('--work-root "$RUNNER_TEMP/release-gate-work"', gate)
         uploaded = set(
-            steps["Upload release evidence"]["with"]["path"].splitlines()
+            steps["Upload release evidence"]["env"]["EVIDENCE_PATHS"].splitlines()
         )
         self.assertEqual(
             uploaded,
             {
-                "${{ runner.temp }}/agent-gateway-ab-evidence/summary.json",
-                "${{ runner.temp }}/agent-gateway-ab-evidence/all_metrics.json",
-                "${{ runner.temp }}/agent-gateway-ab-evidence/run_evidence.json",
-                "${{ runner.temp }}/agent-gateway-ab-evidence/schedule.json",
-                "${{ runner.temp }}/agent-gateway-ab-evidence.tar.xz",
-                "${{ runner.temp }}/release-gate.json",
-                "${{ runner.temp }}/release-gate-work/github-ci-evidence.json",
-                "${{ runner.temp }}/release-gate-work/runtime-qualification.json",
-                "${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json",
+                "agent-gateway-ab-evidence/summary.json",
+                "agent-gateway-ab-evidence/all_metrics.json",
+                "agent-gateway-ab-evidence/run_evidence.json",
+                "agent-gateway-ab-evidence/schedule.json",
+                "agent-gateway-ab-evidence.tar.xz",
+                "release-gate.json",
+                "release-gate-work/github-ci-evidence.json",
+                "release-gate-work/runtime-qualification.json",
+                "release-gate-work/codex-adoption-qualification.json",
             },
         )
         self.assertEqual(

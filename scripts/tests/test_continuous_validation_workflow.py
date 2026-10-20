@@ -46,7 +46,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
                 for step in preflight["steps"]
                 if step.get("name") == "Validate CI contract"
             ),
-            "python -m unittest scripts.tests.test_continuous_validation_workflow",
+            "python -m unittest scripts.tests.test_continuous_validation_workflow scripts.tests.test_ci_evidence_archive",
         )
 
     def test_pull_requests_and_main_pushes_run_validation(self) -> None:
@@ -71,9 +71,9 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         checkout = next(
             step for step in self.steps() if step.get("name") == "Check out repository"
         )
-        self.assertEqual(checkout["uses"], "actions/checkout@v7")
+        self.assertRegex(checkout["uses"], r"^actions/checkout@[0-9a-f]{40}$")
         python = self.step("Set up Python")
-        self.assertEqual(python["uses"], "actions/setup-python@v7")
+        self.assertRegex(python["uses"], r"^actions/setup-python@[0-9a-f]{40}$")
         self.assertEqual(python["with"]["python-version"], "3.12.13")
         self.assertEqual(
             self.step("Install locked Python validation dependencies")["run"],
@@ -99,7 +99,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         ))
         self.assertGreaterEqual(sum(line.startswith("    --hash=") for line in lines), len(pinned))
         node = self.step("Set up Node.js")
-        self.assertEqual(node["uses"], "actions/setup-node@v7")
+        self.assertRegex(node["uses"], r"^actions/setup-node@[0-9a-f]{40}$")
         self.assertEqual(node["with"]["node-version"], "22.23.2")
         self.assertEqual(node["with"]["cache"], "npm")
         self.assertEqual(
@@ -129,6 +129,27 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
             lock["packages"]["node_modules/@openai/codex"]["version"],
             "0.151.0",
         )
+
+    def test_workflows_pin_actions_and_do_not_persist_checkout_credentials(self) -> None:
+        for path in sorted((REPO_ROOT / ".github/workflows").glob("*.yml")):
+            workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+            for job in workflow["jobs"].values():
+                self.assertIn("timeout-minutes", job, path.name)
+                for step in job.get("steps", []):
+                    action = step.get("uses", "")
+                    if action:
+                        self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$", path.name)
+                    if action.startswith("actions/checkout@"):
+                        self.assertEqual(step["with"]["persist-credentials"], "false", path.name)
+
+    def test_required_validation_does_not_depend_on_artifact_storage(self) -> None:
+        self.assertFalse(any(
+            step.get("uses", "").startswith("actions/upload-artifact@")
+            for job in self.workflow["jobs"].values() for step in job["steps"]
+        ))
+        summary = self.step("Summarize plugin qualification")
+        self.assertIn("GITHUB_STEP_SUMMARY", summary["run"])
+        self.assertEqual(summary["env"]["QUALIFICATION_OUTCOME"], "${{ steps.qualification.outcome }}")
 
     def test_validation_does_not_request_credentials_or_private_targets(self) -> None:
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
