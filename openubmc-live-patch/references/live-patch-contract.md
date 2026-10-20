@@ -75,6 +75,8 @@ must require the current regular file to match the deployed checksum, remove
 only that exact path, and freshly verify that neither the path nor a symlink
 exists. It must not accept a backup at the same time.
 
+A terminal rollback journal replay omits raw mutation and verification callback payloads. Closeout accepts its persisted absence result only when the journal records a verified rollback, expected absence, restored root mount, verified checks, and no expected or observed checksum. Incomplete or contradictory journal evidence does not establish removal.
+
 ## Apply result
 
 A successful apply returns exit `0`, `ok=true`, and `dry_run=false`. Evidence includes:

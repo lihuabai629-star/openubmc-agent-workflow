@@ -1238,6 +1238,18 @@ class ContradictoryRemovedFileRollbackBackend(RemovedFileRollbackBackend):
         return value
 
 
+class ReplayedRemovedFileRollbackBackend(RemovedFileRollbackBackend):
+    def __init__(self, journal_overrides=None) -> None:
+        super().__init__()
+        self.journal_overrides = journal_overrides or {}
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().live_patch_run(task, arguments, context)
+        value.update(idempotent_replay=True, mutation=None, verification=None)
+        value["journal"].update({"verification_state": "verified", **self.journal_overrides})
+        return value
+
+
 class ConflictingAcceptanceSemanticBackend(SemanticBackend):
     def debug_collect(self, task, arguments, context) -> dict[str, object]:
         value = super().debug_collect(task, arguments, context)
@@ -12756,6 +12768,58 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(integrity["status"], "passed")
         self.assertEqual([name for name, _args in backend.calls], ["live_patch_run", "debug_collect"])
+
+    def test_verified_remove_created_journal_replay_closes_without_raw_callback_results(self) -> None:
+        for overrides, accepted in (
+            ({}, True),
+            ({"verification_state": "unknown"}, False),
+            ({"root_mount_restored": False}, False),
+            ({"expected_checksum": "a" * 64}, False),
+            ({"observed_checksum": "a" * 64}, False),
+            ({"action": "live_patch"}, False),
+        ):
+            with self.subTest(overrides=overrides):
+                backend = ReplayedRemovedFileRollbackBackend(overrides)
+                service = RuntimeMcpService(backend)
+                try:
+                    turn = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "start", "target": "192.0.2.75", "intent": "rollback",
+                            "entry_operation": "live_patch_run",
+                            "entry_arguments": {
+                                "action": "rollback", "remove_created": True,
+                                "remote_path": "/tmp/created-by-live-patch.lua",
+                                "expected_current_sha256": "a" * 64,
+                                "restart_scope": "none",
+                            },
+                        },
+                        task_id="replayed-remove-created",
+                        operation_id="replayed-remove-created-start",
+                    )
+                    for index in range(8):
+                        if turn["state"] != "running":
+                            break
+                        turn = service.call_exposed_tool(
+                            "execute", {"kind": "resume", "run_id": turn["run_id"]},
+                            task_id="replayed-remove-created",
+                            operation_id=f"replayed-remove-created-resume-{index}",
+                        )
+                    projection = service._test.context_runtime.read_case(turn["run_id"])
+                finally:
+                    service.close()
+                self.assertEqual(turn["state"], "completed" if accepted else "failed")
+                integrity = next(
+                    check for check in projection["closeout"]["checks"]
+                    if check["requirement_id"] == "acceptance.live-patch.integrity"
+                )
+                self.assertEqual(integrity["status"] == "passed", accepted)
+                self.assertEqual(
+                    [name for name, _args in backend.calls],
+                    ["live_patch_run"]
+                    if overrides.get("action") == "live_patch"
+                    else ["live_patch_run", "debug_collect"],
+                )
 
     def test_remove_created_rollback_cannot_close_on_conflicting_checksum_evidence(self) -> None:
         backend = ContradictoryRemovedFileRollbackBackend()
