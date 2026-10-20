@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>openUBMC</title><!--STYLE--></head>
+<body>
+<main class="panel">
+  <header class="masthead">
+    <div class="brand"><svg aria-hidden="true" viewBox="0 0 28 28" width="30" height="30"><rect x="3" y="4" width="22" height="8" rx="2"/><rect x="3" y="16" width="22" height="8" rx="2"/><path d="M7 8h1m4 0h9M7 20h1m4 0h9"/></svg><strong>openUBMC</strong></div>
+    <div class="display-actions"><button id="pin" class="quiet" hidden>保持显示</button><button id="expand" class="quiet" hidden>展开</button></div>
+  </header>
+  <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">等待连接</span><span id="mode" class="mode"></span></div>
+  <nav class="tabs" role="tablist" aria-label="面板内容"><button id="workflow-tab" role="tab" aria-selected="true" aria-controls="workflow">工作流</button><button id="knowledge-tab" role="tab" aria-selected="false" aria-controls="knowledge">知识库</button></nav>
+  <div id="notice" role="status" class="notice" hidden></div>
+  <p id="local-note" class="notice" hidden>知识库可直接提问。继续工作流时，请在 Codex 对话中发送 Run ID。</p>
+  <section id="workflow" role="tabpanel" aria-labelledby="workflow-tab">
+    <div class="section-heading"><h1>当前工作流</h1><span id="state" class="state">尚未载入</span></div>
+    <form id="run-form" class="input-row"><label class="sr-only" for="run-id">Run ID</label><input id="run-id" placeholder="输入 Run ID 查看已有工作流" autocomplete="off" maxlength="256"><button id="load-run" type="submit" disabled>查看</button></form>
+    <article class="receipt"><div class="receipt-heading"><span class="receipt-mark" aria-hidden="true">○</span><h2 id="receipt-title">还没有工作流回执</h2></div><p id="summary">在对话中发起诊断，或输入已有 Run ID 查看进展。</p><p id="gate" class="gate" hidden></p><p id="incident" class="incident" hidden></p></article>
+    <div class="section-heading evidence-heading"><h2>证据</h2><span id="evidence-count" class="muted"></span></div>
+    <ul id="evidence" class="evidence-list"></ul><p id="no-evidence" class="empty-note">收到回执后，证据引用会显示在这里。</p>
+    <button id="continue" class="primary wide" disabled>在对话中继续</button>
+    <details id="details" hidden><summary>查看回执详情</summary><pre id="raw"></pre></details>
+  </section>
+  <section id="knowledge" role="tabpanel" aria-labelledby="knowledge-tab" hidden>
+    <div class="section-heading"><h1>检索技术资料</h1></div>
+    <form id="search-form"><label for="query">你的问题</label><textarea id="query" rows="3" maxlength="2000" placeholder="例如：如何排查温度传感器未上报？"></textarea><button id="search" class="primary wide" type="submit" disabled>查询知识库</button></form>
+    <p id="kb-empty" class="empty-note">输入 openUBMC 技术问题，查看相关资料和来源。</p><article id="kb-answer" class="kb-answer" hidden></article><ul id="references" class="evidence-list"></ul>
+  </section>
+  <footer><span id="service-note">设备凭据保留在连接器主机</span><button id="refresh" class="quiet" disabled>检查连接</button></footer>
+</main>
+<!--SCRIPT-->
+</body></html>

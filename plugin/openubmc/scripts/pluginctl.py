@@ -258,19 +258,30 @@ def dependency_root(content: dict[str, bytes], capability: str) -> Path:
 
 def dependency_inventory(root: Path) -> dict:
     result = {}
-    for path in sorted(root.rglob('*')):
-        relative = path.relative_to(root).as_posix()
-        if relative == 'receipt.json':
-            continue
-        if path.is_symlink():
-            if not path.resolve().is_relative_to(root.resolve()):
-                raise ValueError('dependency symlink escapes its cache')
-            result[relative] = {'link': os.readlink(path)}
-        elif path.is_file():
-            identity = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-            if sys.platform != 'win32':
-                identity['mode'] = path.stat().st_mode & 0o777
-            result[relative] = identity
+    resolved_root = root.resolve()
+
+    def visit(directory: str | Path, prefix: str = '') -> None:
+        # DirEntry reuses directory metadata on Windows. Path.rglob followed by
+        # several Path predicates repeats expensive filesystem calls per member.
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                relative = prefix + entry.name
+                if entry.is_symlink():
+                    if relative == 'receipt.json':
+                        continue
+                    if not Path(entry.path).resolve().is_relative_to(resolved_root):
+                        raise ValueError('dependency symlink escapes its cache')
+                    result[relative] = {'link': os.readlink(entry.path)}
+                elif entry.is_dir(follow_symlinks=False):
+                    visit(entry.path, relative + '/')
+                elif relative != 'receipt.json' and entry.is_file(follow_symlinks=False):
+                    with open(entry.path, 'rb') as stream:
+                        identity = {'sha256': hashlib.sha256(stream.read()).hexdigest()}
+                    if sys.platform != 'win32':
+                        identity['mode'] = entry.stat(follow_symlinks=False).st_mode & 0o777
+                    result[relative] = identity
+
+    visit(root)
     return result
 
 
