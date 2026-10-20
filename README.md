@@ -110,6 +110,10 @@ rollback. JSON install and check output reports `requested_ref`, `ref_kind`, and
 
 ## Validation
 
+Pull requests and `main` pushes run Linux validation and native Windows plugin bootstrap. Ordinary checks write status and report checksums to the Actions summary without uploading artifacts. A summary does not replace full release evidence.
+
+The manual release workflow attaches selected evidence and its SHA-256 checksum to the existing draft Release, including failed gate results. Promotion requires every release gate to succeed; evidence upload failures also fail the job.
+
 ```bash
 python3 scripts/validate_workflow.py
 ```
