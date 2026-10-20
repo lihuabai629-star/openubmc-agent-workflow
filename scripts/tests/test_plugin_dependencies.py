@@ -160,6 +160,23 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertIn('repair-overrides', report['codex_configuration']['repair_action'])
         self.assertEqual(config.read_text(), original)
 
+    def test_startup_prerequisites_do_not_claim_protocol_health_and_detect_cache_drift(self):
+        prepared = self.prepare('--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.env['FIXTURE_NULL_SERVER'] = '1'
+        command = [*self.cli[:-1], 'doctor', '--capability', 'runtime', '--prerequisites-only']
+        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report['prerequisites_ready'])
+        self.assertFalse(report['startup_ready'])
+        self.assertEqual(report['mcp_health']['runtime'], {'ok': False, 'checked': False, 'tools': []})
+        root = Path(json.loads(prepared.stdout)['capability_dependencies']['runtime'])
+        (root/'unexpected.py').write_text('unlisted dependency content')
+        drifted = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(drifted.returncode, 2, drifted.stderr)
+        self.assertFalse(json.loads(drifted.stdout)['prerequisites_ready'])
+
     def test_malformed_kb_receipt_does_not_hide_healthy_runtime(self):
         prepared = self.prepare('--offline')
         self.assertEqual(prepared.returncode, 0, prepared.stderr)

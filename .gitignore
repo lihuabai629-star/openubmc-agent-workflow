@@ -14,3 +14,5 @@ build/
 *.log
 .scratch/
 live-smoke-results/
+.playwright-cli/
+output/playwright/

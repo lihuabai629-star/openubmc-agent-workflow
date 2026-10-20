@@ -258,19 +258,30 @@ def dependency_root(content: dict[str, bytes], capability: str) -> Path:
 
 def dependency_inventory(root: Path) -> dict:
     result = {}
-    for path in sorted(root.rglob('*')):
-        relative = path.relative_to(root).as_posix()
-        if relative == 'receipt.json':
-            continue
-        if path.is_symlink():
-            if not path.resolve().is_relative_to(root.resolve()):
-                raise ValueError('dependency symlink escapes its cache')
-            result[relative] = {'link': os.readlink(path)}
-        elif path.is_file():
-            identity = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-            if sys.platform != 'win32':
-                identity['mode'] = path.stat().st_mode & 0o777
-            result[relative] = identity
+    resolved_root = root.resolve()
+
+    def visit(directory: str | Path, prefix: str = '') -> None:
+        # DirEntry reuses directory metadata on Windows. Path.rglob followed by
+        # several Path predicates repeats expensive filesystem calls per member.
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                relative = prefix + entry.name
+                if entry.is_symlink():
+                    if relative == 'receipt.json':
+                        continue
+                    if not Path(entry.path).resolve().is_relative_to(resolved_root):
+                        raise ValueError('dependency symlink escapes its cache')
+                    result[relative] = {'link': os.readlink(entry.path)}
+                elif entry.is_dir(follow_symlinks=False):
+                    visit(entry.path, relative + '/')
+                elif relative != 'receipt.json' and entry.is_file(follow_symlinks=False):
+                    with open(entry.path, 'rb') as stream:
+                        identity = {'sha256': hashlib.sha256(stream.read()).hexdigest()}
+                    if sys.platform != 'win32':
+                        identity['mode'] = entry.stat(follow_symlinks=False).st_mode & 0o777
+                    result[relative] = identity
+
+    visit(root)
     return result
 
 
@@ -781,6 +792,7 @@ def main() -> int:
     parser.add_argument('--capability', choices=['runtime', 'kb', 'all'], default='all', help='Capability to prepare or diagnose')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
     parser.add_argument('--cleanup-retired', action='store_true', help='Retire verified orphan MCPs during doctor preflight')
+    parser.add_argument('--prerequisites-only', action='store_true', help='Check verified startup prerequisites; the launcher qualifies its live MCP session')
     parser.add_argument('--prepare-on-start', action='store_true', help='Prepare locked dependencies before the first MCP startup')
     parser.add_argument('--offline', action='store_true', help='Disable package index access')
     parser.add_argument('--retries', type=int, choices=range(4), default=0, help='Additional bounded attempts per stage')
@@ -887,7 +899,7 @@ def main() -> int:
             report['capabilities'] = {}
             report['mcp_health'] = {}
             for capability in capabilities:
-                status = {'dependencies_ready': False, 'startup_ready': False}
+                status = {'dependencies_ready': False, 'startup_ready': False, 'prerequisites_ready': False}
                 try:
                     root = dependency_root(content, capability)
                     check_dependencies(root)
@@ -896,14 +908,24 @@ def main() -> int:
                         _expected, _paths, cache, key = execution_snapshot_plan(content, lock, root)
                         if not (cache/key).is_dir():
                             raise ValueError('Execution snapshot is not prepared; run pluginctl.py prepare')
-                    health = probe_server(capability, content, lock, knowledge_mcp_version)
-                    status['startup_ready'] = health['ok']
+                    if args.prerequisites_only:
+                        # Check every dependency and snapshot byte without starting a
+                        # disposable server. The bootstrap qualifies the live session.
+                        launch_plan(capability, content, lock)
+                        status['prerequisites_ready'] = True
+                        health = {'ok': False, 'checked': False, 'tools': []}
+                    else:
+                        health = probe_server(capability, content, lock, knowledge_mcp_version)
+                        status['startup_ready'] = health['ok']
+                        status['prerequisites_ready'] = True
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     status['error'] = str(error)
                     health = {'ok': False, 'error': 'dependencies unavailable'}
                 report['capabilities'][capability] = status
                 report['mcp_health'][capability] = health
             report['dependencies_ready'] = all(item['dependencies_ready'] for item in report['capabilities'].values())
+            report['prerequisites_ready'] = all(item['prerequisites_ready'] for item in report['capabilities'].values())
+            report['protocol_check_pending'] = args.prerequisites_only
             report['credentials'] = local_credentials_status(content)
             report['credentials_configured'] = report['credentials']['configured']
             report['local_configuration'] = local_configuration_status(content)
@@ -940,7 +962,8 @@ def main() -> int:
                 configuration['repair_action'] = ('reconcile custom settings if reported'
                     if not actions else '; '.join(actions))
             report['codex_configuration'] = configuration
-            report['ok'] = report['startup_ready'] and configuration['ready']
+            readiness = report['prerequisites_ready'] if args.prerequisites_only else report['startup_ready']
+            report['ok'] = readiness and configuration['ready']
         print(json.dumps(report, sort_keys=True))
         return 0 if report['ok'] else 2
     except DependencyCancelled as error:

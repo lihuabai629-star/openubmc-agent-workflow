@@ -56,6 +56,9 @@ telemetry readers remain. See [Agent Semantic Gateway](docs/agent-semantic-gatew
 
 ## Architecture and evolution
 
+For the native Codex sidebar panel, local knowledge-base UI, and optional ChatGPT integration, see
+[Panel setup](chatgpt-app/README.md).
+
 The stable product boundary, vocabulary, accepted decisions, market comparison, and phased roadmap
 are maintained in the following records:
 
@@ -147,7 +150,7 @@ In short:
 
 ## Immutable releases
 
-The development source version is 2.1.7. The current public Codex plugin release is
+The development source version is 2.1.8. The current public Codex plugin release is
 [2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.

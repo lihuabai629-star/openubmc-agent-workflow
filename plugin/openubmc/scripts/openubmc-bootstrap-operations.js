@@ -79,10 +79,14 @@ function createSetupOperations(adapter, capability) {
 
   function preflightBackend(backend) {
     const checked = adapter.run(backend.command,
-      [...backend.prefix, "doctor", "--cleanup-retired", "--capability", capability, ...backend.configurationArgs], { timeout: 45_000 });
+      [...backend.prefix, "doctor", "--cleanup-retired", "--prerequisites-only", "--capability", capability, ...backend.configurationArgs], { timeout: 45_000 });
     const report = parseJsonOutput(adapter, checked.stdout);
     const cleanupReport = report?.cleanup;
     const selected = report?.capabilities?.[capability];
+    if (!checked.error && checked.status === 0 && report?.protocol_check_pending === true
+        && selected?.prerequisites_ready === true && report?.codex_configuration?.ready) {
+      return { ok: true, protocol_pending: true, cleanup: cleanupReport, report };
+    }
     if (!checked.error && selected?.startup_ready && report?.codex_configuration?.ready
         && checked.status === 0 && report?.mcp_health?.[capability]?.ok === true) {
       return { ok: true, cleanup: cleanupReport, report };

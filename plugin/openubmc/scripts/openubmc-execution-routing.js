@@ -50,8 +50,8 @@ function canonicalArguments(value) {
 function runtimeProtocolHealthy(report) {
   const health = report?.mcp_health?.runtime;
   if (health?.ok !== true) return false;
-  // pluginctl.doctor obtains the names from a bounded MCP initialize/tools/list
-  // probe. A missing list cannot establish this Agent Interface.
+  // Either the live session or the full doctor probe must have completed
+  // initialize/tools/list. Prerequisite checks alone cannot establish this API.
   return Array.isArray(health.tools)
     && health.tools.includes("observe") && health.tools.includes("execute");
 }
@@ -96,7 +96,7 @@ function routeRuntimeCall(request, { report, hostPlatform, selectedWsl = null, s
     selected_wsl: null,
     requested_scope_mac: `hmac-sha256:${scopeMac}`,
     evidence_boundary: "typed_runtime_mcp_result",
-    protocol: { healthy: true, source: "pluginctl.doctor", probe: "initialize/tools/list" },
+    protocol: { healthy: true, source: report.mcp_health.runtime.source || "pluginctl.doctor", probe: "initialize/tools/list" },
     fallback: null,
     structured_call_number: sequence,
   };
