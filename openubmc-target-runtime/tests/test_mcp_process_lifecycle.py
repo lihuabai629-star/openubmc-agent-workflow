@@ -180,6 +180,58 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(by_pid[1301]["lifecycle_state"], "unknown-owner")
         self.assertFalse(by_pid[1301]["ownership_identity_bound"])
 
+    def test_unknown_owner_idle_timeout_waits_for_all_live_requests(self) -> None:
+        ownership_cases = (
+            {"client": "unknown-client", "task_id": "unknown-task"},
+            {"parent_pid": 1},
+            {"process_identity": lambda pid: "unknown"},
+        )
+        for ownership in ownership_cases:
+            with self.subTest(ownership=ownership), tempfile.TemporaryDirectory() as raw:
+                clock = FakeClock()
+                options = {
+                    "component": "target-runtime",
+                    "version": "test",
+                    "client": "codex",
+                    "task_id": "task-100",
+                    "session_id": "session-100",
+                    "parent_pid": 1200,
+                    "process_id": 1201,
+                    "state_path": Path(raw) / "runtime-state",
+                    "lifecycle_root": Path(raw) / "mcp-processes",
+                    "idle_timeout_seconds": 30,
+                    "monotonic_clock": clock.monotonic_time,
+                    "wall_clock": clock.wall_time,
+                    "process_alive": lambda pid: pid == 1200,
+                    "process_identity": lambda pid: f"process-{pid}-start",
+                    **ownership,
+                }
+                lifecycle = McpProcessLifecycle(**options)
+                self.assertEqual(lifecycle.status()["lifecycle_state"], "unknown-owner")
+                clock.monotonic += 29
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+
+                lifecycle.begin_request()
+                lifecycle.begin_request()
+                clock.monotonic += 60
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+                lifecycle.end_request()
+                clock.monotonic += 60
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+                lifecycle.end_request()
+                self.assertEqual(lifecycle.status()["idle_seconds"], 0)
+                clock.monotonic += 29
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+                clock.monotonic += 1
+                self.assertEqual(lifecycle.exit_reason_if_due(), "idle-timeout")
+
+                recorded = json.loads(lifecycle.record_path.read_text(encoding="utf-8"))
+                self.assertEqual(recorded["exit_reason"], "idle-timeout")
+                self.assertEqual(recorded["active_requests"], 0)
+                self.assertEqual(recorded["lifecycle_state"], "stopped")
+                with self.assertRaisesRegex(RuntimeError, "idle-timeout"):
+                    lifecycle.begin_request()
+
     def test_first_request_can_attribute_an_initially_unknown_client_task(self) -> None:
         clock = FakeClock()
         with tempfile.TemporaryDirectory() as raw:
@@ -212,6 +264,57 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded["task_id"], "request-task")
         self.assertEqual(recorded["session_id"], "request-session")
         self.assertEqual(recorded["lifecycle_state"], "idle")
+
+    def test_stdio_unknown_owner_exits_on_idle_timeout_with_stdin_open(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            child_program = textwrap.dedent(
+                """
+                import os
+                from pathlib import Path
+                import sys
+                from types import SimpleNamespace
+                from openubmc_target_runtime import McpProcessLifecycle, StdioMcpServer
+
+                root = Path(sys.argv[1])
+                lifecycle = McpProcessLifecycle(
+                    component="target-runtime",
+                    version="test",
+                    client="unknown-client",
+                    task_id="unknown-task",
+                    session_id="unknown-session",
+                    parent_pid=os.getppid(),
+                    state_path=root / "state",
+                    lifecycle_root=root / "mcp-processes",
+                    idle_timeout_seconds=0.2,
+                )
+                endpoint = SimpleNamespace(service=SimpleNamespace(close=lambda: None))
+                StdioMcpServer(
+                    endpoint,
+                    process_lifecycle=lifecycle,
+                    lifecycle_poll_seconds=0.01,
+                ).serve()
+                """
+            )
+            child = subprocess.Popen(
+                [sys.executable, "-B", "-c", child_program, raw],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONPATH": str(RUNTIME_ROOT)},
+            )
+            try:
+                child.wait(timeout=5)
+                self.assertEqual(child.returncode, 0, child.stderr.read().decode())
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+            records = list((Path(raw) / "mcp-processes").glob("*.json"))
+            self.assertEqual(len(records), 1)
+            recorded = json.loads(records[0].read_text(encoding="utf-8"))
+            self.assertEqual(recorded["exit_reason"], "idle-timeout")
+            self.assertEqual(recorded["active_requests"], 0)
+            self.assertEqual(recorded["client"], "unknown-client")
 
     def test_unknown_owner_still_exits_after_confirmed_parent_loss(self) -> None:
         clock = FakeClock()
