@@ -63,7 +63,7 @@ QUALIFICATIONS = (
         (
             "tests.test_agent_gateway.AgentGatewayTests.test_automatic_reconcile_returns_running_at_the_caller_deadline",
             "tests.test_agent_gateway.AgentGatewayTests.test_explicit_reconcile_returns_running_at_the_caller_deadline",
-            "tests.test_agent_gateway.AgentGatewayTests.test_live_patch_unknown_mutation_reconciles_after_process_restart",
+            "tests.test_agent_gateway.AgentGatewayTests.test_explicit_reconcile_refreshes_failed_recovery_after_process_restart",
             "tests.test_domain_pack_conformance.DomainPackConformanceTests.test_mutation_pack_never_retries_an_unknown_result",
         ),
     ),

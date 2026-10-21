@@ -205,8 +205,10 @@ Mutation authority is frozen in the Run and cannot be broadened by continuation.
 
 Unknown mutation outcomes are reconciled read-first with the same durable operation identity. If
 automatic recovery cannot converge, the Turn returns an Incident with bounded allowed commands.
-Use explicit reconcile only as the bounded recovery fallback. Repeated reconcile or cancel
-requests reuse the existing Incident outcome instead of duplicating lifecycle facts.
+Use explicit reconcile only as the bounded recovery fallback. Repeated explicit reconcile
+requests inspect the same unknown Effect again, including after process restart; they never
+redispatch its original mutation. Ordinary resume leaves an unresolved Incident unchanged.
+Repeated recovery and cancel requests reuse existing lifecycle facts.
 
 The restartable TaskContext is secret-free. After a local MCP restart, reuse the task identity and
 `run_id`; the Runtime restores typed intent, target bindings, workflow summaries, and mutation

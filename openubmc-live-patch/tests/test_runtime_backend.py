@@ -40,6 +40,7 @@ from openubmc_target_runtime.capability import (  # noqa: E402
 from openubmc_live_patch.runtime_backend import (  # noqa: E402
     LivePatchMcpBackend,
     _LivePatchTask,
+    _inspect_live_patch_recovery,
 )
 
 
@@ -702,6 +703,52 @@ class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_recovery_reads_bound_business_and_long_backup_paths(self) -> None:
+        digest = "a" * 64
+        paths = (
+            (
+                "/opt/bmc/apps/network_adapter/lualib/ncsi/ncsi_comm.lua",
+                "/tmp/ncsi_comm.lua.bak.6cf07d669b4b9616",
+            ),
+            ("/opt/bmc/apps/demo/unit.lua", "/tmp/unit.lua.bak." + "1" * 100),
+        )
+        for remote, backup in paths:
+            with self.subTest(remote=remote, backup=backup):
+                transport = FakeTelnetTransport(digest, target_exists=True)
+                commands: list[str] = []
+
+                class BoundedReadLane:
+                    def run_command(lane_self, command: str, **kwargs):
+                        commands.append(command)
+                        self.assertLessEqual(len(command.encode()), 700)
+                        inspected = (
+                            decoded_shell_script(command)
+                            if "busybox base64 -d" in command
+                            else command
+                        )
+                        self.assertNotIn("mount -o remount", inspected)
+                        self.assertNotIn("cp -", inspected)
+                        self.assertNotIn("restart", inspected)
+                        return transport.run_command(None, inspected, **kwargs)
+
+                snapshot = _inspect_live_patch_recovery(
+                    BoundedReadLane(),
+                    recovery_context("bounded-recovery", "same-effect"),
+                    remote=remote,
+                    remote_root="/opt/bmc/apps",
+                    backup=backup,
+                    guard_backup=True,
+                    root_mount_mode="rw",
+                    unknown_mount_restored=None,
+                    restart_scope="none",
+                    restart_state="",
+                )
+                self.assertEqual(snapshot.remote_checksum, digest)
+                self.assertEqual(snapshot.backup_checksum, digest)
+                self.assertEqual(snapshot.remote_metadata, {"mode": "440", "uid": 104, "gid": 104})
+                self.assertTrue(snapshot.recovery_safe)
+                self.assertTrue(any("busybox base64 -d" in command for command in commands))
+
     def test_backend_rejects_a_missing_health_anchor_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -2332,6 +2379,92 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             result["verification"]["remote_metadata"],
             {"mode": "644", "uid": 104, "gid": 104},
         )
+
+    def test_business_path_rollback_fits_the_bounded_telnet_command(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            digest = hashlib.sha256(b"original business bytecode").hexdigest()
+            telnet = FakeTelnetTransport(digest, target_exists=True)
+            service = RuntimeMcpService(LivePatchMcpBackend(
+                journal_store=MutationJournalStore(Path(raw) / "journals"),
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                telnet_transport_factory=lambda _arguments: telnet,
+            ))
+            try:
+                result = service.call_tool(
+                    "live_patch_run",
+                    {
+                        "intent": "rollback", "action": "rollback",
+                        "ip": "bmc.example",
+                        "backup_path": "/tmp/ncsi_comm.lua.bak.6cf07d669b4b9616",
+                        "remote_path": "/opt/bmc/apps/network_adapter/lualib/ncsi/ncsi_comm.lua",
+                        "mode": "440", "restart_scope": "none",
+                        "deadline": TEST_DEADLINE_SECONDS,
+                    },
+                    task_id="task-business-rollback",
+                    operation_id="rollback-business-bytecode",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(result["journal"]["stage"], "verified")
+        self.assertEqual(result["verification"]["remote_sha256"], digest)
+        self.assertTrue(all(len(command.encode()) <= 700 for command in telnet.commands))
+
+    def test_unencodable_rollback_is_rejected_before_root_remount(self) -> None:
+        class ReadOnlyRoot(FakeTelnetTransport):
+            def run_command(self, session, command, **kwargs):
+                result = super().run_command(session, command, **kwargs)
+                if "/proc/mounts" in command:
+                    return TelnetCommandResult(
+                        stdout="ro,relatime", returncode=0,
+                        framing_complete=True, timed_out=False,
+                        connection_closed=False, raw=b"ro,relatime",
+                    )
+                return result
+
+        with tempfile.TemporaryDirectory() as raw:
+            digest = hashlib.sha256(b"original bounded rollback").hexdigest()
+            telnet = ReadOnlyRoot(digest, target_exists=True)
+            journals = MutationJournalStore(Path(raw) / "journals")
+            service = RuntimeMcpService(LivePatchMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                telnet_transport_factory=lambda _arguments: telnet,
+            ))
+            remote = "/opt/bmc/apps/" + "/".join(
+                hashlib.sha256(f"rollback path {index}".encode()).hexdigest()
+                for index in range(4)
+            ) + "/unit.lua"
+            try:
+                with self.assertRaisesRegex(ValueError, "too long for bounded Telnet"):
+                    service.call_tool(
+                        "live_patch_run",
+                        {
+                            "intent": "rollback", "action": "rollback",
+                            "ip": "bmc.example", "remote_path": remote,
+                            "backup_path": "/tmp/unit.lua.bak.6cf07d669b4b9616",
+                            "restart_scope": "none",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="task-unencodable-rollback",
+                        operation_id="rollback-unencodable",
+                    )
+                journal = journals.load_for_task("task-unencodable-rollback")[0]
+            finally:
+                service.close()
+
+        self.assertFalse(journal.effects_started)
+        self.assertEqual(journal.stage, "replan_required")
+        self.assertFalse(any("mount -o remount" in command for command in telnet.commands))
+        self.assertFalse(any("restart_ok" in command for command in telnet.commands))
 
     def test_unknown_rollback_is_reconciled_read_first_without_reapply(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

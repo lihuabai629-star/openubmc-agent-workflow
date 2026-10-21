@@ -3126,6 +3126,7 @@ class RunEngine:
         *,
         task_id: str,
         deadline_at: float,
+        explicit_reconcile: bool = False,
     ) -> RunTurn:
         if self.effect_runner is None:
             return committed.turn
@@ -3137,6 +3138,7 @@ class RunEngine:
         if (
             committed.turn.state == "incident"
             and not self.effect_runner.has_seen(intent)
+            and not explicit_reconcile
             and not (
                 committed.turn.incident is not None
                 and committed.turn.incident.code == "effect_deadline_exceeded"
@@ -3731,6 +3733,7 @@ class RunEngine:
                 replayed,
                 task_id=task_id,
                 deadline_at=deadline_at,
+                explicit_reconcile=isinstance(command, ReconcileRun),
             )
             if isinstance(
                 command,
@@ -3796,6 +3799,7 @@ class RunEngine:
             committed,
             task_id=task_id,
             deadline_at=deadline_at,
+            explicit_reconcile=isinstance(command, ReconcileRun),
         )
 
 
