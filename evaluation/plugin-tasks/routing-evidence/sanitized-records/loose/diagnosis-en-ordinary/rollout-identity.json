@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:5ca7a4ea717026708bbf61f159ae2f8c3f9dceba33da4c9eb040abed21ba2719",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f42-4fc6-79d3-bd93-9f6e2bb0b0e2",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "Diagnose why the fan sensor is missing on my openUBMC BMC. I have not supplied a target or credentials in this task. Perform only authorized read-only checks, state the missing inputs, and do not claim the device was diagnosed."
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:c3e198dfaa84c45d6dfe59656a7d1ac31ffbb39816f3fff625d1602b7d2535c6"
+}

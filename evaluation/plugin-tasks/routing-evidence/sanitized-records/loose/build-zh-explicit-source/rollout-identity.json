@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:9b7331dbe24c2d740d0945d547e38cfcb5ef68a6ef3ce5a93cfb95efbc974b6c",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f43-7ad6-79a2-9cb3-f7de7e9dd013",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "请检查外部源码目录 /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout 是否具备用 bmcgo 构建 openUBMC 组件的前置条件。本次只授权只读预检，不执行编译、安装、发布或修改源码；给出实际检查结果和缺口。"
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:f5c86e6d21165acd335a19531fe5c27e98b4cd2c349395d219d87894f9c91974"
+}
