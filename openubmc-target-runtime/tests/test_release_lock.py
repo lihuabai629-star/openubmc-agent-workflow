@@ -30,6 +30,9 @@ class ReleaseLockTests(unittest.TestCase):
             cwd=REPO_ROOT,
             text=True,
         ).strip()
+        cls.skill_names = set(json.loads(
+            (REPO_ROOT / "workflow.json").read_text(encoding="utf-8")
+        )["profiles"]["full"])
 
     def test_same_source_resolves_to_the_same_digest_set(self) -> None:
         first = build_release_lock(REPO_ROOT, source_commit=self.commit)
@@ -39,7 +42,7 @@ class ReleaseLockTests(unittest.TestCase):
         self.assertEqual(first["schema"], RELEASE_LOCK_SCHEMA)
         self.assertEqual(first["source_commit_policy"], RELEASE_COMMIT_POLICY)
         self.assertEqual(list(first["compatibility"]["clients"]), ["codex"])
-        self.assertEqual(len(first["skills"]), 13)
+        self.assertEqual({item["name"] for item in first["skills"]}, self.skill_names)
         self.assertEqual(
             len({item["name"] for item in first["skills"]}),
             len(first["skills"]),
@@ -109,7 +112,7 @@ class ReleaseLockTests(unittest.TestCase):
             lock["runtime"]["content_digest"],
         )
         self.assertEqual(identity["workflow_digest"], lock["workflow_digest"])
-        self.assertEqual(len(identity["skill_digests"]), 13)
+        self.assertEqual(set(identity["skill_digests"]), self.skill_names)
 
     def test_incompatible_or_tampered_lock_fails_before_install(self) -> None:
         lock = build_release_lock(REPO_ROOT, source_commit=self.commit)

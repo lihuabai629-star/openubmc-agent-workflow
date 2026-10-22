@@ -23,7 +23,7 @@ missing ref, a branch such as `main`, or a name that does not resolve as an exac
 Private GitHub access uses `GH_TOKEN` or `GITHUB_TOKEN` only for authenticated downloads and Git
 fetches; the installer does not write the token to the checkout remote, installer state, or logs.
 
-The default `full` profile installs 13 Skills, the Target Runtime, and the standalone
+The default `full` profile installs 15 Skills, the Target Runtime, and the standalone
 `openubmc-kb` stdio MCP. The smaller runtime profile keeps the seven runtime-path Skills:
 
 ```bash
@@ -42,7 +42,7 @@ unrelated client configuration.
 
 ## Codex plugin distribution
 
-The Codex plugin packages the thirteen Skills and both MCP launchers under one verified release
+The Codex plugin packages the fifteen Skills and both MCP launchers under one verified release
 identity. See [plugin installation and lifecycle](docs/codex-plugin.md) for archive verification,
 migration, health checks, update, rollback, and audit commands.
 
@@ -132,6 +132,10 @@ at the configured timeout without delaying the other result. Live Patch remains 
 tool. Upgrade verification uses the read-only preflight path when an artifact and product version
 are supplied. Internal BMC TLS mode is the default; pass `--strict-tls` for system certificate
 verification.
+
+## Offline reviews
+
+Use `openubmc-doc-review` for Markdown security, links, language, structure and product-consistency review. Its deterministic scanners never execute commands found in documents. Use `openubmc-log-bundle-analyzer` for local diagnostic bundles: bounded extraction and scanning, file-and-line evidence, timelines, event correlations, structured summaries and catalog coverage audits. Remote collection remains owned by `openubmc-log-analyzer`.
 
 ## Skill entrypoint and package manifest
 

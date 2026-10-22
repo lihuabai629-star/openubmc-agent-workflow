@@ -52,7 +52,7 @@ class PluginPackageTests(unittest.TestCase):
             self.assertTrue((plugin/'hooks/hooks.json').is_file())
             self.assertTrue((plugin/'scripts/openubmc-continuity-hook.js').is_file())
             self.assertTrue((plugin/'skills/openubmc-debug/scripts/host_continuity.py').is_file())
-            self.assertEqual(len(report['skills']), 13)
+            self.assertEqual(len(report['skills']), len(json.loads((self.source/'workflow.json').read_text())['profiles']['full']))
             for skill in ('openubmc-bingo-build', 'openubmc-bingo-development'):
                 self.assertIn(skill, report['skills'])
                 self.assertTrue((plugin/'skills'/skill/'SKILL.md').is_file())
