@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import gzip
 import json
 import os
 import pathlib
@@ -19,6 +20,28 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import pull_bundle  # type: ignore  # noqa: E402
 import target_runtime_adapter  # type: ignore  # noqa: E402
+
+
+class ExactByteLimitTests(unittest.TestCase):
+    def test_eof_at_the_byte_limit_retains_the_last_line(self) -> None:
+        for suffix in (".log", ".log.gz"):
+            for content in (b"error\n", b"error"):
+                with self.subTest(suffix=suffix, content=content), tempfile.TemporaryDirectory() as raw:
+                    path = pathlib.Path(raw) / ("app" + suffix)
+                    path.write_bytes(gzip.compress(content) if suffix.endswith(".gz") else content)
+                    budget = pull_bundle.AnalysisBudget(max_bytes=len(content))
+                    self.assertEqual(list(pull_bundle.iter_text_lines(path, budget)), ["error"])
+                    self.assertTrue(budget.receipt()["complete"])
+                    self.assertEqual(budget.scanned_bytes, len(content))
+
+    def test_bytes_beyond_the_limit_keep_coverage_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = pathlib.Path(raw) / "app.log"
+            path.write_bytes(b"error\nmore\n")
+            budget = pull_bundle.AnalysisBudget(max_bytes=6)
+            self.assertEqual(list(pull_bundle.iter_text_lines(path, budget)), ["error"])
+            self.assertEqual(budget.reasons, {"scan_bytes_exceeded"})
+            self.assertEqual(budget.scanned_bytes, 6)
 
 
 class ResolveIpTests(unittest.TestCase):
