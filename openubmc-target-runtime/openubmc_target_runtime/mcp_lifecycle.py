@@ -35,8 +35,8 @@ def _windows_handle_state(kernel, handle) -> tuple[bool, str]:
     import ctypes
     from ctypes import wintypes
 
-    class FileTime(ctypes.Structure):
-        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+    # ctypes caches pointer types globally; retain one FILETIME target per process.
+    FileTime = wintypes.FILETIME
 
     kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel.GetExitCodeProcess.restype = wintypes.BOOL
@@ -53,7 +53,7 @@ def _windows_handle_state(kernel, handle) -> tuple[bool, str]:
     if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
                                   ctypes.byref(kernel_time), ctypes.byref(user_time)):
         return True, "unknown"
-    identity = (int(created.high) << 32) | int(created.low)
+    identity = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
     return True, str(identity)
 
 
@@ -383,7 +383,7 @@ class McpProcessLifecycle:
             self._write_record(self.status())
 
     def exit_reason_if_due(self) -> str | None:
-        """Return and persist a safe process-exit reason when ownership expires."""
+        """Expire idle or unattributed processes only after active requests drain."""
 
         with self._lock:
             if self._exit_reason is not None:
@@ -407,7 +407,7 @@ class McpProcessLifecycle:
             elif lifecycle_state == "orphaned":
                 reason = "parent-exited"
             elif (
-                lifecycle_state == "idle"
+                lifecycle_state in {"idle", "unknown-owner"}
                 and float(status["idle_seconds"]) >= self.idle_timeout_seconds
             ):
                 reason = "idle-timeout"

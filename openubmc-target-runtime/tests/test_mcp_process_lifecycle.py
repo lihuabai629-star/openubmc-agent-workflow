@@ -55,11 +55,12 @@ class McpProcessLifecycleTests(unittest.TestCase):
         *,
         process_alive,
         idle_timeout_seconds: float = 300,
+        client: str = "codex",
     ) -> McpProcessLifecycle:
         return McpProcessLifecycle(
             component="target-runtime",
             version="openubmc.target-runtime.v1",
-            client="codex",
+            client=client,
             task_id="task-100",
             session_id="session-100",
             source_commit="a" * 40,
@@ -107,6 +108,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 "executable_sha256": "sha256:" + "b" * 64,
             },
         )
+
         self.assertEqual(recorded["parent_pid"], 1200)
         self.assertEqual(recorded["parent_identity"], "process-1200-start")
         self.assertTrue(recorded["parent_identity_verified"])
@@ -125,6 +127,23 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 "-1201-process-1201-start.json"
             )
         )
+
+    def test_unattributed_process_expires_only_after_active_requests_drain(self) -> None:
+        for active in (False, True):
+            with self.subTest(active=active), tempfile.TemporaryDirectory() as raw:
+                clock = FakeClock()
+                lifecycle = self.make_lifecycle(raw, clock, process_alive=lambda _pid: True,
+                                                client="unknown-client")
+                self.assertEqual(lifecycle.status()["lifecycle_state"], "unknown-owner")
+                if active:
+                    lifecycle.begin_request()
+                clock.monotonic += 301
+                if active:
+                    self.assertIsNone(lifecycle.exit_reason_if_due())
+                    lifecycle.end_request()
+                    self.assertIsNone(lifecycle.exit_reason_if_due())
+                    clock.monotonic += 301
+                self.assertEqual(lifecycle.exit_reason_if_due(), "idle-timeout")
 
     def test_idle_timeout_waits_for_the_active_request_to_finish(self) -> None:
         clock = FakeClock()

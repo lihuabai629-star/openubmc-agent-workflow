@@ -191,6 +191,7 @@ Always inspect `coverage.complete` and `coverage.reasons`. Byte, file, discovery
 and line limits or read failures make analysis incomplete; evidence collected
 before the stop remains available. An empty evidence list with incomplete coverage
 cannot exclude a fault. `scanned_bytes` counts decompressed bytes consumed, and
-`scanned_files` counts opened files. Reaching the exact byte limit is conservatively
-reported as incomplete when EOF has not been observed. Completeness covers only
+`scanned_files` counts opened files. At the exact byte limit, a one-byte EOF probe
+retains a complete final line and distinguishes EOF from truncation. The probe is
+not returned as evidence or included in `scanned_bytes`. Completeness covers only
 the log types selected for the supplied problem, not every file in the bundle.
