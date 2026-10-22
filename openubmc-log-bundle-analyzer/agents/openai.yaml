@@ -1,0 +1,4 @@
+interface:
+  display_name: "openUBMC Log Bundle Analyzer"
+  short_description: "校验并按故障问题分析本地 openUBMC 一键日志包"
+  default_prompt: "Use $openubmc-log-bundle-analyzer to validate this openUBMC one-click log bundle and produce problem-focused evidence."

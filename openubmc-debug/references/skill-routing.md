@@ -18,7 +18,9 @@ check path; it does not require Developer planning.
 | --- | --- |
 | Live symptom, current BMC state, or post-change verification | `openubmc-debug` |
 | Authorized allowlisted MDB property assignment through Runtime | `openubmc-debug` |
-| Diagnostic log bundle or offline log directory | `openubmc-log-analyzer` |
+| Remote diagnostic bundle collection | `openubmc-log-analyzer` |
+| Local diagnostic bundle or offline log directory | `openubmc-log-bundle-analyzer` |
+| Documentation audit or release review | `openubmc-doc-review` |
 | Unresolved source ownership, generated chain, lifecycle, persistence, or cross-layer behavior | `openubmc-developer` |
 | Component/product compilation, generation, package, or HPM build | `openubmc-build` |
 | Explicit Bingo command or Bingo-managed build workspace | `openubmc-bingo-build` |

@@ -13,6 +13,8 @@ and load its owner before acting; carry the existing Run and authorization.
 
 优先使用 Redfish 的一键采集能力。SSH 在这个 skill 里只是兜底手段，仅用于“远端已有 tar 包”或“平台只能通过命令生成日志包”的场景。不要把“拉一键日志并分析”变成手工 SSH/Telnet 上环境排查。如果日志包拉取失败，或者本地分析后仍然缺少实时证据，再切到 `openubmc-debug`。
 
+For a supplied local bundle or an extracted tree, use the bundled `openubmc-log-bundle-analyzer` for bounded evidence analysis, timelines, event correlation and structured summaries. After remote collection, pass the returned bundle path or extracted root to that Skill; preserve the existing Run and authorization.
+
 ## 工作流（先日志包、后分析）
 
 1. 收集输入。必须有问题描述，并且至少满足以下一种输入：

@@ -147,6 +147,8 @@ SKILL_BUNDLE: SkillBundle = (
     ("openubmc-publish", "openubmc-publish"),
     ("openubmc-lua-component", "lua-component"),
     ("openubmc-qemu-testing", "qemu-testing"),
+    ("openubmc-doc-review", "openubmc-doc-review"),
+    ("openubmc-log-bundle-analyzer", "openubmc-log-bundle-analyzer"),
 )
 DEFAULT_SKILL_PROFILE = "full"
 TARGET_RUNTIME_SKILL_PROFILE = "target-runtime"
