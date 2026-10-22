@@ -216,6 +216,13 @@ class TargetRuntimeCliTests(unittest.TestCase):
 
     def test_legacy_cli_emits_json_for_a_validation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw_state:
+            credentials = Path(raw_state) / "credentials.json"
+            credentials.write_text(json.dumps({
+                "schema_version": 1,
+                "credentials": {"fixture": {"user": "fixture", "password": "fixture-only-secret"}},
+                "defaults": {"bmc": {"ssh": "fixture", "redfish": "fixture"}},
+            }))
+            credentials.chmod(0o600)
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -232,6 +239,8 @@ class TargetRuntimeCliTests(unittest.TestCase):
                 env={
                     **os.environ,
                     "CODEX_TASK_ID": "invalid-cli-task",
+                    **{key: str(credentials) for key in (
+                        "OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE")},
                     "OPENUBMC_TARGET_RUNTIME_STATE_DIR": raw_state,
                 },
             )

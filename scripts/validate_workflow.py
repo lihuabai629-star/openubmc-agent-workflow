@@ -382,6 +382,14 @@ def validate_manifest() -> dict[str, object]:
     for profile, selected in dict(profiles).items():
         if not isinstance(selected, list) or not set(selected).issubset(names):
             raise SystemExit(f"invalid Skill profile: {profile}")
+    distribution = document.get("distribution", {})
+    optional = distribution.get("optional_skills", [])
+    support = distribution.get("support_skills", [])
+    if (distribution.get("recommended") != "codex-plugin"
+            or set(distribution.get("legacy_profiles", [])) != set(profiles)
+            or not set(optional + support).issubset(names)
+            or len(optional + support) != len(set(optional + support))):
+        raise SystemExit("invalid native plugin distribution policy")
     validate_client_and_harness_metadata(document)
     validate_installer_manifest(document)
     return document
@@ -981,6 +989,15 @@ def main(argv: list[str] | None = None) -> int:
         cwd=node_root,
         stage="Node syntax: openubmc-kb-mcp",
     )
+    panel_root = ROOT / "codex-panel"
+    for command, stage in (
+        (["npm", "ci", "--no-audit", "--no-fund"], "dependencies"),
+        (["npm", "run", "build"], "build"),
+        (["npm", "run", "check"], "syntax"),
+        (["npm", "run", "check:native"], "native contract"),
+        (["npm", "test"], "tests"),
+    ):
+        run(command, cwd=panel_root, stage=f"Codex panel: {stage}")
     print("workflow validation passed")
     return 0
 

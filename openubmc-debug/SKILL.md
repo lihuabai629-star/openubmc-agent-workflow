@@ -9,18 +9,16 @@ At a stage change, read [the phase handoff](<references/skill-routing.md>) and i
 
 ## Scope and ownership
 
-Own read-only diagnosis and post-change verification:
+Diagnose live symptoms and verify requested deployed behavior.
 
-- diagnosis: explain and localize a current or reproduced symptom;
-- delivery verification: verify requested behavior on the deployed target.
-
-Route implementation to its owner:
+Route by task:
 - source or design change -> `openubmc-developer` or the matching specialist;
 - component or product build -> `openubmc-build`;
 - firmware upgrade or rollback -> `openubmc-upgrade`;
 - temporary runtime replacement -> `openubmc-live-patch`;
-- offline dump or log-bundle-only analysis -> `openubmc-log-analyzer`.
-- Confirmed BMC/OS address association -> `openubmc-environment-setup`.
+- remote bundle collection -> `openubmc-log-analyzer`;
+- local bundle analysis -> `openubmc-log-bundle-analyzer`.
+- Save an explicitly confirmed BMC/OS address association -> `openubmc-environment-setup`.
 
 ## Choose `observe` or `execute`
 
@@ -36,12 +34,9 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   Observation Adapter performs it.
 - Call `execute` for diagnosis Runs, source changes, builds, patches, upgrades, verification
   or an authorized MDB assignment. Read its property reference before any assignment.
-- A build-upgrade Run that requires exact Drive convergence may carry a bounded
-  `hardware_acceptance.devices` declaration in its Debug entry arguments. It is validated
-  before mutation but applied only to post-upgrade `debug_collect`: missing, unhealthy,
-  unidentified, protocol-mismatched, or incorrectly attributed Drives keep verification
-  `partial` so the same Runtime step recollects fresh evidence instead of forming an early
-  success Outcome.
+- A build-upgrade Run may declare `hardware_acceptance.devices` for exact Drive convergence.
+  Only post-upgrade `debug_collect` applies it: missing, unhealthy, unidentified or
+  protocol-mismatched Drives keep verification partial and require fresh evidence.
 - An `ObservationRef` proves reusable observation evidence; it does not by itself prove a root
   cause. Every diagnosis workflow reaches the Runtime-owned `diagnosis.acceptance` Gate before
   `developer.change`, including a complete collection receipt.
@@ -56,6 +51,10 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   failed or cancelled when no defensible diagnosis can be formed; development must remain closed.
   `response_required=true` with `progress.status=no_progress` means respond using the returned
   binding instead of issuing another resume.
+- For `completed`, `failed`, or `cancelled`, deliver the Outcome and remaining gaps.
+  A terminal Run stays terminal when resumed. Start a new Run for a new target or intent,
+  record its link to the prior Run, and use its returned bindings. An unknown Effect instead
+  retains its original Run, Incident and Effect identities for recovery.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
 - In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; `content` is a state

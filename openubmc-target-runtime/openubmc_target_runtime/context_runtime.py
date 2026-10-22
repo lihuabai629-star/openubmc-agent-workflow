@@ -272,10 +272,6 @@ _DEBUG_DOMAIN_ARGUMENTS = {
 
 
 def _process_start_marker(pid: int) -> str:
-    if os.name == "nt":
-        from .mcp_lifecycle import _windows_process_state
-        alive, identity = _windows_process_state(pid)
-        return identity if alive and identity != "unknown" else ""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -288,10 +284,6 @@ def _process_start_marker(pid: int) -> str:
 def _process_owner_is_active(pid: int, started: str) -> bool:
     if pid <= 0:
         return False
-    if os.name == "nt":
-        from .mcp_lifecycle import _windows_process_state
-        alive, identity = _windows_process_state(pid)
-        return alive and identity != "unknown" and (not started or identity == started)
     observed = _process_start_marker(pid)
     if observed:
         return not started or observed == started
@@ -2605,13 +2597,7 @@ class SQLiteRuntimeRepository:
         owner_is_active: Callable[[int, str], bool] = _process_owner_is_active,
     ) -> None:
         self.path = Path(path)
-        if os.name == "nt":
-            from .windows_private import ensure_private_directory, verify_private_path
-            ensure_private_directory(self.path.parent)
-            if self.path.exists():
-                verify_private_path(self.path)
-        else:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._clock = clock
         self._owner_pid = os.getpid()
@@ -2624,9 +2610,6 @@ class SQLiteRuntimeRepository:
     @contextmanager
     def _connect(self):
         connection = self._connection
-        if os.name == "nt" and self.path.exists():
-            from .windows_private import verify_private_path
-            verify_private_path(self.path)
         if connection is None:
             created = not self.path.exists()
             # Public methods hold _lock; initialization runs before the repository
@@ -2635,9 +2618,6 @@ class SQLiteRuntimeRepository:
                 self.path, timeout=30, check_same_thread=False
             )
             try:
-                if os.name == "nt" and created:
-                    from .windows_private import harden_new_file
-                    harden_new_file(self.path)
                 connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=NORMAL")
@@ -5811,7 +5791,6 @@ class ContextRuntime:
         return public
 
 
-
     @staticmethod
     def _batch_target_epoch_fields(
         operation: str,
@@ -7524,7 +7503,6 @@ class ContextRuntime:
         return tuple(events)
 
 
-
     def open_semantic_run(
         self,
         arguments: Mapping[str, object],
@@ -7828,6 +7806,8 @@ class ContextRuntime:
         expected_sha256: str,
         evidence_type: str,
         operation_id: str,
+        producer: str = "operator-evidence-attach",
+        body: bytes | None = None,
     ) -> dict[str, object]:
         """Validate and persist exact Operator/CI bytes without writing Run facts."""
 
@@ -7863,7 +7843,7 @@ class ContextRuntime:
                 "target_address": target_address,
                 "evidence_type": evidence_type,
                 "blob_id": normalized_sha256,
-                "operation": "operator-evidence-attach",
+                "operation": producer,
                 "operation_id": operation_id,
                 "expected_product_version": expected_product_version,
             }
@@ -7878,9 +7858,10 @@ class ContextRuntime:
             }
         if not self._accepts_operator_evidence(projection):
             raise CaseClosed(f"run {run_id} no longer accepts evidence")
-        if not source_path.is_file():
-            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
-        body = source_path.read_bytes()
+        if body is None:
+            if not source_path.is_file():
+                raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
+            body = source_path.read_bytes()
         actual_sha256 = hashlib.sha256(body).hexdigest()
         if actual_sha256 != normalized_sha256:
             raise ValueError(
@@ -7910,10 +7891,10 @@ class ContextRuntime:
             "byte_count": len(body),
             "target_id": target_id,
             "generation": str(target_epoch if target_epoch is not None else "operator"),
-            "provenance": f"operator-evidence-attach:{evidence_type}",
+            "provenance": f"{producer}:{evidence_type}",
             "observed_at": self.clock(),
             "case_id": run_id,
-            "producer": "operator-evidence-attach",
+            "producer": producer,
             "evidence_type": evidence_type,
             "target_epoch": target_epoch,
             "workflow_definition_id": str(definition.get("definition_id", "")),
@@ -7926,7 +7907,7 @@ class ContextRuntime:
             "workflow_attempt": 0,
             "parent_evidence_ids": [],
             "target_address": target_address,
-            "operation": "operator-evidence-attach",
+            "operation": producer,
             "operation_id": operation_id,
             "expected_product_version": expected_product_version,
             "observed_product_version": "",

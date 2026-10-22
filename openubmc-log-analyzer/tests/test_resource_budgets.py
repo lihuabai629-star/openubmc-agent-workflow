@@ -162,8 +162,9 @@ class LogResourceBudgetTests(unittest.TestCase):
             loop = root / "loop.log"
             loop.symlink_to("loop.log")
             reference = {"files": [{"name": "app", "paths": ["loop.log"], "keywords": ["login"]}]}
-            result = pull_bundle.analyze_bundle(root, "login", reference_data=reference)
-            self.assertFalse(result["coverage"]["complete"])
+            with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                pull_bundle.analyze_bundle(root, "login", reference_data=reference)
+            self.assertEqual(raised.exception.code, "bundle_layout_invalid")
             directories = []
             current = root
             try:
@@ -173,8 +174,9 @@ class LogResourceBudgetTests(unittest.TestCase):
                     directories.append(current)
                 (current / "app.log").write_text("login error\n")
                 reference["files"][0]["paths"] = ["**/app.log"]
-                result = pull_bundle.analyze_bundle(root, "login", reference_data=reference)
-                self.assertEqual(len(result["selected_logs"][0]["evidence_lines"]), 1)
+                with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                    pull_bundle.analyze_bundle(root, "login", reference_data=reference)
+                self.assertEqual(raised.exception.code, "reference_invalid")
             finally:
                 (current / "app.log").unlink(missing_ok=True)
                 for directory in reversed(directories):

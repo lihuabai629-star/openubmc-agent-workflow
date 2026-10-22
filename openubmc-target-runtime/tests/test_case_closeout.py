@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -300,6 +301,21 @@ class ProductionTopologyBackend:
 
 
 class CaseCloseoutIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        fixture = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture.cleanup)
+        credentials = Path(fixture.name) / 'credentials.json'
+        credentials.write_text(json.dumps({
+            'schema_version': 1,
+            'credentials': {'fixture': {'user': 'fixture', 'password': 'fixture-only-secret'}},
+            'defaults': {'bmc': {'ssh': 'fixture', 'redfish': 'fixture'}},
+        }))
+        credentials.chmod(0o600)
+        selected = patch.dict('os.environ', {name: str(credentials) for name in (
+            'OPENUBMC_CREDENTIALS_CONFIG', 'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_DEBUG_CREDENTIALS_FILE')})
+        selected.start()
+        self.addCleanup(selected.stop)
+
     @staticmethod
     def _rpc_call(
         endpoint: JsonRpcMcpEndpoint,
@@ -1328,7 +1344,6 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(closeout.receipts), 2)
 
 
-
     def test_external_context_step_marker_cannot_bypass_orchestration(self) -> None:
         domain = ProductionTopologyBackend(mutation_stage="verified")
         service = RuntimeMcpService(
@@ -1378,13 +1393,6 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                 for _, arguments in domain.calls
             )
         )
-
-
-
-
-
-
-
 
 
     def test_public_json_rpc_exposes_terminal_closeout_case_and_evidence(self) -> None:
@@ -1503,7 +1511,6 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             evidence["evidence"]["evidence_id"],
             reference["evidence_id"],
         )
-
 
 
     def test_recovery_blocked_produces_a_blocked_closeout(self) -> None:

@@ -15,7 +15,7 @@ class SecurityScanTests(unittest.TestCase):
         patterns = [
             re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
             re.compile(
-                r"(?i)(?:password|passwd|token|secret)\s*[:=]\s*['\"][^<.\s][^'\"]{5,}['\"]"
+                r"(?i)\b(?:password|passwd|token|secret)\s*[:=]\s*['\"][^<.\s][^'\"]{5,}['\"]"
             ),
             re.compile(r"AKIA[0-9A-Z]{16}"),
         ]
@@ -30,6 +30,12 @@ class SecurityScanTests(unittest.TestCase):
                 if pattern.search(text):
                     findings.append(f"{relative}: {pattern.pattern}")
         self.assertEqual(findings, [])
+
+    def test_path_token_constant_is_distinct_from_a_secret_assignment(self) -> None:
+        pattern = re.compile(r"(?i)\b(?:password|passwd|token|secret)\s*[:=]\s*['\"][^<.\s][^'\"]{5,}['\"]")
+        self.assertIsNone(pattern.search('MAPPING_TOKEN = "/mapping_config/"'))
+        self.assertIsNotNone(pattern.search('token = "fixture-value"'))
+        self.assertIsNotNone(pattern.search('password = "fixture-value"'))
 
 
 if __name__ == "__main__":

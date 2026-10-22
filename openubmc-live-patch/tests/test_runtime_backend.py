@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -122,7 +123,6 @@ def gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
         "gate_version": gate["gate_version"],
         "schema_digest": gate["schema_digest"],
     }
-
 
 
 class WorkflowDebugBackend:
@@ -703,6 +703,19 @@ class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        source = Path(directory.name) / "fixture.env"
+        source.write_text("")
+        source.chmod(0o600)
+        self.enterContext(patch.dict(os.environ, {
+            "OPENUBMC_CREDENTIALS_CONFIG": str(source),
+            "OPENUBMC_CREDENTIALS_FILE": str(source),
+            "OPENUBMC_DEBUG_CREDENTIALS_FILE": str(source),
+            "XDG_CONFIG_HOME": directory.name,
+        }))
+
     def test_recovery_reads_bound_business_and_long_backup_paths(self) -> None:
         digest = "a" * 64
         paths = (

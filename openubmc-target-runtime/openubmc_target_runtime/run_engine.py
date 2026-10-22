@@ -15,6 +15,7 @@ from .component_validation import assess_components, ComponentValidationError
 from .artifact_store import LocalArtifactStore
 from .effect_activity import active_operation
 from .semantic_runtime import (
+    AttachQemuEvidence,
     AgentPreflightError,
     ArtifactRef,
     AssuranceUnavailable,
@@ -557,6 +558,8 @@ class ObservationDriver(Protocol):
 
 
 class RunDriver(Protocol):
+    def prepare_qemu_evidence(self, command: AttachQemuEvidence, *, operation_id: str) -> Mapping[str, object]: ...
+
     def start_run(
         self,
         command: StartRun,
@@ -2965,6 +2968,11 @@ class RunEngine:
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
+        if isinstance(command, AttachQemuEvidence):
+            reference = self.driver.prepare_qemu_evidence(command, operation_id=command.command_id)
+            self._stage((RunEvent("EvidenceAttached", {"evidence": dict(reference)}, command.command_id),))
+            return replace(self._turn(self.driver.run_snapshot(command.run_id)),
+                           progress={"status": "evidence_attached", "evidence_id": reference["evidence_id"]})
         if isinstance(command, StartRun):
             snapshot = self.driver.start_run(
                 command,
@@ -3728,6 +3736,8 @@ class RunEngine:
                     self._validate_duplicate_gate(command, prior)
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
+            if isinstance(command, AttachQemuEvidence):
+                return self._turn(self.driver.run_snapshot(run_id))
             initial_revision = int(replayed.projection.get("revision", -1))
             turn = self._settle_effect(
                 replayed,
@@ -3795,6 +3805,8 @@ class RunEngine:
                 return no_progress_turn
             raise CommandConflict("RunDecision was not built")
 
+        if isinstance(command, AttachQemuEvidence):
+            return committed.turn
         return self._settle_effect(
             committed,
             task_id=task_id,

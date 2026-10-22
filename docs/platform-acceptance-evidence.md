@@ -1,5 +1,9 @@
 # Platform acceptance evidence
 
+From 2.2.1 required backend qualification covers Linux. Native Windows jobs
+and device adapters are retired; Windows→WSL evidence remains an optional client
+bridge qualification. Earlier observations below describe historical support.
+
 The matrix records the source acceptance decision separately from Runtime,
 plugin and release gates. The default hosted-CI path requires all five rows to
 pass for the *same full source commit*. The explicit installed-candidate path

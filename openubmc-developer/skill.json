@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "name": "openubmc-developer",
-  "version": "5.5.0",
+  "version": "5.5.2",
   "description": "Automatically analyze and change existing openUBMC source when source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior remain unresolved; exclude specified edits, documentation-only work, and separately owned workflows.",
   "author": "OpenUBMC Team",
   "license": "MulanPSL-2.0",
@@ -9,7 +9,8 @@
     "openubmc-build",
     "openubmc-live-patch",
     "openubmc-upgrade",
-    "openubmc-publish"
+    "openubmc-publish",
+    "openubmc-code-submit"
   ],
   "files": [
     "SKILL.md",
@@ -27,7 +28,34 @@
     "references/startup-product-assembly.md",
     "references/hardware-vpd.md",
     "references/sr-dds-product-records.md",
-    "references/profile-schema-import-export.md"
+    "references/profile-schema-import-export.md",
+    "references/community-checks.md",
+    "references/interface-coverage.md",
+    "references/mapping-dsl-recipes.md",
+    "resources/community/compliance/LICENSE",
+    "resources/community/compliance/scripts/compliance-lint.mjs",
+    "resources/community/concurrency/LICENSE",
+    "resources/community/concurrency/references/lifetime.md",
+    "resources/community/concurrency/references/lua-numeric-gc.md",
+    "resources/community/concurrency/references/patterns.md",
+    "resources/community/concurrency/scripts/collect_candidates.py",
+    "resources/community/provenance.json",
+    "resources/community/redfish-diff/LICENSE",
+    "resources/community/redfish-diff/references/methodology.md",
+    "resources/community/redfish-diff/scripts/analyze_redfish_diff.py",
+    "resources/community/web-backend/LICENSE",
+    "resources/community/web-backend/references/plugin-patterns.md",
+    "resources/community/web-backend/scripts/rackmount_web_backend_check.py",
+    "resources/interface-coverage/LICENSE",
+    "resources/interface-coverage/scripts/doc-coverage.mjs",
+    "scripts/community_checks.py",
+    "scripts/interface_coverage.py",
+    "resources/community/compliance/scripts/compliance-lint.cli.test.mjs",
+    "resources/community/compliance/scripts/compliance-lint.test.mjs",
+    "resources/community/concurrency/evals/test_collect_candidates.py",
+    "resources/community/web-backend/scripts/test_rackmount_web_backend_check.py",
+    "resources/interface-coverage/scripts/doc-coverage.test.mjs",
+    "resources/community/redfish-diff/scripts/tests/test_semantic_diff.py"
   ],
   "keywords": [
     "openubmc",
@@ -40,7 +68,9 @@
     "authored-source",
     "focused-verification"
   ],
-  "categories": ["development"],
+  "categories": [
+    "development"
+  ],
   "usage": {
     "prompts": [
       "分析一个现有组件的源码需求，找到当前负责该行为的模块并给出建议",

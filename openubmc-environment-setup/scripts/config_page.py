@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Current-user local configuration page for Windows and Linux."""
+"""Current-user local configuration page for Linux and WSL."""
 
 from __future__ import annotations
 import argparse
@@ -36,21 +36,14 @@ from openubmc_target_runtime.credential_memory import import_legacy_targets
 
 
 def _platform_label():
-    if sys.platform == "win32":
-        return "Windows"
     return "WSL" if "microsoft" in os.uname().release.lower() else "Linux"
 
 
 def _stop_owned_process(process):
-    if sys.platform == "win32":
-        subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
 
 
 def _masked(config):
@@ -118,11 +111,9 @@ class PluginMaintenance:
         self.preview_config = None
         self.preview_operation = None
         self.transaction = None
-        self.storage_transactions = []
 
     def command(self, *arguments):
-        options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
-                   if sys.platform == "win32" else {"start_new_session": True})
+        options = (({"start_new_session": True}))
         process = subprocess.Popen(
             [sys.executable, "-I", "-B", str(self.root/"scripts/pluginctl.py"),
              *arguments, "--home", str(self.home), "--codex-home", str(self.codex)],
@@ -158,26 +149,6 @@ class PluginMaintenance:
 
     def dispatch(self, data):
         action = data.get("action")
-        if action == "repair-storage":
-            root_id, token = data.get("root_id"), data.get("snapshot_token")
-            if root_id not in {"data", "cache", "config", "state"} or not isinstance(token, str):
-                raise ConfigurationError("Select a current private-root snapshot")
-            report = self.command("repair-storage", "--root-id", root_id,
-                                  "--expected-token", token)
-            if not report.get("ok"):
-                raise ConfigurationConflict("Private-root snapshot changed")
-            self.storage_transactions.append((root_id, report["transaction"]))
-            return {"status": report["status"], "root_id": root_id}
-        if action == "undo-storage":
-            if not self.storage_transactions:
-                raise ConfigurationConflict("No directory repair to undo")
-            root_id, transaction = self.storage_transactions[-1]
-            report = self.command("restore-storage", "--root-id", root_id,
-                                  "--transaction", transaction)
-            if not report.get("ok"):
-                raise ConfigurationConflict("Directory changed after repair")
-            self.storage_transactions.pop()
-            return {"status": "restored", "root_id": root_id}
         if action == "status":
             report = self.command("doctor")
             config = report.get("codex_configuration", {})
@@ -198,8 +169,7 @@ class PluginMaintenance:
                 except ConfigurationError:
                     local_configuration[kind] = {"configured": False, "active_revision": None, "error": "configuration_invalid"}
             execution_host = self.environment.get("OPENUBMC_EXECUTION_HOST") or (
-                "windows-native" if sys.platform == "win32" else
-                "wsl" if _platform_label() == "WSL" else "linux")
+                ("wsl" if _platform_label() == "WSL" else "linux"))
             return {
                 "version": report.get("version"),
                 "source_commit": report.get("source_commit"),
@@ -209,7 +179,6 @@ class PluginMaintenance:
                 "execution": {
                     "host": execution_host,
                     "wsl_distro": self.environment.get("OPENUBMC_SELECTED_WSL_DISTRO"),
-                    "native_windows_build_supported": False,
                 },
                 "dependencies": {
                     name: {
@@ -512,27 +481,11 @@ class LocalConfigurationServer:
 
     def state(self):
         with self._lock:
-            storage = (self.maintenance.command("storage-status")
-                       if self.maintenance is not None and sys.platform == "win32"
-                       else {"ok": True, "roots": []})
-            if not storage.get("ok"):
-                return {
-                    "storage": storage,
-                    "storage_repair": bool(self.maintenance and self.maintenance.storage_transactions),
-                    "environment": {
-                        "platform": _platform_label(),
-                        "hostname": socket.gethostname(),
-                        "config_home": str(self.config_home),
-                    },
-                    "page_session": self.page_session,
-                }
             selected = self.view(self.page_session["kind"])
             configured = bool(selected["active_revision"]) and bool(selected["readiness"]) and all(
                 item["configured"] for item in selected["readiness"]
             )
             return {
-                "storage": storage,
-                "storage_repair": bool(self.maintenance and self.maintenance.storage_transactions),
                 **{kind: self.view(kind) for kind in self.stores},
                 "environment": {
                     "platform": _platform_label(),
@@ -803,11 +756,10 @@ def main():
     plugin_root = Path(__file__).resolve().parents[3]
     maintenance = (PluginMaintenance(plugin_root)
                    if (plugin_root/"plugin-lock.json").is_file() else None)
-    storage_ready = (maintenance is None or sys.platform != "win32"
-                     or maintenance.command("storage-status").get("ok") is True)
+
 
     selected = (
-        LocalCredentialSource().select_path() if args.config_home is None and storage_ready else None
+        LocalCredentialSource().select_path() if args.config_home is None else None
     )
     sources = {}
     if selected is not None:

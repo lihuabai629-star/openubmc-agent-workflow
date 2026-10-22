@@ -38,6 +38,17 @@ class QemuTestingSkillTests(unittest.TestCase):
         targets = set(re.findall(r"`(references/[^`]+\.md)`", self.skill))
         self.assertEqual({target for target in targets if not (ROOT / target).is_file()}, set())
 
+    def test_x86_workflow_and_contract_are_packaged(self):
+        expected = {
+            "references/x86-development-workflow.md",
+            "references/x86-repository-launcher.md",
+            "references/qemu-result-contract.md",
+            "scripts/qemu_workflow_contract.py",
+        }
+        self.assertTrue(expected.issubset(self.metadata["files"]))
+        self.assertIn("新固件使用新 runtime", self.skill)
+        self.assertIn("健康基线先于故障注入", self.skill)
+
 
 if __name__ == "__main__":
     unittest.main()

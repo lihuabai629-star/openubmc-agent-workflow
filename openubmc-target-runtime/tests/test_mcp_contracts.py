@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -572,6 +573,19 @@ class RuntimeMcpServiceTests(unittest.TestCase):
 
 
 class PersistentTaskContextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        source = Path(directory.name) / "fixture.env"
+        source.write_text("")
+        source.chmod(0o600)
+        self.enterContext(mock.patch.dict(os.environ, {
+            "OPENUBMC_CREDENTIALS_CONFIG": str(source),
+            "OPENUBMC_CREDENTIALS_FILE": str(source),
+            "OPENUBMC_DEBUG_CREDENTIALS_FILE": str(source),
+            "XDG_CONFIG_HOME": directory.name,
+        }))
+
     @staticmethod
     def service_for(
         root: Path,

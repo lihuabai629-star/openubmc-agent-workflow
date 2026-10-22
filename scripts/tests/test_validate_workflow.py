@@ -48,6 +48,12 @@ class WorkflowManifestValidationTests(unittest.TestCase):
                         "full": ["example-skill"],
                         "target-runtime": ["example-skill"],
                     },
+                    "distribution": {
+                        "recommended": "codex-plugin",
+                        "legacy_profiles": ["full", "target-runtime"],
+                        "optional_skills": [],
+                        "support_skills": [],
+                    },
                     "clients": {
                         "codex": {
                             "role": "supported-product-client",
@@ -216,6 +222,11 @@ class WorkflowStageReportingTests(unittest.TestCase):
                 "Python tests: beta/tests",
                 "Node tests: openubmc-kb-mcp",
                 "Node syntax: openubmc-kb-mcp",
+                "Codex panel: dependencies",
+                "Codex panel: build",
+                "Codex panel: syntax",
+                "Codex panel: native contract",
+                "Codex panel: tests",
             ],
         )
 

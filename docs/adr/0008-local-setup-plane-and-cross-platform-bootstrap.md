@@ -1,6 +1,6 @@
 # ADR-0008: Local setup plane and cross-platform bootstrap
 
-- Status: Superseded for Windows device execution by [ADR-0009](0009-native-windows-device-backend.md)
+- Status: Active for Linux/WSL setup; the proposed native Windows backend in ADR-0009 was retired in 2.2.1
 - Date: 2026-09-24
 - Decision owners: openUBMC Agent Workflow maintainers
 
@@ -23,16 +23,15 @@ the bootstrap completes MCP initialization and exposes only bounded local setup 
 
 - report package identity, execution host, dependency state, local configuration revisions,
   duplicate registrations, authentication state, and protocol health as separate facts;
-- select one WSL distribution when several are installed;
+- report the WSL distribution explicitly selected by the client bridge;
 - prepare locked dependencies explicitly;
 - open the private loopback configuration page; and
 - preview and apply recognized reversible Codex configuration repair.
 
 Windows passes only bounded non-secret task identity into WSL. Credentials, dependency caches,
 Runtime history and target operations remain in the selected WSL environment. The Windows launcher
-does not inherit credential, proxy, registry, or package-manager secret variables. A single WSL
-distribution may be selected automatically; several distributions require a persisted explicit
-choice.
+does not inherit credential, proxy, registry, or package-manager secret variables. The client
+bridge requires an explicit distribution and Linux plugin path; it never guesses a backend.
 
 The Local Setup Plane does not create a Run, answer a Gate, invoke a Domain Adapter, record Evidence,
 commit an Effect, or form an Outcome. A new task loads the normal backend after setup succeeds.
@@ -44,8 +43,8 @@ by that invocation, then proves that both the backend and its bootstrap supervis
 
 - Missing prerequisites no longer make task creation fail with a closed MCP handshake.
 - Setup state is diagnostic and recoverable without widening Runtime domain authority.
-- Windows and Linux use the same marketplace package while reporting their actual execution host.
-- Release qualification must exercise the same Windows entrypoint used by continuous validation and
+- Linux and WSL use the same marketplace package while reporting their actual execution host.
+- The thin Windows client bridge is tested separately from the Linux backend. Release qualification
   must compare the public marketplace payload with the qualified archive identity.
 - New host recovery actions belong in this plane only when they remain local, bounded, reversible,
   and independent of target authorization.

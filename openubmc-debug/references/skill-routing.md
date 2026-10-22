@@ -18,24 +18,28 @@ check path; it does not require Developer planning.
 | --- | --- |
 | Live symptom, current BMC state, or post-change verification | `openubmc-debug` |
 | Authorized allowlisted MDB property assignment through Runtime | `openubmc-debug` |
-| Remote diagnostic bundle collection | `openubmc-log-analyzer` |
-| Local diagnostic bundle or offline log directory | `openubmc-log-bundle-analyzer` |
-| Documentation audit or release review | `openubmc-doc-review` |
+| Local diagnostic bundle, offline log directory, or remote bundle collection | `openubmc-log-analyzer` |
+| Explicit documentation audit or release review | Optional `openubmc-doc-review`; read `<plugin-root>/optional-skills/openubmc-doc-review/SKILL.md` when absent from the catalog |
 | Unresolved source ownership, generated chain, lifecycle, persistence, or cross-layer behavior | `openubmc-developer` |
 | Component/product compilation, generation, package, or HPM build | `openubmc-build` |
-| Explicit Bingo command or Bingo-managed build workspace | `openubmc-bingo-build` |
-| Modify the Bingo CLI implementation | `openubmc-bingo-development` |
 | Design or implement UT/IT, mocks, or coverage | `openubmc-dt-testing` |
 | Upload, activate, or roll back an already-built HPM | `openubmc-upgrade` |
 | Temporary live file replacement and recovery | `openubmc-live-patch` |
 | Publish already-built Conan packages | `openubmc-publish` |
+| Commit/push source, internal GitLab MR, or community GitCode PR | `openubmc-code-submit` |
 | QEMU launch, process/serial evidence, or smoke checks | `openubmc-qemu-testing` |
-| Install, configure, update, or repair the plugin/Runtime | `openubmc-environment-setup` |
+| Explicit plugin lifecycle/account configuration request, or confirmed required local blocker | `openubmc-environment-setup` |
 
-An explicit Lua compatibility invocation retains its existing invocation policy.
-For a general new-component request, select Developer or an available component
-specialist according to the unresolved work; do not force the compatibility
-entrypoint merely because the language is Lua.
+Setup is entered for a requested plugin install/update/removal/check, private-account or BMC/OS
+association edit, or fresh evidence that required plugin startup/configuration blocks this task.
+Ordinary work reuses current configuration without a Setup preflight. Build owns Conan/build
+failures; Debug first distinguishes authentication rejection from network, TLS, permission or
+device errors. Optional KB failure stays on the main evidence path unless its repair is requested.
+SDK/container/toolchain installation belongs to an available environment specialist such as
+`openubmc-env-init`; report an unavailable specialist without substituting plugin installation.
+
+Bingo workflows and the standalone Lua compatibility entry are retired.
+Use Developer for Lua source work; never rewrite an explicit Bingo command silently.
 
 If two same-name sources are visible, preserve their actual paths and versions.
 Use the active plugin for a bundled workflow unless the task explicitly selected
@@ -52,8 +56,7 @@ specific gap and continue independent authorized work. Ask only for necessary
 missing input or an action outside the established authorization.
 
 For example, live diagnosis reads Debug; a source decision at `developer.change`
-reads Developer; local compilation or `build.artifact` reads Build (or Bingo
-when specified); firmware activation reads Upgrade; fresh target verification
+reads Developer; local compilation or `build.artifact` reads Build; firmware activation reads Upgrade; fresh target verification
 returns to Debug. Test design reads Testing when that work becomes necessary.
 Select only the current stage, rather than loading every possible future Skill.
 

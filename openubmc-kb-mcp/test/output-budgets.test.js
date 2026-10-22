@@ -39,6 +39,20 @@ test("MCP query bounds the complete Unicode receipt including references and met
   }
 });
 
+test("MCP accepts null optional references from context-only retrieval", async t => {
+  const client = await connect(t, async () => Response.json({ response: "retrieved context", references: null }));
+  for (const response_format of ["json", "markdown"]) {
+    const result = await client.callTool({ name: "openubmc_kb_query", arguments: {
+      query: "bmcgo test", include_references: false, only_need_context: true, response_format
+    } });
+    assert.notEqual(result.isError, true);
+    assert.equal(result.structuredContent.result.response, "retrieved context");
+    assert.deepEqual(result.structuredContent.result.references, []);
+    assert.equal(result.structuredContent.result.truncated, false);
+    assert.match(result.content[0].text, /retrieved context/);
+  }
+});
+
 test("MCP bounds status/list fields and reports truthful complete small results", async t => {
   const client = await connect(t, async url => {
     if (String(url).endsWith("pipeline_status")) return Response.json({ busy: false, history_messages: ["ready"] });

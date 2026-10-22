@@ -16,6 +16,65 @@ from build_route import equivalence_receipt, route_receipt  # noqa: E402
 
 
 class BuildRouteTests(unittest.TestCase):
+    def test_build_environment_installation_selects_the_toolchain_specialist(self):
+        for request in (
+            "安装构建环境", "配置构建环境", "安装开发环境", "配置开发环境", "安装 openUBMC 构建环境",
+            "install build environment", "setup build environment",
+            "set up the development environment", "configure the build environment",
+        ):
+            with self.subTest(request=request):
+                receipt = route_receipt(request)
+                self.assertEqual(receipt["owner"], "openubmc-env-init")
+                self.assertEqual(receipt["mode"], "handoff")
+                self.assertEqual(receipt["handoff"], "openubmc-env-init")
+                self.assertEqual(receipt["tool"], "")
+
+    def test_build_configuration_and_failures_do_not_enter_plugin_setup(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "conanfile.py").write_text("", encoding="utf-8")
+            for request in (
+                "配置环境变量后编译组件", "配置构建环境变量后编译", "修改配置并验证测试环境",
+                "Conan 登录失败，检查构建环境", "Conan dependency resolution failed",
+                "compile component and configure its environment variables",
+                "configure build environment variables and compile component",
+                "install component into the test environment",
+                "只编译，不要安装构建环境",
+                "compile component; do not configure the build environment",
+            ):
+                with self.subTest(request=request):
+                    receipt = route_receipt(request, workspace=root)
+                    self.assertEqual(receipt["owner"], "openubmc-build")
+                    self.assertEqual(receipt["handoff"], "")
+                    self.assertTrue(receipt["ready"])
+                    self.assertEqual(receipt["tool"], "" if receipt["mode"] == "diagnose" else "bmcgo")
+
+    def test_diagnosis_does_not_select_a_build_command(self):
+        for request in ("分析 HPM 构建失败日志，不要重新构建", "检查 Conan 依赖报错",
+                        "diagnose HPM build failure; do not rebuild"):
+            receipt = route_receipt(request, argv=["bmcgo", "build", "-b", "openUBMC"])
+            self.assertEqual(receipt["mode"], "diagnose")
+            self.assertEqual(receipt["tool"], "")
+            self.assertTrue(receipt["ready"])
+
+    def test_component_command_and_later_publication_keep_current_stage(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "conanfile.py").touch()
+            (root / ".bmcgo").mkdir()
+            (root / ".bmcgo/config").touch()
+            for request, argv, mode in (
+                ("只编译组件", ["bmcgo", "build"], "validate"),
+                ("构建产品HPM，完成后上传 conan 包", ["bmcgo", "build", "-b", "openUBMC"], "product-artifact"),
+                ("compile component then upload package", ["bmcgo", "build"], "validate"),
+                ("compile debug component then upload Conan package", ["bmcgo", "build"], "validate"),
+            ):
+                receipt = route_receipt(request, argv=argv, workspace=root)
+                self.assertEqual((receipt["owner"], receipt["mode"], receipt["tool"]),
+                                 ("openubmc-build", mode, "bmcgo"))
+            receipt = route_receipt("上传 conan 包", argv=["conan", "upload", "reference"], workspace=root)
+            self.assertEqual((receipt["owner"], receipt["tool"]), ("openubmc-publish", ""))
+
     def test_public_build_plan_rejects_a_forged_equivalence_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -52,196 +111,22 @@ class BuildRouteTests(unittest.TestCase):
             self.assertIn("tool_equivalence", result.stderr)
             self.assertFalse((root / "plan.json").exists())
 
-    def test_public_build_plan_hands_explicit_bingo_command_to_bingo_owner(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            checkout = root / "component"
-            checkout.mkdir()
-            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-            subprocess.run(["git", "-C", str(checkout), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Test"], check=True)
-            (checkout / "conanfile.py").write_text("from conan import ConanFile\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "base"], check=True)
-            result = subprocess.run([
-                sys.executable, str(ROOT / "scripts" / "create_build_plan.py"),
-                "--mode", "validate", "--workspace", f"component={checkout}",
-                "--cwd", str(checkout), "--output", str(root / "plan.json"),
-                "--", "bingo", "build",
-            ], capture_output=True, text=True, check=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("bingo", result.stderr.lower())
 
-    def test_product_release_package_contract_uses_the_ordinary_bingo_command(self) -> None:
-        product_reference = (
-            ROOT / "references" / "modes" / "product-artifact.md"
-        ).read_text(encoding="utf-8")
-        publish_skill = (ROOT.parent / "openubmc-publish" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn(
-            "bingo build -t publish -b <board> -bt release --stage stable",
-            product_reference,
-        )
-        self.assertNotIn(" -sc ", product_reference)
-        self.assertIn("conan upload '<exact-ref>'", publish_skill)
-        self.assertIn(
-            "bingo build -t publish -b <board> -bt release --stage stable",
-            publish_skill,
-        )
-
-        packaged_bingo_skill = (
-            ROOT.parent / "openubmc-bingo-build" / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "bingo build -t publish -b <board> -bt release --stage stable",
-            packaged_bingo_skill,
-        )
-        self.assertNotIn(" -sc ", packaged_bingo_skill)
-
-    def test_explicit_bingo_build_and_development_are_separate(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            component = root / "component"
-            component.mkdir()
-            (component / "mds").mkdir()
-            (component / "mds" / "service.json").write_text("{}\n")
-            bingo_source = root / "bingo"
-            bingo_source.mkdir()
-            (bingo_source / "pyproject.toml").write_text(
-                '[project]\nname = "openubmc-bingo"\n', encoding="utf-8"
-            )
-
-            build = route_receipt(
-                "run bingo build",
-                argv=["bingo", "build"],
-                workspace=component,
-            )
-            development = route_receipt(
-                "开发 bingo 构建工具", workspace=bingo_source
-            )
-
-        self.assertEqual(build["owner"], "openubmc-bingo-build")
-        self.assertEqual(build["mode"], "handoff")
-        self.assertTrue(build["ready"])
-        self.assertEqual(build["artifact"]["kind"], "component-build")
-        self.assertEqual(development["owner"], "openubmc-bingo-development")
-        self.assertEqual(development["mode"], "handoff")
-        self.assertTrue(development["ready"])
-
-    def test_bingo_handoffs_require_the_owning_workspace(self) -> None:
-        for request, owner in (
-            ("run bingo build", "openubmc-bingo-build"),
-            ("开发 bingo 构建工具", "openubmc-bingo-development"),
+    def test_retired_bingo_requests_never_select_a_tool_or_handoff(self):
+        for request, argv in (
+            ("run bingo build", ["bingo", "build"]),
+            ("开发 bingo 构建工具", None),
+            ("build", ["bingo.exe", "build"]),
+            ("build", ["/usr/local/bin/bingo", "build"]),
+            ("run bingo build", ["ninja"]),
+            ("configure build environment and run explicit build", ["bingo", "build"]),
         ):
-            receipt = route_receipt(request)
-            self.assertEqual(receipt["owner"], owner)
-            self.assertFalse(receipt["ready"])
-            self.assertEqual(receipt["preconditions"][0]["status"], "required")
-
-    def test_bingo_product_publish_requires_manifest_and_board(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / ".bingo").mkdir()
-            (root / ".bingo" / "config").write_text("manifest\n")
-            (root / "build" / "product" / "2488hv6").mkdir(parents=True)
-            missing_board = route_receipt(
-                "publish product with bingo",
-                argv=["bingo", "build", "-t", "publish", "-bt", "release", "--stage", "stable"],
-                workspace=root,
-            )
-            ready = route_receipt(
-                "publish product with bingo",
-                argv=["bingo", "build", "-t", "publish", "-b", "2488hv6", "-bt", "release", "--stage", "stable"],
-                workspace=root,
-            )
-            implicit_product = route_receipt(
-                "run bingo build",
-                argv=["bingo", "build"],
-                workspace=root,
-            )
-            malformed_board = route_receipt(
-                "publish product with bingo",
-                argv=["bingo", "build", "-t", "publish", "-b", "-bt", "release", "--stage", "stable"],
-                workspace=root,
-            )
-            unresolved_boards = [
-                route_receipt(
-                    "publish product with bingo",
-                    argv=["bingo", "build", "-t", "publish", "-b", board],
-                    workspace=root,
-                )
-                for board in (" ", "does-not-exist", "../escape")
-            ]
-            duplicate_board = route_receipt(
-                "publish product with bingo",
-                argv=["bingo", "build", "-b", "2488hv6", "-b", "../escape"],
-                workspace=root,
-            )
-
-            external = root / "external-products"
-            (external / "outside-board").mkdir(parents=True)
-            linked = root / "linked-manifest"
-            (linked / ".bingo").mkdir(parents=True)
-            (linked / ".bingo" / "config").write_text("manifest\n")
-            (linked / "build").mkdir()
-            (linked / "build" / "product").symlink_to(external, target_is_directory=True)
-            external_board = route_receipt(
-                "publish product with bingo",
-                argv=["bingo", "build", "-b", "outside-board"],
-                workspace=linked,
-            )
-
-        self.assertFalse(missing_board["ready"])
-        self.assertEqual(missing_board["artifact"]["status"], "required")
-        self.assertFalse(implicit_product["ready"])
-        self.assertEqual(implicit_product["artifact"]["status"], "required")
-        self.assertFalse(malformed_board["ready"])
-        self.assertEqual(malformed_board["artifact"]["status"], "required")
-        for unresolved in unresolved_boards:
-            self.assertFalse(unresolved["ready"])
-            self.assertEqual(unresolved["artifact"]["status"], "failed")
-        self.assertFalse(duplicate_board["ready"])
-        self.assertEqual(duplicate_board["artifact"]["status"], "failed")
-        self.assertFalse(external_board["ready"])
-        self.assertEqual(external_board["artifact"]["status"], "failed")
-        self.assertTrue(ready["ready"])
-        self.assertEqual(ready["artifact"]["kind"], "product-release")
-        self.assertEqual(ready["artifact"]["board"], "2488hv6")
-
-    def test_environment_setup_owns_requests_that_also_name_bingo(self) -> None:
-        for request in (
-            "install bingo build environment",
-            "setup build environment for bingo",
-            "配置 bingo 构建环境",
-        ):
-            receipt = route_receipt(request)
-            self.assertEqual(receipt["owner"], "openubmc-environment-setup")
-
-    def test_bingo_tool_substitution_requires_equivalence_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / "mds").mkdir()
-            (root / "mds" / "service.json").write_text("{}\n")
-            receipt = route_receipt(
-                "run bingo build", argv=["ninja"], workspace=root
-            )
-        self.assertFalse(receipt["ready"])
-        self.assertEqual(receipt["preconditions"][-1]["name"], "tool_equivalence")
-
-    def test_explicit_bingo_executable_variants_keep_bingo_ownership(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / "mds").mkdir()
-            (root / "mds" / "service.json").write_text("{}\n")
-            for executable in ("bingo.exe", "/usr/local/bin/bingo"):
-                with self.subTest(executable=executable):
-                    receipt = route_receipt(
-                        "run build", argv=[executable, "build"], workspace=root
-                    )
-                    self.assertEqual(receipt["owner"], "openubmc-bingo-build")
-                    self.assertTrue(receipt["ready"])
+            with self.subTest(request=request, argv=argv):
+                result = route_receipt(request, argv=argv)
+                self.assertEqual(result['mode'], 'unsupported')
+                self.assertFalse(result['ready'])
+                self.assertEqual(result['tool'], '')
+                self.assertEqual(result['handoff'], '')
 
     def test_product_and_component_routes_are_mutually_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

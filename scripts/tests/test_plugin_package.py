@@ -52,10 +52,50 @@ class PluginPackageTests(unittest.TestCase):
             self.assertTrue((plugin/'hooks/hooks.json').is_file())
             self.assertTrue((plugin/'scripts/openubmc-continuity-hook.js').is_file())
             self.assertTrue((plugin/'skills/openubmc-debug/scripts/host_continuity.py').is_file())
-            self.assertEqual(len(report['skills']), len(json.loads((self.source/'workflow.json').read_text())['profiles']['full']))
-            for skill in ('openubmc-bingo-build', 'openubmc-bingo-development'):
-                self.assertIn(skill, report['skills'])
-                self.assertTrue((plugin/'skills'/skill/'SKILL.md').is_file())
+            workflow = json.loads((self.source/'workflow.json').read_text())
+            resources = set(workflow['distribution']['optional_skills'] + workflow['distribution']['support_skills'])
+            self.assertEqual(set(report['skills']), set(workflow['profiles']['full']) - resources)
+            discovered = {path.parent.relative_to(plugin/'skills').as_posix()
+                          for path in (plugin/'skills').rglob('SKILL.md')}
+            self.assertEqual(len(discovered), len(report['skills']))
+            self.assertNotIn('openubmc-target-runtime', discovered)
+            self.assertNotIn('openubmc-doc-review', discovered)
+            self.assertNotIn('openubmc-log-bundle-analyzer', discovered)
+            self.assertTrue((plugin/'optional-skills/openubmc-doc-review/SKILL.md').is_file())
+            self.assertTrue((plugin/'skills/openubmc-log-bundle-analyzer/scripts/analyze_bundle.py').is_file())
+            submission = plugin/'skills/openubmc-code-submit'
+            self.assertTrue((submission/'LICENSE.marketplace').is_file())
+            self.assertTrue((submission/'references/internal-gitlab.md').is_file())
+            self.assertTrue((submission/'references/community-gitcode.md').is_file())
+            body = base/'pr-body.md'
+            body.write_text('Fix behavior.\n\nValidation: offline fixture.\n', encoding='utf-8')
+            preview = subprocess.run([
+                sys.executable, '-I', str(submission/'scripts/gitcode_cli.py'),
+                'create-pr', 'openUBMC', 'component', '--head', 'person:fix',
+                '--fork-path', 'person/component', '--base', 'main', '--title', 'Fix behavior',
+                '--body-file', str(body), '--issues', '',
+            ], cwd=base, capture_output=True, text=True, timeout=15)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(json.loads(preview.stdout)['status'], 'prepared')
+            repo = base/'target'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            for name, url in [('origin', 'git@gitcode.com:person/component.git'),
+                              ('upstream', 'https://gitcode.com/openUBMC/component.git')]:
+                subprocess.run(['git', '-C', str(repo), 'remote', 'add', name, url], check=True)
+            selected = subprocess.run([
+                sys.executable, '-I', str(submission/'scripts/submission_route.py'), '--repo', str(repo),
+            ], cwd=base, capture_output=True, text=True, timeout=15)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertEqual(json.loads(selected.stdout)['platform'], 'gitcode')
+            for skill in ('openubmc-bingo-build', 'openubmc-bingo-development', 'openubmc-lua-component'):
+                self.assertNotIn(skill, report['skills'])
+            self.assertFalse((plugin/'skills/lua-component').exists())
+            self.assertFalse((plugin/'skills/openubmc-target-runtime/openubmc_target_runtime/model_planning.py').exists())
+            for path in ('openubmc_target_runtime/windows_private.py', 'openubmc_target_runtime/paramiko_transport.py', 'tools/windows_platform_helper.py'):
+                self.assertFalse((plugin/'skills/openubmc-target-runtime'/path).exists(), path)
+            for path in ('openubmc-developer/references/lua-component.md', 'openubmc-build/SKILL.md',
+                         'openubmc-log-bundle-analyzer/references/workflow.md'):
+                self.assertTrue((plugin/'skills'/path).is_file(), path)
             self.assertEqual(len(report['source_commit']), 40)
             self.assertNotIn(str(ROOT).encode(), (plugin/'scripts/launch_runtime.py').read_bytes())
             self.assertFalse(any(p.name == '.git' for p in plugin.rglob('*')))
@@ -63,14 +103,27 @@ class PluginPackageTests(unittest.TestCase):
                 (plugin/'skills/openubmc-environment-setup/references/credential-exposure-response.md').read_bytes(),
                 (self.source/'docs/credential-exposure-response.md').read_bytes(),
             )
+            requests = [
+                {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+                    'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'package-test', 'version': '1'}}},
+                {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
+            ]
+            native = subprocess.run(['node', str(plugin/'panel/native.mjs')],
+                cwd=base, input=''.join(json.dumps(item)+'\n' for item in requests),
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(native.returncode, 0, native.stderr)
+            replies = {item['id']: item['result'] for item in map(json.loads, native.stdout.splitlines())}
+            self.assertEqual([tool['name'] for tool in replies[2]['tools']], ['openubmc_panel', 'openubmc_panel_read'])
+            self.assertEqual(replies[2]['tools'][0]['_meta']['openai/ui']['entrypoints'], [{'type': 'global'}])
 
     def test_packaging_rejects_a_skill_catalog_over_the_prompt_budget(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             oversized = base/'source'
             subprocess.run(['git', 'clone', '-q', str(self.source), str(oversized)], check=True)
-            prompt = oversized/'openubmc-bingo-build/SKILL.md'
-            prompt.write_text(prompt.read_text(encoding='utf-8') + '\n' + ('x' * 16384), encoding='utf-8')
+            prompt = oversized/'openubmc-build/SKILL.md'
+            prompt.write_text(prompt.read_text(encoding='utf-8') + '\n' + ('x' * (128 * 1024)), encoding='utf-8')
             subprocess.run(['git', '-C', str(oversized), 'add', str(prompt.relative_to(oversized))], check=True)
             subprocess.run([
                 'git', '-C', str(oversized), '-c', 'user.name=Fixture',
@@ -82,6 +135,29 @@ class PluginPackageTests(unittest.TestCase):
             ], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('prompt budget', result.stderr)
+
+    def test_packaging_rejects_stale_panel_source_and_incomplete_inventory(self):
+        for change in ('source', 'inventory'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                source = base/'source'
+                subprocess.run(['git', 'clone', '-q', str(self.source), str(source)], check=True)
+                if change == 'source':
+                    target = source/'codex-panel/src/mcp.js'
+                    target.write_text(target.read_text() + '\n// changed after bundling\n')
+                else:
+                    target = source/'plugin/openubmc/panel/source.json'
+                    inventory = json.loads(target.read_text())
+                    inventory.pop('codex-panel/src/mcp.js')
+                    target.write_text(json.dumps(inventory))
+                subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+                subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture',
+                                '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'Stale panel'], check=True)
+                result = subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(source),
+                                         '--output', str(base/'bundle.tar.gz')], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('packaged panel', result.stderr)
+                self.assertIn('stale', result.stderr)
 
     def test_verify_rejects_added_or_changed_plugin_code(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -136,6 +212,12 @@ class PluginPackageTests(unittest.TestCase):
             result = subprocess.run(['codex', 'mcp', 'list', '--json'], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             servers = {item['name']: item for item in json.loads(result.stdout)}
+            # `codex mcp list` omits the required flag; check the exact installed
+            # manifest resolved by that Host rather than assuming a CLI field.
+            installed_root = Path(servers['openubmc-target-runtime']['transport']['cwd'])
+            installed_mcp = json.loads((installed_root/'.mcp.json').read_text())['mcpServers']
+            self.assertFalse(installed_mcp['openubmc-kb']['required'])
+            self.assertTrue(installed_mcp['openubmc-target-runtime']['required'])
             for name in ('openubmc-target-runtime', 'openubmc-kb'):
                 server = servers[name]
                 transport = server['transport']

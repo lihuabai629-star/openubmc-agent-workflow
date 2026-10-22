@@ -3782,6 +3782,13 @@ class JsonRpcMcpEndpoint:
                     next_action = "等待正在执行的任务结束后重试"
                 elif error_type in {"ValueError", "TypeError"}:
                     next_action = "修正工具参数后重试"
+                elif "secret_material_rejected" in lowered or "secret material" in lowered:
+                    next_action = "修正凭据输入：移除参数中的秘密，使用已配置的本地凭据引用后再提交"
+                elif error_type in {
+                    "AgentGatewayError", "AgentPreflightError", "ScopeViolation",
+                    "GateConflict", "GatePreflightError", "ReferenceViolation", "CommandConflict",
+                }:
+                    next_action = "修正请求中的参数或身份绑定，按当前回执的字段说明提交；不要原样重复请求"
                 else:
                     next_action = "沿用同一任务 ID 重试；实时证据会重新读取"
             return (

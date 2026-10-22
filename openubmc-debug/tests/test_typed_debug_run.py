@@ -371,6 +371,36 @@ class PreflightTelnetTransport(FakeTelnetTransport):
 
 
 class TypedDebugRunTests(unittest.TestCase):
+    def test_alarm_capability_tracks_the_latest_collected_endpoint(self):
+        for state in ("available", "failed", "skipped"):
+            for fresh in (False, True):
+                with self.subTest(state=state, freshness=fresh):
+                    args = workflow_remote.parse_args([
+                        "--ip", TEST_IP, "--skip-telnet", "--json",
+                        *([] if fresh else ["--no-freshness"]),
+                    ])
+                    runner = FakeTypedToolRunner()
+
+                    def run(name, command, env, timeout, **kwargs):
+                        result = runner(name, command, env, timeout, **kwargs)
+                        if name == ("active_alarms_end" if fresh else "active_alarms"):
+                            if state == "skipped":
+                                return _workflow_runtime.skipped_result(name, "not requested")
+                            if state == "failed":
+                                result.update(ok=False, code="alarm_endpoint_unavailable")
+                        return result
+
+                    outputs = []
+                    workflow_remote._execute_workflow(
+                        args, source_root_source="none", engine="v1", env={},
+                        tool_runner=run, parallel_lanes=False, emit_output=False,
+                        output_handler=outputs.append,
+                    )
+                    self.assertIs(
+                        outputs[0]["result"]["capabilities"]["active_alarm_endpoint_verified"],
+                        {"available": True, "failed": False, "skipped": None}[state],
+                    )
+
     def test_source_failure_preserves_device_lanes_and_freshness(self):
         args = workflow_remote.parse_args([
             "--ip", TEST_IP, "--source-root", "/synthetic/source", "--keyword", "NIC", "--json",

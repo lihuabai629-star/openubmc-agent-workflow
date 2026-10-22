@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +141,21 @@ class _CrashDuringPatchBackend(_DomainBackend):
 
 
 class WorkflowRegressionTests(unittest.TestCase):
+    def setUp(self):
+        fixture = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture.cleanup)
+        credentials = Path(fixture.name) / 'credentials.json'
+        credentials.write_text(json.dumps({
+            'schema_version': 1,
+            'credentials': {'fixture': {'user': 'fixture', 'password': 'fixture-only-secret'}},
+            'defaults': {'bmc': {'ssh': 'fixture', 'redfish': 'fixture'}},
+        }))
+        credentials.chmod(0o600)
+        selected = patch.dict('os.environ', {name: str(credentials) for name in (
+            'OPENUBMC_CREDENTIALS_CONFIG', 'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_DEBUG_CREDENTIALS_FILE')})
+        selected.start()
+        self.addCleanup(selected.stop)
+
 
     def test_direct_domain_resume_restores_target_from_case(self) -> None:
         backend = _BundleDomainBackend()
@@ -178,7 +194,6 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertEqual(backend.calls[-1][1]["ip"], "192.0.2.62")
         self.assertFalse(resumed.envelope["continuation"]["workflow_complete"])
         self.assertEqual(resumed.envelope["continuation"]["required_phase_type"], "diagnosis.acceptance")
-
 
 
     def test_changed_existing_workflow_input_starts_a_new_cycle(self) -> None:
@@ -225,7 +240,6 @@ class WorkflowRegressionTests(unittest.TestCase):
         )
         self.assertFalse(second.envelope["continuation"]["workflow_complete"])
         self.assertEqual(second.envelope["continuation"]["required_phase_type"], "diagnosis.acceptance")
-
 
 
     def test_authoritative_mode_does_not_start_the_legacy_embedded_workflow(self) -> None:
@@ -353,8 +367,6 @@ class WorkflowRegressionTests(unittest.TestCase):
         )
 
 
-
-
     def test_stale_revision_cannot_update_target_before_conflict(self) -> None:
         service = RuntimeMcpService(_DomainBackend())
         try:
@@ -393,9 +405,6 @@ class WorkflowRegressionTests(unittest.TestCase):
 
         self.assertEqual(after["revision"], before["revision"])
         self.assertEqual(after["targets"], before["targets"])
-
-
-
 
 
     def test_case_epoch_is_monotonic_across_mutation_domains(self) -> None:

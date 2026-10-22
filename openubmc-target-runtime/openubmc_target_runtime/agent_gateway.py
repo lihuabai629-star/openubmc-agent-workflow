@@ -81,6 +81,7 @@ _PREFLIGHT_PLACEHOLDERS = frozenset(
         "<new submission identity>",
         "<remote path>",
         "<restart scope>",
+        "<literal .service IDs or failed>",
     }
 )
 _MISSING = object()
@@ -132,6 +133,20 @@ def _observe_preflight_example(
         raw_freshness = query.get("freshness")
         if isinstance(raw_freshness, Mapping):
             example["freshness"] = dict(raw_freshness)
+        if detail.reason == PreflightReason.SYSTEMD_SELECTION:
+            match = re.fullmatch(r"selectors\[(\d+)]\.names", detail.field)
+            selectors = example.get("selectors")
+            if match is not None and isinstance(selectors, list):
+                index = int(match.group(1))
+                if index < len(selectors) and isinstance(selectors[index], dict):
+                    from .systemd_contract import validate_systemd_names
+                    selector = selectors[index]
+                    selector.pop("queries", None)
+                    try:
+                        validate_systemd_names(selector.get("names"))
+                    except ValueError:
+                        selector["names"] = ["<literal .service IDs or failed>"]
+                    return example
         if detail.reason == PreflightReason.UNSUPPORTED_CAPABILITY:
             match = re.fullmatch(r"selectors\[(\d+)]\.names\[(\d+)]", detail.field)
             if match is not None:
@@ -385,6 +400,10 @@ def _preflight_guidance(
             ),
             PreflightReason.MDB_GRAMMAR: (
                 "retry observe with the corrected read-only mdbctl grammar"
+            ),
+            PreflightReason.SYSTEMD_SELECTION: (
+                "select exact .service IDs or [\"failed\"] in names, without queries; "
+                "use separate observations for service IDs and failed-unit discovery"
             ),
             PreflightReason.FRESHNESS_MODE: (
                 "retry observe with freshness.mode set to live"
@@ -1519,12 +1538,13 @@ class ResultProjector:
                 child = _mapping(_mapping(result.get("systemd")).get(selector.selector_id))
                 complete = child.get("complete") is True and child.get("requested") == list(selector.names)
                 counts["available" if complete else "not_checked"] += 1
-                from .systemd_contract import systemd_unit_summaries
+                from .systemd_contract import systemd_gap_details, systemd_unit_summaries
                 observations[selector.selector_id] = {
                     "kind": "systemd", "complete": complete,
                     "units": systemd_unit_summaries(child),
                     "boot_id": child.get("boot_id"),
                     "gaps": child.get("gaps", ["systemd_not_collected"]),
+                    "gap_details": systemd_gap_details(child),
                 }
                 claims.append({"path": f"results.{selector.selector_id}",
                                "status": "grounded" if complete else "partial",
@@ -2180,6 +2200,19 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             },
         ],
     }
+    execute_schema["oneOf"].append({
+        "type": "object", "additionalProperties": False,
+        "required": sorted(EXECUTE_ACTION_REQUIRED_FIELDS["attach_qemu_evidence"]),
+        "properties": {
+            "kind": {"type": "string", "const": "attach_qemu_evidence"},
+            "run_id": {"type": "string", "minLength": 1},
+            "target": {"type": "string", "minLength": 1},
+            "path": {"type": "string", "description": "Absolute path to a run-bound openubmc-qemu-evidence/v1 JSON bundle."},
+            "sha256": {"type": "string", "pattern": "^(?:sha256:)?[0-9a-f]{64}$"},
+            "deadline": {"type": "number"},
+        },
+        "description": "Validate and attach current QEMU evidence; preserve the current Gate and Outcome without executing target actions.",
+    })
     for action_schema in execute_schema["oneOf"]:
         kind = action_schema["properties"]["kind"]["const"]
         if set(action_schema["properties"]) != EXECUTE_ACTION_FIELDS[kind]:
@@ -2219,7 +2252,11 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             description=(
                 "Start or continue one Runtime workflow and return only the next semantic "
                 "Turn. next_action is the sole structured reusable action; copy its "
-                "bindings exactly, and treat null as requiring missing external input. "
+                "bindings exactly. For completed, failed or cancelled, deliver the "
+                "Outcome; resume reattaches that Run and cannot reopen it. A new "
+                "target or intent needs a new start linked to the prior Run. "
+                "A nonterminal null needs the reported external input. Unknown "
+                "Effects retain the same Run/Incident recovery identity. "
                 "A response_required Gate carries its stable binding and submission_id "
                 "inside gate; add the external response rather than inventing it. "
                 "response_required with "

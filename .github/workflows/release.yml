@@ -214,60 +214,10 @@ jobs:
             "openubmc-$RELEASE_TAG-codex.sha256" \
             plugin-qualification.json
 
-  windows-plugin-gate:
-    needs: release-gate
-    runs-on: windows-2025
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          ref: ${{ needs.release-gate.outputs.release_tag }}
-          fetch-depth: 0
-
-      - name: Check out public marketplace release
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          repository: lihuabai629-star/openubmc-codex-plugins
-          ref: ${{ needs.release-gate.outputs.release_tag }}
-          path: public-marketplace
-          fetch-depth: 1
-
-      - name: Set up locked Windows Python
-        shell: pwsh
-        run: ./scripts/setup_windows_python.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP "openubmc-python-3.12.15") -ExportToGitHubActions
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: "22.23.2"
-
-      - name: Install locked Codex plugin host
-        shell: pwsh
-        run: npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
-
-      - name: Qualify the released public marketplace package
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-gate.outputs.release_tag }}
-        run: |
-          $asset = "openubmc-$env:RELEASE_TAG-codex.tar.gz"
-          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $asset --dir $env:RUNNER_TEMP
-          $codex = Resolve-Path "plugin/host/node_modules/.bin/codex.cmd"
-          ./scripts/qualify_windows_plugin.ps1 `
-            -Archive (Join-Path $env:RUNNER_TEMP $asset) `
-            -Codex $codex `
-            -WorkRoot (Join-Path $env:RUNNER_TEMP "openubmc-windows-release-qualification") `
-            -MarketplaceRoot (Resolve-Path "public-marketplace") `
-            -VerifyPublicIdentity
-
   promote:
     timeout-minutes: 5
     if: ${{ inputs.promote }}
-    needs: [release-gate, windows-plugin-gate]
+    needs: [release-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -78,3 +78,17 @@ Never convert a certificate/identity failure into a pass. If authorization is ab
 | stability | bounded observation without restart/coredump | short-term runtime stability |
 
 Report the earliest failed layer and keep later checks blocked or independently evidenced. Avoid attributing resource pressure or a component defect until fresh serial/service evidence supports that classification.
+
+## Persistent x86 Instances
+
+A persistent runtime binds its initialized disk, initial artifact, machine UUID,
+mock state, credentials, host keys and retained reports. A launcher `restart`
+normally reboots that disk; it does not prove that a newly built HPM was installed.
+Use a fresh runtime for a new artifact unless the requested subject is explicitly
+the existing disk state. Compare report time and guest boot ID so a failed retry
+cannot inherit a stale passing report.
+
+For full x86 service acceptance, use the selected repository verifier and the
+checks defined in `x86-development-workflow.md`. Preserve the first failing boot
+when a later bounded recovery succeeds. The recovered result is evidence for the
+new boot and does not erase the initial failure.

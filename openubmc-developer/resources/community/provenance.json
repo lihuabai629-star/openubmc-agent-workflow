@@ -1,0 +1,78 @@
+[
+  {
+    "skill": "code-compliance-precheck",
+    "source": "skills/code-compliance-precheck/",
+    "destination": "openubmc-developer/resources/community/compliance",
+    "revision": "795442e271988de97524406cd200363840875431",
+    "repository": "https://gitcode.com/openUBMC/skills-marketplace",
+    "reused_from_plugin": {
+      "version": "2.1.9",
+      "source_revision": "38960986e93a2e24dbcd2a77f5c8b6447f908b98"
+    },
+    "verified_against_market_revision": "1f016fd13d6999599bb8d011265cc6238f0059e3",
+    "local_adaptations": [
+      "Reuse the existing plugin checker implementation with local entrypoints; preserve the source-stage advisory result."
+    ]
+  },
+  {
+    "skill": "openubmc-concurrency-audit",
+    "source": "skills/openubmc-concurrency-audit/",
+    "destination": "openubmc-developer/resources/community/concurrency",
+    "revision": "795442e271988de97524406cd200363840875431",
+    "repository": "https://gitcode.com/openUBMC/skills-marketplace",
+    "reused_from_plugin": {
+      "version": "2.1.9",
+      "source_revision": "38960986e93a2e24dbcd2a77f5c8b6447f908b98"
+    },
+    "verified_against_market_revision": "1f016fd13d6999599bb8d011265cc6238f0059e3",
+    "local_adaptations": [
+      "Reuse the existing plugin checker implementation with local entrypoints; preserve the source-stage advisory result."
+    ]
+  },
+  {
+    "skill": "openubmc-rackmount-web-backend-plugin",
+    "source": "skills/openubmc-rackmount-web-backend-plugin/",
+    "destination": "openubmc-developer/resources/community/web-backend",
+    "revision": "795442e271988de97524406cd200363840875431",
+    "repository": "https://gitcode.com/openUBMC/skills-marketplace",
+    "reused_from_plugin": {
+      "version": "2.1.9",
+      "source_revision": "38960986e93a2e24dbcd2a77f5c8b6447f908b98"
+    },
+    "verified_against_market_revision": "1f016fd13d6999599bb8d011265cc6238f0059e3",
+    "local_adaptations": [
+      "Reuse the existing plugin checker implementation with local entrypoints; preserve the source-stage advisory result."
+    ]
+  },
+  {
+    "skill": "openubmc-redfish-interface-diff",
+    "source": "skills/openubmc-redfish-interface-diff/",
+    "destination": "openubmc-developer/resources/community/redfish-diff",
+    "revision": "795442e271988de97524406cd200363840875431",
+    "repository": "https://gitcode.com/openUBMC/skills-marketplace",
+    "reused_from_plugin": {
+      "version": "2.1.9",
+      "source_revision": "38960986e93a2e24dbcd2a77f5c8b6447f908b98"
+    },
+    "verified_against_market_revision": "1f016fd13d6999599bb8d011265cc6238f0059e3",
+    "local_adaptations": [
+      "Reuse the existing plugin checker implementation with local entrypoints; preserve the source-stage advisory result.",
+      "Keep only local directory/zip/ref analysis; remove credential lookup, API enrichment and remote clone/fetch; export local refs to temporary archives without worktrees; require a fresh output directory."
+    ]
+  },
+  {
+    "skill": "doc-sync-check",
+    "source": "skills/doc-sync-check/",
+    "destination": "openubmc-developer/resources/interface-coverage",
+    "revision": "795442e271988de97524406cd200363840875431",
+    "repository": "https://gitcode.com/openUBMC/skills-marketplace",
+    "reused_from_plugin": {
+      "version": "2.1.9",
+      "source_revision": "38960986e93a2e24dbcd2a77f5c8b6447f908b98"
+    },
+    "verified_against_market_revision": "1f016fd13d6999599bb8d011265cc6238f0059e3",
+    "local_adaptations": [
+      "Reuse the existing plugin checker implementation with local entrypoints; preserve the source-stage advisory result."
+    ]
+  }
+]

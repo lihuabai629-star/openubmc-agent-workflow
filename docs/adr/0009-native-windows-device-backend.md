@@ -1,9 +1,15 @@
 # ADR-0009: Native Windows backend for device execution
 
-- Status: Proposed
+- Status: Retired (2.2.1)
 - Date: 2026-09-28
 - Decision owners: openUBMC Agent Workflow maintainers
 - Supersedes in part: [ADR-0008 Local setup plane](0008-local-setup-plane-and-cross-platform-bootstrap.md), for the Windows execution-host choice
+
+## Current support
+
+From 2.2.1 the backend runs in Linux or WSL. Windows Codex clients may use an
+explicit WSL stdio command; native Python, ACL, SSH and process adapters are no
+longer shipped or qualified. The decision below is retained as historical context.
 
 ## Context
 

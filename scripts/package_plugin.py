@@ -46,8 +46,7 @@ def protect_python_entrypoints(payload: dict[str, bytes]) -> None:
     for name, content in list(payload.items()):
         path = PurePosixPath(name)
         if (path.suffix != '.py' or 'tests' in path.parts
-            or name in {'scripts/pluginctl.py',
-                        'skills/openubmc-target-runtime/tools/windows_platform_helper.py'}):
+            or name == 'scripts/pluginctl.py'):
             continue
         tree = ast.parse(content)
         has_main = any(isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
@@ -92,23 +91,55 @@ def enforce_prompt_budget(payload: dict[str, bytes]) -> None:
 
 def assemble(source: Path, ref: str) -> dict[str, bytes]:
     commit, source_content = source_files(source, ref)
+    if 'openubmc-panel' in json.loads(source_content['plugin/openubmc/.mcp.json']).get('mcpServers', {}):
+        panel_sources = json.loads(source_content['plugin/openubmc/panel/source.json'])
+        expected = {'codex-panel/package.json', 'codex-panel/package-lock.json', 'codex-panel/scripts/build.mjs'}
+        expected.update(name for name in source_content if name.startswith(('codex-panel/src/', 'codex-panel/web/')))
+        if set(panel_sources) != expected:
+            raise ValueError('packaged panel source inventory is stale; run npm run build in codex-panel')
+        for name, digest in panel_sources.items():
+            if hashlib.sha256(source_content[name]).hexdigest() != digest:
+                raise ValueError(f'packaged panel is stale; run npm run build in codex-panel: {name}')
     workflow = json.loads(source_content['workflow.json'])
     payload = {}
     skill_names = []
+    distribution = workflow.get('distribution', {})
+    optional_skills = set(distribution.get('optional_skills', []))
+    support_skills = set(distribution.get('support_skills', []))
     for skill in workflow['skills']:
         if skill['name'] not in workflow['profiles']['full']:
             continue
-        skill_names.append(skill['name'])
+        optional = skill['name'] in optional_skills
+        support = skill['name'] in support_skills
+        if not optional and not support:
+            skill_names.append(skill['name'])
         root = skill['path']
         manifest = json.loads(source_content[f'{root}/skill.json'])
         for relative in sorted(set(manifest['files']) | {'skill.json'}):
             if PurePosixPath(relative).is_absolute() or '..' in PurePosixPath(relative).parts:
                 raise ValueError(f'invalid Skill member: {relative}')
-            payload[f'skills/{root}/{relative}'] = source_content[f'{root}/{relative}']
+            destination = f'optional-skills/{root}' if optional else f'skills/{root}'
+            # Support resources keep the sibling layout used by domain loaders,
+            # but are not independent entries in the Host's Skill catalog.
+            if support and relative == 'SKILL.md':
+                target = 'references/workflow.md'
+            elif support and relative == 'agents/openai.yaml':
+                continue
+            else:
+                target = relative
+            content = source_content[f'{root}/{relative}']
+            if optional and relative == 'SKILL.md':
+                content = content.replace(b'../openubmc-debug/', b'../../skills/openubmc-debug/')
+            if support and relative == 'SKILL.md':
+                content = content.replace(b'](references/', b'](')
+            payload[f'{destination}/{target}'] = content
     for name, content in source_content.items():
         if name.startswith(('openubmc-target-runtime/openubmc_target_runtime/', 'openubmc-target-runtime/tools/')):
-            if '__pycache__' in PurePosixPath(name).parts or not name.endswith('.py'):
+            if (PurePosixPath(name).name == 'model_planning.py'
+                or '__pycache__' in PurePosixPath(name).parts or not name.endswith('.py')):
                 continue
+            payload[f'skills/{name}'] = content
+        if name.startswith('openubmc-target-runtime/references/') and name.endswith('.md'):
             payload[f'skills/{name}'] = content
         if name.startswith('openubmc-kb-mcp/src/') or name in ('openubmc-kb-mcp/package.json', 'openubmc-kb-mcp/package-lock.json'):
             payload[name] = content
@@ -121,9 +152,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
         payload['scripts/'+name] = source_content['scripts/'+name]
     payload['skills/openubmc-environment-setup/SKILL.md'] = source_content['plugin/environment-support.md']
     payload['skills/openubmc-environment-setup/references/credential-exposure-response.md'] = source_content['docs/credential-exposure-response.md']
-    # The support directory retains the canonical sibling layout required by
-    # existing public Skill helpers. Its descriptor is generated from the recipe.
-    payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']
+    # The Runtime engine is support code; its recovery guidance belongs to Setup.
     enforce_prompt_budget(payload)
     manifest = json.loads(payload['.codex-plugin/plugin.json'])
     manifest['version'] = workflow['version']

@@ -138,6 +138,8 @@ def _identities(
         ).lower(),
         "backup_dir": _text(arguments, "backup_dir") or "/tmp",
         "staging_path": _text(arguments, "staging_path"),
+        **({"local_path": str(Path(_text(arguments, "local_path")).expanduser().resolve())}
+           if action == "apply" else {}),
         "local_sha256": local_sha256,
         "mode": _text(arguments, "mode") or "644",
         "restart_scope": _text(arguments, "restart_scope") or "none",

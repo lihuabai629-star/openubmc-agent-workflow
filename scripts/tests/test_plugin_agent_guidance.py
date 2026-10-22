@@ -19,6 +19,21 @@ def json_examples(markdown):
 
 
 class PluginAgentGuidanceTests(unittest.TestCase):
+    def test_packaged_qemu_contract_is_loadable_from_runtime_and_action_decodes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = package_fixture(Path(temporary))
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from openubmc_target_runtime.qemu_evidence import _contract
+from openubmc_target_runtime.semantic_runtime import decode_run_command
+assert _contract().RESULT_SCHEMA == 'openubmc-qemu-workflow-result/v1'
+command = decode_run_command({'kind':'attach_qemu_evidence','run_id':'run-qemu',
+    'target':'192.0.2.10','path':'/tmp/qemu-evidence.json','sha256':'a'*64}, operation_id='qemu-evidence')
+assert command.run_id == 'run-qemu'
+''', str(plugin / 'skills/openubmc-target-runtime')], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_packaged_tls_guidance_distinguishes_transport_from_strict_checks(self):
         with tempfile.TemporaryDirectory() as temporary:
             plugin = package_fixture(Path(temporary))

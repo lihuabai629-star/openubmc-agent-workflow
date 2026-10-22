@@ -1,0 +1,39 @@
+name: Codex panel validation
+
+on:
+  pull_request:
+    paths:
+      - "codex-panel/**"
+      - "plugin/openubmc/panel/**"
+      - ".github/workflows/codex-panel.yml"
+  push:
+    branches: [main]
+    paths:
+      - "codex-panel/**"
+      - "plugin/openubmc/panel/**"
+      - ".github/workflows/codex-panel.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  adapter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: codex-panel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: codex-panel/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: git diff --exit-code -- ../plugin/openubmc/panel
+      - run: npm run check
+      - run: npm test

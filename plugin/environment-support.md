@@ -1,6 +1,6 @@
 ---
 name: openubmc-environment-setup
-description: "Configure or repair an installed openUBMC plugin on Windows, Linux or WSL: 账号缺失或认证失败、配置网页、默认 BMC 账号、关联 OS、Conan 登录、KB 知识库配置、MCP 启动失败、插件检查。Use for local credentials, native backend readiness, migration, and installation health; device diagnosis belongs to openubmc-debug."
+description: "Use for explicit openUBMC plugin installation, update, removal, health-check or private-account configuration requests (插件安装、修改账号、保存 BMC/OS 关联), or a confirmed plugin/MCP startup or required local-configuration blocker. Ordinary development, build/Conan failures, device diagnosis and optional KB failures stay with their task owner."
 ---
 
 # openUBMC plugin environment
@@ -10,24 +10,49 @@ and load its owner before acting; carry the existing Run and authorization.
 
 Resolve `<plugin-root>` as the parent of the `skills` directory containing this Skill. Codex manages the plugin's Skills and MCP registration. Keep credentials, dependencies and Runtime history outside the plugin directory.
 
+Runtime identity and recovery are part of plugin management. `doctor` reports package identity
+and startup readiness; `observe` and `execute` own operational workflows. Runtime state and
+MutationJournal records live outside the package and survive updates or removal.
+Explicit documentation reviews can read `<plugin-root>/optional-skills/openubmc-doc-review/SKILL.md`;
+this resource is outside the default Skill catalog. The legacy bootstrap and `target-runtime`
+profile remain migration tools; native marketplace installation is the supported entry.
+
+## Enter only for the affected capability
+
+Apply the Setup entry conditions in the phase handoff. Continue ordinary tasks with their
+existing configuration; Setup is not a prerequisite. A reported blocker must identify the
+capability needed now and its current failure. Tool visibility, an unused account, an optional
+dependency warning or a missing logical credential file alone does not establish that blocker.
+
 ## Inspect and repair
+
+For an explicit plugin check or confirmed local blocker, inspect first:
 
 ```bash
 python3 -I <plugin-root>/scripts/pluginctl.py doctor
-python3 -I <plugin-root>/scripts/pluginctl.py prepare --repair
 ```
 
-The MCP launchers check locked Python and npm dependencies on startup. When they are absent or damaged, both servers still initialize in setup mode. Use the setup tool offered in the task to prepare or repair them, then start a new task. A modified package fails closed to setup mode; reinstall the selected marketplace version. Do not modify the installed package, bypass hashes or create duplicate loose Skill/MCP registrations.
+The MCP launchers check locked dependencies on startup and expose setup tools on failure.
+If the affected service is needed now, call `openubmc_setup_status`, then repair only its reported
+cause. Missing or damaged dependencies use `openubmc_setup_prepare` (CLI: `pluginctl.py prepare
+--repair` with `--capability runtime` or `--capability kb`); a modified package requires reinstalling
+the selected marketplace version. Do not modify the package, bypass hashes or duplicate registrations.
+After startup repair, start a new task when needed to reload that service.
 
-Node.js 20+, Git and Codex are required on the Codex host. Linux and native Windows each need Python 3.12 with pip. On Windows, Runtime, KB, credentials, dependency caches and Run history stay in the Windows user profile. WSL is optional for an explicitly selected build environment; device work does not need it. SDKs, compilers, Docker installation and Conan remotes belong to their respective workflows.
+Node.js 20+, Git, Codex, Python 3.11+ with pip, and `flock` (util-linux) are required inside Linux or WSL.
+The backend, credentials, dependency caches and Run history remain there.
+Windows clients use an explicitly selected WSL distribution and the stdio bridge
+`scripts/openubmc-wsl-bridge.js`; native Windows execution is unsupported.
+SDKs, compilers, Docker installation and Conan remotes belong to their respective workflows.
 
-If `openubmc_setup_status` is available, the plugin is in recoverable setup mode. Use `openubmc_setup_prepare` for the reported capability and `openubmc_setup_open_configuration` to open the private browser page. Present the returned loopback URL to the user. Do not ask a Windows user to locate or run `pluginctl.py`.
+Use `openubmc_setup_open_configuration` only for an account change identified below, not after
+every dependency repair. Present its loopback URL. For `unsupported_platform`, connect through WSL.
 
 ## Private credentials
 
 ### Reuse existing configuration
 
-Run `pluginctl.py doctor` first. Its `credentials` report includes local capabilities and
+For local credential diagnosis, the `doctor` report includes capabilities and
 `active_revision`; `remote_authentication=not_checked` is a local readiness result. The Runtime
 prefers the selected structured `credentials.json` source, including its activated revision, over
 retained legacy defaults. An absent logical source file does not mean its active snapshot is absent.
@@ -62,11 +87,12 @@ An exact IP override selects a complete record; authentication failure never fal
 
 ### Change or check an account
 
-When local credentials are missing, authentication is rejected, or the user requests an account
-change, explain the specific reason and start the relevant page yourself. Do not make the user
-find the entry point or run the command. Reuse available credentials without opening a page.
-Configuration conflicts require diagnosing the selected source first; TLS, host identity and
-network failures are not reasons to ask for another password.
+Open the focused page for an explicit account change, a Runtime-resolved missing required account,
+or a confirmed authentication rejection for the selected target/account that needs replacement.
+Explain the specific reason and start the page yourself. Reuse working accounts without a page.
+Diagnose source conflicts first; TLS, host identity, timeouts, permissions and business errors
+stay with the task owner and are not evidence of a missing password. Conan remote/profile and
+dependency failures stay with Build; only a confirmed account update uses this private entry.
 
 When a task has a target IP and the user wants its account remembered after a successful connection,
 start the targets page with `--focus-target <IP> --purpose bmc|os --transport ssh|redfish --wait-for-save`.

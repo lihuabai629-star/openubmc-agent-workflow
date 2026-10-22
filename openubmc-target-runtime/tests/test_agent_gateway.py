@@ -2674,7 +2674,7 @@ class AgentGatewayTests(unittest.TestCase):
         }
         self.assertEqual(
             set(action_shapes),
-            {"start", "respond", "resume", "control"},
+            {"start", "respond", "resume", "control", "attach_qemu_evidence"},
         )
         self.assertIn("intent", action_shapes["start"]["required"])
         self.assertIn(

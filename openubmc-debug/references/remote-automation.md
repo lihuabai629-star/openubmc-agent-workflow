@@ -24,8 +24,8 @@ Skill directory merely to run a helper.
 ## Explicit credentials
 
 Use the Runtime's existing current-user credential selection before requesting new account data.
-`observe` and `execute` resolve credentials locally. For a local configuration problem, load
-`openubmc-environment-setup` and use its packaged doctor or public `CredentialResolver.resolve_local`
+`observe` and `execute` resolve credentials locally. Only a required local configuration blocker
+enters `openubmc-environment-setup`; use its doctor or public `CredentialResolver.resolve_local`
 example. It reports readiness without exposing secrets or claiming successful authentication.
 
 The Runtime selects an explicit configured source, otherwise the standard `openubmc/credentials.json`
@@ -47,12 +47,14 @@ existing legacy files and environment settings; do not export structured records
 password variables or replace them with ad hoc legacy parsing. Explicit per-operation selectors
 retain their legacy source family and should be used only when that account selection is intended.
 
-For missing credentials or rejected authentication, follow `openubmc-environment-setup` to launch
+For a Runtime-resolved missing required account or confirmed target/account authentication
+rejection needing an account update, follow `openubmc-environment-setup` to launch
 the focused configuration page, present its session link and await its secret-free completion
 event before continuing the authorized task. Do not require the user to launch it or announce
-completion. Diagnose invalid or conflicting sources before changing them. For an authorized OS
-task whose address is not explicit, use `CredentialResolver.associated_os` from that Skill to look
-up the BMC's configured OS association. The association itself authorizes no connection.
+completion. Diagnose invalid or conflicting sources before changing them. Network, TLS, permission
+and business errors stay in Debug. For an authorized OS task without an explicit address, consult
+the resolver example in that Skill to call `CredentialResolver.associated_os`; this read-only lookup
+does not enter setup or open a page. The association itself authorizes no connection.
 Keep passwords, key contents, and raw resolved
 credential objects out of command arguments, model context, logs, and receipts. A successful local
 lookup establishes neither remote authentication nor authority for a target mutation.
@@ -73,9 +75,9 @@ check. A historical transport default does not broaden a task's explicit validat
 
 SSH-backed lanes require the local `ssh` executable. `sshpass` is conditional on password
 authentication; key/agent authentication does not need it. `rg` is conditional on local source
-analysis when CodeGraph is unavailable. Missing executables are capability gaps: return stable
-metadata (for example `ssh_client_missing` with return code `127`) and route preparation to
-`openubmc-environment-setup` instead of installing from this Skill.
+analysis when CodeGraph is unavailable, with a slower search fallback. Report missing executables
+as capability gaps (for example `ssh_client_missing` with return code `127`). Use available lanes;
+only a missing executable required by this task enters focused local preparation through Setup.
 
 BMC SSH host-key verification defaults to `insecure` in the internal-development workflow so a
 replaceable BMC whose key changes does not trigger a user confirmation loop. The transport emits
@@ -213,7 +215,7 @@ service/path overrides. Add `--json --compact-json` for a bounded Agent Envelope
 comparison through its evidence reference only when needed.
 
 Native subagents, when available, are an agent-level analysis layer after a validated workflow
-snapshot exists. The root agent retains credentials and live-target ownership; analysis workers
+snapshot exists. Runtime retains private credentials; the root agent retains live-target ownership. Analysis workers
 receive only the same immutable, bounded evidence and may inspect the resolved source root. They
 must not run preflight, helpers, or other target commands. The root agent correlates their cited
 evidence and remains responsible for the final result. If subagents are unavailable or
@@ -224,9 +226,9 @@ fail, perform the same analysis sequentially and preserve the missing dimension 
 One MCP task may bind a new single target, replace a target set, or update ports and credential
 selectors. A call that omits target coordinates incrementally inherits the currently bound targets.
 A call that supplies `ip` or `targets` resets the old host and ports, then uses default ports unless
-the call supplies replacements. For a single active target, direct users/passwords and the matching
-SSH policy may continue within the active task so an address replacement does not force credential
-re-entry. Environment selectors, identity files, known-hosts paths, insecure overrides, and an old
+the call supplies replacements. Agent calls carry target/configuration references; Runtime resolves
+secret values locally at connection time. Secret values remain outside chat, model tool arguments
+and persistent Case inputs. Environment selectors, identity files, known-hosts paths, insecure overrides, and an old
 multi-target set are not copied into a newly supplied binding. The task purpose, delivery strategy,
 and a single target's ID/role remain available without being repeated, while the earlier
 orchestration context is retained in a bounded history.
@@ -239,7 +241,7 @@ are stored by `target_id`, so a later Upgrade or Live Patch selection cannot inh
 target's host or ports. Cache-resident domain leases remain available for a later return to a
 previously used target within the same process. Each domain keeps a 32-entry LRU by default; an
 evicted target reconnects when selected again, and all remaining leases close with the task.
-Changing a direct password, credential selector, or SSH policy selects a distinct domain binding
+Changing the locally resolved account revision, credential selector, or SSH policy selects a distinct domain binding
 without limiting the number of targets that may be requested.
 
 Treat matching target bindings, credential selectors, artifact identities, delivery strategy, and

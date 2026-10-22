@@ -68,6 +68,19 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def use_fixture_credentials(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        credentials = Path(directory.name) / "credentials.json"
+        credentials.write_text(json.dumps({
+            "schema_version": 1,
+            "credentials": {"fixture": {"user": "fixture", "password": "fixture-only-secret"}},
+            "defaults": {"bmc": {"ssh": "fixture", "redfish": "fixture"}},
+        }))
+        credentials.chmod(0o600)
+        self.enterContext(mock.patch.dict(os.environ, {key: str(credentials) for key in (
+            "OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE")}))
+
     def test_debug_collect_keeps_hardware_acceptance_partial_until_all_drives_converge(
         self,
     ) -> None:
@@ -275,6 +288,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertIn("observation_ref", receipt)
 
     def test_agent_observe_bounds_parallel_selectors_and_reuses_one_lease(self) -> None:
+        self.use_fixture_credentials()
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
         opened: list[FakeLease] = []
@@ -476,6 +490,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         )
 
     def test_agent_observe_runs_one_preflight_and_only_exact_mdb_queries(self) -> None:
+        self.use_fixture_credentials()
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
         calls: list[str] = []
@@ -1179,6 +1194,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertIsNone(exported)
 
     def test_orchestrated_debug_compares_two_roleless_targets_symmetrically(self) -> None:
+        self.use_fixture_credentials()
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
         runtime_mcp = sys.modules[runtime.OrchestratedMcpBackend.__module__]
@@ -1266,6 +1282,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         )
 
     def test_orchestrated_debug_projects_only_supported_connection_arguments(self) -> None:
+        self.use_fixture_credentials()
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
         runtime_mcp = sys.modules[runtime.OrchestratedMcpBackend.__module__]

@@ -19,8 +19,9 @@ Use this Skill for temporary runtime validation. It does not replace a source ch
 - Use `none` when replacement is effective without a framework reload. Use `skynet` when reload is required to complete an explicitly requested live-patch verification. Announce the bounded restart and expected transient disconnect, but do not ask for redundant confirmation.
 - Back up an existing target with its file attributes, preserve its numeric owner/group during replacement, verify deployed checksum and metadata, run `sync`, and restore the original root mount mode.
 - Treat copy, checksum, metadata, mount restoration, health, and requested business verification failures as failures. Return `ok=false` and a nonzero exit status.
-- Internal development mode accepts direct SSH/Telnet password arguments as well as the
-  openubmc-debug credential source and `OPENUBMC_*` environment variables. Never print them.
+- Agent calls carry target/configuration references only. Runtime resolves SSH/Telnet secrets
+  from private local configuration or an inherited secret environment at transport creation;
+  secret values stay out of chat, tool arguments, plans and persistent Case inputs.
 - BMC SSH host-key verification defaults to `insecure` for replaceable development targets, including
   host-key changes. `strict` and `accept-new` remain optional overrides; this policy does not weaken
   OS-host SSH.
@@ -75,8 +76,8 @@ not by itself proof that recovery ran; keep the Run blocked until a recovery-cap
 reconciles that same journal. Never reinterpret Apply authorization as permission to restore or
 remove a file. When the Run becomes terminal, return its terminal Outcome. Closeout documents,
 evidence, artifacts, backups, and checksums remain available through the Operator / CI Plane.
-The task keeps direct SSH/Telnet credentials for warm continuation, and the persistent Case keeps
-the internal-development workflow inputs used by `execute`. Target-specific bindings use
+The persistent Case keeps target/configuration references and non-secret workflow inputs.
+Reconnect resolves credentials locally. Target-specific bindings use
 a 32-entry LRU by default; target count is not limited, and returning to an evicted target simply
 opens a new binding.
 

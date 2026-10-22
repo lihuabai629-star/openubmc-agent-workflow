@@ -356,15 +356,22 @@ class LivePatchCliTests(unittest.TestCase):
                 "'target_clock': '2026-09-22 21:31:00', "
                 "'target_clock_epoch': '1790083860', "
                 "'target_uptime_seconds': '3660.00', "
-                "'effective_since_time': '2026-09-22 21:30:00'}, "
-                "'message': message}))\n"
+                "'effective_since_time': '2026-09-22 21:30:00', "
+                "'entries': [{'ok': True, 'content_complete': True, 'lines': [message]}]}}))\n"
                 "raise SystemExit(int(os.environ.get('FAKE_LOG_RC', '0')))\n"
             ),
             "mdbctl_remote.py": "import os; raise SystemExit(int(os.environ.get('FAKE_MDBCTL_RC', '0')))\n",
         }.items():
             (debug_scripts / name).write_text(body, encoding="utf-8")
 
+        credential_source = directory / "fixture-credentials.env"
+        credential_source.write_text("")
+        credential_source.chmod(0o600)
         return {
+            "OPENUBMC_CREDENTIALS_CONFIG": str(credential_source),
+            "OPENUBMC_CREDENTIALS_FILE": str(credential_source),
+            "OPENUBMC_DEBUG_CREDENTIALS_FILE": str(credential_source),
+            "XDG_CONFIG_HOME": str(directory),
             "OPENUBMC_DEBUG_SCRIPTS": str(debug_scripts),
             "OPENUBMC_SSH_USER": "Administrator",
             "OPENUBMC_SSH_PASSWORD": "super-secret-password",
@@ -938,7 +945,7 @@ class LivePatchCliTests(unittest.TestCase):
             (scripts / "collect_logs.py").write_text(
                 "import json, os\n"
                 "payload = json.loads(os.environ['FAKE_HEALTH_OBSERVATION'])\n"
-                "payload['message'] = 'check startup status completely, total components count: 4, normal count: 4'\n"
+                "payload['result']['entries'] = [{'ok': True, 'content_complete': True, 'lines': ['check startup status completely, total components count: 4, normal count: 4']}]\n"
                 "print(json.dumps(payload))\n",
                 encoding="utf-8",
             )

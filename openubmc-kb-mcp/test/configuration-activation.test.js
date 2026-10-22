@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -9,23 +9,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ensurePrivateDirectory } from '../src/windows-private.js';
-
-const windows = process.platform === 'win32';
-
-function setupWindowsHelper() {
-  if (!windows) return;
-  if (!process.env.OPENUBMC_WINDOWS_PYTHON) {
-    const selected = spawnSync('py', ['-3.12', '-c', 'import sys; print(sys.executable)'],
-      { encoding: 'utf8', windowsHide: true });
-    process.env.OPENUBMC_WINDOWS_PYTHON = selected.status === 0
-      ? selected.stdout.trim() : 'python';
-  }
-  process.env.OPENUBMC_WINDOWS_HELPER ||= resolve('../openubmc-target-runtime/tools/windows_platform_helper.py');
-}
 
 function configure(path, config, previous = null, active = null, activate = false) {
-  return JSON.parse(execFileSync(windows ? process.env.OPENUBMC_WINDOWS_PYTHON : 'python', ['-c', `
+  return JSON.parse(execFileSync('python3', ['-c', `
 import json, sys
 from pathlib import Path
 from openubmc_target_runtime.configuration import LocalConfigurationStore
@@ -39,12 +25,8 @@ print(json.dumps(saved))
 }
 
 async function setup(t) {
-  setupWindowsHelper();
-  const root = join(windows ? process.env.LOCALAPPDATA || tmpdir() : tmpdir(),
-    `openubmc-activation-${randomUUID()}`);
-  if (windows) ensurePrivateDirectory(root);
-  const dir = windows ? await mkdtemp(join(root, 'case-')) : await mkdtemp(root + '-');
-  t.after(() => rm(windows ? root : dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(join(tmpdir(), 'openubmc-activation-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'kb.json');
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [resolve('src/server.js'), '--config', path], stderr: 'pipe',
@@ -58,7 +40,7 @@ async function setup(t) {
   return { path, client, dir };
 }
 
-test('live stdio KB uses only activated configurations and pins in-flight account', { timeout: windows ? 90000 : 12000 }, async t => {
+test('live stdio KB uses only activated configurations and pins in-flight account', { timeout: 12000 }, async t => {
   const { path, client } = await setup(t);
   const accounts = [];
   let release, started;
@@ -75,7 +57,7 @@ test('live stdio KB uses only activated configurations and pins in-flight accoun
   const base = `http://127.0.0.1:${http.address().port}`;
   const config = username => ({ username, password: 'fixture-password', clientSecret: 'fixture-secret',
     lightragUrl: base, userCenterUrl: base, oauthBaseUrl: base,
-    requestTimeoutMs: windows ? 30000 : 4000 });
+    requestTimeoutMs: 4000 });
   const query = () => client.callTool({ name: 'openubmc_kb_query', arguments: { query: 'fan' } });
   assert.equal((await query()).structuredContent.error.code, 'KB_CREDENTIALS_MISSING');
   const saved = configure(path, config('first'));
@@ -92,7 +74,7 @@ test('live stdio KB uses only activated configurations and pins in-flight accoun
   assert.deepEqual(accounts, ['first', 'second']);
 });
 
-test('activated endpoint cannot receive a token cached for the previous endpoint', { timeout: windows ? 40000 : 10000 }, async t => {
+test('activated endpoint cannot receive a token cached for the previous endpoint', { timeout: 10000 }, async t => {
   const { FileTokenStore, createTokenOwner } = await import('../src/auth/token-store.js');
   const { loadConfig } = await import('../src/config.js');
   const { path, client, dir } = await setup(t);
@@ -121,7 +103,7 @@ test('activated endpoint cannot receive a token cached for the previous endpoint
   assert.equal(tokens[0].auth, 'Bearer fixture-first-token');
 });
 
-test('local configuration rejects FIFO files without blocking MCP startup', { skip: windows }, async t => {
+test('local configuration rejects FIFO files without blocking MCP startup', {}, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'openubmc-config-fifo-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'kb.json');

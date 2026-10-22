@@ -22,7 +22,7 @@ test("persists tokens only for the matching account and protects the cache on PO
   assert.equal(await store.save(token), true);
   assert.deepEqual(await store.load(), token);
   assert.equal(await new FileTokenStore(path, `${owner}-other`).load(), undefined);
-  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await stat(store.path)).mode & 0o777, 0o600);
 
   await store.clear();
   assert.equal(await store.load(), undefined);

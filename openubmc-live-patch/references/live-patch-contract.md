@@ -38,7 +38,11 @@ The scripts load openubmc-debug integration from either:
 1. `OPENUBMC_DEBUG_HELPERS` and `OPENUBMC_DEBUG_SCRIPTS`, when explicitly configured; or
 2. an `openubmc-debug` sibling Skill discovered relative to the running script.
 
-Credential values may come from direct internal-development CLI arguments, the openubmc-debug credential loader, or `OPENUBMC_*` environment variables. The runtime passes SSH passwords to `sshpass` through its child environment when opening the actual transport.
+Agent execution uses the private openubmc-debug credential loader or inherited `OPENUBMC_*`
+environment variables. Pass references, never secret values, in model tool arguments or saved
+workflow inputs. Runtime passes SSH passwords to `sshpass` only in the child environment at
+transport creation. Legacy direct-password CLI flags remain for manual terminal compatibility;
+they are not an Agent credential path.
 
 SSH host-key policies:
 

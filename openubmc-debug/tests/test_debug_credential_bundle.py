@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +18,42 @@ import _cli_common  # noqa: E402
 
 
 class DebugCredentialBundleTests(unittest.TestCase):
+    def test_one_shot_ssh_reuses_the_activated_target_record(self):
+        from _target_runtime_adapter import _load_runtime_module
+        runtime = _load_runtime_module()
+        import importlib
+        configuration = importlib.import_module(runtime.__name__ + ".configuration")
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "openubmc" / "credentials.json"
+            source.parent.mkdir()
+            source.write_text(json.dumps({"schema_version": 1}))
+            source.chmod(0o600)
+            store = configuration.LocalConfigurationStore(source, kind="targets")
+            config = {
+                "schema_version": 1,
+                "credentials": {"specific": {"user": "target-user", "password": "fixture-secret"}},
+                "targets": {"192.0.2.39": {"bmc": {"ssh": "specific"}}},
+            }
+            store.save_and_activate(
+                config, expected_revision=None, expected_active_revision=None,
+                expected_source_text=source.read_text(),
+            )
+            args = argparse.Namespace(ip="192.0.2.39", ssh_port=22)
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": raw}, clear=True):
+                selected = _cli_common.resolve_ssh_credentials(args)
+                self.assertEqual(selected["user"], "target-user")
+                self.assertEqual(selected["password"], "fixture-secret")
+                with self.assertRaises(Exception) as raised:
+                    _cli_common.resolve_ssh_credentials(argparse.Namespace(ip="192.0.2.40", ssh_port=22))
+                self.assertEqual(raised.exception.code, "credentials_missing")
+
+    def test_explicit_one_shot_account_keeps_legacy_selection(self):
+        args = argparse.Namespace(ip="192.0.2.39", ssh_user="explicit-user", ssh_password="explicit-password")
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(_cli_common, "load_credentials_file", return_value={}):
+            selected = _cli_common.resolve_ssh_credentials(args)
+        self.assertEqual(selected["user"], "explicit-user")
+        self.assertEqual(selected["password"], "explicit-password")
+
     def test_combined_debug_credentials_parse_the_selected_source_once(self) -> None:
         args = argparse.Namespace(
             ssh_user="",

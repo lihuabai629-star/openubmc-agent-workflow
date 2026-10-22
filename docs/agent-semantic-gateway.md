@@ -361,6 +361,14 @@ attachments retain the canonical target address, Operator operation identity, an
 product version across process restarts; the secret material used to reach the target is never part
 of an Evidence reference.
 
+The Agent `execute` action `attach_qemu_evidence` accepts only a bounded,
+Run/target-bound `openubmc-qemu-evidence/v1` bundle containing a QEMU plan and
+result. Runtime verifies its digest, current input identities, timestamps and
+protocol modes, then RunEngine appends `EvidenceAttached`. It returns the same
+Gate/Incident/Outcome without settling or resuming an Effect. Historical QEMU
+results cannot establish current readiness. This action does not expose the
+general Operator evidence attachment API or answer a Build/Upgrade Gate.
+
 A `workflow-diagnosis-record` attachment may subsequently be cited by the same Run's current
 `diagnosis.acceptance` Gate. Citation does not let the Operator plane answer that Gate: the Agent
 must still submit the version-bound response, and Runtime Core verifies the attachment's Run,

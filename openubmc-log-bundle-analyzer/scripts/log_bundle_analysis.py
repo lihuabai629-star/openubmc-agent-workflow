@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import zlib
 from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import Callable
@@ -2372,7 +2373,7 @@ def iter_text_lines(
                         "message": f"File scan stopped after {max_bytes} decompressed bytes.",
                     },
                 )
-    except (OSError, EOFError) as exc:
+    except (OSError, EOFError, zlib.error) as exc:
         _append_diagnostic(
             status,
             "errors",
@@ -2921,11 +2922,16 @@ def analyze_bundle(
     max_total_bytes: int = DEFAULT_ANALYSIS_MAX_TOTAL_BYTES,
     max_bytes_per_file: int = DEFAULT_ANALYSIS_MAX_BYTES_PER_FILE,
     max_line_bytes: int = DEFAULT_ANALYSIS_MAX_LINE_BYTES,
+    max_scan_files: int = 512,
+    max_discovery_entries: int = MAX_PATH_DISCOVERY_ENTRIES,
     since: dt.datetime | None = None,
     until: dt.datetime | None = None,
     analysis_timezone: dt.tzinfo | None = None,
 ) -> dict[str, object]:
-    discovery_budget = PathDiscoveryBudget()
+    if min(max_files, max_lines, max_paths_per_log, max_total_bytes, max_bytes_per_file,
+           max_line_bytes, max_scan_files, max_discovery_entries) < 1:
+        raise BundleAnalysisError("invalid_request", "Analysis resource limits must be positive.")
+    discovery_budget = PathDiscoveryBudget(max_entries=max_discovery_entries)
     # One index is shared by all selected log definitions.  This keeps a
     # repeated exact path or wildcard parent from being rescanned (and
     # charged) once per definition while preserving one analysis-wide budget.
@@ -3169,6 +3175,15 @@ def analyze_bundle(
                 )
 
         scan_paths = [] if metadata_only else existing_paths[:max_paths_per_log]
+        remaining_files = max(0, max_scan_files - scanned_path_count)
+        if len(scan_paths) > remaining_files:
+            scan_paths = scan_paths[:remaining_files]
+            log_scan_truncated = True
+            scan_truncated = True
+            log_warnings.append({"code": "scan_file_limit_reached",
+                                 "path": str(item["paths"][0]),
+                                 "message": "The shared file scan limit was reached.",
+                                 "limit": max_scan_files})
         is_operation_log = str(item.get("name", "")) == "operation.log"
         if is_operation_log:
             operation_log_selected = True
@@ -3364,6 +3379,13 @@ def analyze_bundle(
                         ),
                     }
                 )
+            # Retain only the best output-sized candidates plus one sentinel
+            # for sampling. Rotated logs must not retain one full line per file.
+            candidate_evidence.sort(key=lambda line: (
+                -int(line.get("_score", 0)),
+                -float(line.get("_timestamp_sort", float("-inf"))),
+                str(line.get("path", "")), -int(line.get("line_number", 0))))
+            del candidate_evidence[max_lines + 1:]
 
         candidate_evidence.sort(
             key=lambda evidence_line: (
@@ -3472,6 +3494,7 @@ def analyze_bundle(
             "max_total_bytes": max_total_bytes,
             "max_bytes_per_file": max_bytes_per_file,
             "max_line_bytes": max_line_bytes,
+            "max_scan_files": max_scan_files,
             "primary_scanned_bytes": primary_scanned_bytes,
             "remaining_bytes_before_scan": max(0, max_total_bytes - primary_scanned_bytes),
             "remaining_bytes_after_scan": budget.remaining_bytes,

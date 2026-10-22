@@ -1,6 +1,6 @@
 {
   "case_id": "execution-host-negative",
-  "probe": {"kind": "execution-route", "environment": "windows", "host": "wsl", "shell_host": "wsl", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "wsl", "route": "shell-fallback"}},
+  "probe": {"kind": "execution-route", "environment": "windows", "host": "windows-native", "shell_host": "wsl", "operation": "diagnose", "tools": ["observe", "execute"], "expected_observation": {"host": "wsl", "route": "shell-fallback"}},
   "evidence_boundary": {
     "completion_calibration": {
       "bounded": true,
@@ -94,7 +94,7 @@
       }
     },
     "execution_host": {
-      "host": "windows-native",
+      "host": "wsl",
       "route": "structured-runtime"
     },
     "final_answer": {

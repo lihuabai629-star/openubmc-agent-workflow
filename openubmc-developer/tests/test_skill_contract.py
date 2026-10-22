@@ -237,6 +237,7 @@ class SkillContractTests(unittest.TestCase):
                 "openubmc-live-patch",
                 "openubmc-upgrade",
                 "openubmc-publish",
+                "openubmc-code-submit",
             },
         )
 

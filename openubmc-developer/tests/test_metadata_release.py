@@ -11,6 +11,7 @@ EXPECTED_RELATED = {
     "openubmc-live-patch",
     "openubmc-upgrade",
     "openubmc-publish",
+    "openubmc-code-submit",
 }
 
 
@@ -26,6 +27,17 @@ def discover_packaged_files() -> set[str]:
         for path in (ROOT / "references").glob("*")
         if path.is_file()
     )
+    files.update(
+        path.relative_to(ROOT).as_posix()
+        for folder in ("scripts", "resources")
+        for path in (ROOT / folder).rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        # Community resources retain their shipped regression files. Internal
+        # Skill tests remain outside the public package.
+        and (folder == "resources" or "tests" not in path.relative_to(ROOT / folder).parts)
+        and path.suffix != ".pyc"
+    )
     return files
 
 
@@ -34,7 +46,7 @@ class MetadataReleaseTests(unittest.TestCase):
         manifest = json.loads((ROOT / "skill.json").read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["name"], "openubmc-developer")
-        self.assertEqual(manifest["version"], "5.5.0")
+        self.assertEqual(manifest["version"], "5.5.2")
         self.assertEqual(set(manifest["files"]), discover_packaged_files())
         self.assertEqual(len(manifest["files"]), len(set(manifest["files"])))
         for relative in manifest["files"]:

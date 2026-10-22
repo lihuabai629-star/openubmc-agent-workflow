@@ -101,7 +101,8 @@ def wait_for_process_exit(process_id: int, *, timeout: float = 5) -> None:
         time.sleep(min(0.05, remaining))
 
 
-def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180, persistent: bool = False) -> dict:
+def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180,
+                      persistent: bool = False, kb_unavailable: bool = False) -> dict:
     machine = platform.machine().lower()
     arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
     executable = ROOT/f'plugin/host/node_modules/@openai/codex-linux-{arch}/vendor/{target}-unknown-linux-musl/bin/codex'
@@ -119,6 +120,9 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'), OPENUBMC_CODEX_PROBE_API_KEY='local-probe',
                OPENUBMC_MCP_MODEL_IDENTITY=json.dumps({'model':'gpt-5.6-sol'}),
                OPENUBMC_MCP_CODEX_IDENTITY=json.dumps({'version':'codex-cli 0.153.4'}))
+    failure_marker = root/'kb-failure-injected'
+    failing_kb = ('require("node:fs").writeFileSync('
+                  + json.dumps(str(failure_marker)) + ', "exit=23");process.exit(23)')
     argv = [str(executable), 'exec', '--json', *([] if persistent else ['--ephemeral']), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
             '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
             '-c', 'features.plugins=true', '-c', 'model_provider="openubmc_plugin_probe"',
@@ -127,6 +131,8 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
             '-c', 'model_providers.openubmc_plugin_probe.env_key="OPENUBMC_CODEX_PROBE_API_KEY"',
             '-c', 'model_providers.openubmc_plugin_probe.wire_api="responses"',
             '-c', 'model_providers.openubmc_plugin_probe.supports_websockets=false',
+            *(['-c', 'mcp_servers.openubmc-kb.command="node"',
+               '-c', 'mcp_servers.openubmc-kb.args=' + json.dumps(['-e', failing_kb])] if kb_unavailable else []),
             'Exercise the local Runtime request validation boundary without contacting a target.']
     runs = []
     try:
@@ -172,6 +178,11 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                         if isinstance(value, dict):
                             outputs.update(value)
             names = outputs.get('tool_names', [])
+            if kb_unavailable:
+                if any(name.startswith('mcp__openubmc_kb__') for name in names):
+                    raise ValueError('failed KB unexpectedly supplied tools')
+                if not failure_marker.is_file() or failure_marker.read_text() != 'exit=23':
+                    raise ValueError('KB failure injection was not observed by the Host')
             if not {'mcp__openubmc_target_runtime__observe', 'mcp__openubmc_target_runtime__execute'} <= set(names):
                 raise ValueError('native Codex did not discover the packaged Runtime tools')
             for name in ('observe', 'execute'):
@@ -206,7 +217,8 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
         thread.join(timeout=5)
     return {'invocations':len(runs), 'restart_verified':len(runs) == 2, 'runs':runs,
             'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
-            'transport':'local-hermetic-responses', 'network_scope':'loopback'}
+            'transport':'local-hermetic-responses', 'network_scope':'loopback',
+            'kb_failure_injected': kb_unavailable}
 
 
 def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id: str, old: Path, before: bytes) -> dict:
@@ -265,19 +277,23 @@ BASELINE_VERSION = '2.1.2'
 BASELINE_SHA256 = '9d454a5afc1eb5f7deb05e1acffc12e90945c73fd19e3d26c40c41623726d448'
 
 
-def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:
+def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None,
+                         baseline_sha256: str | None = None) -> dict:
     """Install a published baseline, persist a task, then upgrade its native cache."""
     import shutil
     import urllib.request
     workspace = root/'upgrade'
     workspace.mkdir()
     if baseline is None:
+        baseline_sha256 = BASELINE_SHA256
         baseline = workspace/'baseline.tar.gz'
         url = (f'https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/download/'
                f'v{BASELINE_VERSION}/openubmc-v{BASELINE_VERSION}-codex.tar.gz')
         with urllib.request.urlopen(url, timeout=60) as response:
             baseline.write_bytes(response.read(4*1024*1024))
-    old_lock, old_files = read_archive(baseline, BASELINE_SHA256)
+    if not baseline_sha256 or not re.fullmatch(r'[0-9a-f]{64}', baseline_sha256):
+        raise ValueError('an explicit baseline archive requires --baseline-sha256')
+    old_lock, old_files = read_archive(baseline, baseline_sha256)
     new_lock, new_files = read_archive(archive, hashlib.sha256(archive.read_bytes()).hexdigest())
     home = workspace/'home'; codex = workspace/'codex'; market = workspace/'market'
     codex.mkdir(); source = market/'plugins/openubmc'
@@ -311,12 +327,13 @@ def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> di
     command([sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),'prepare'],env)
     result = native_resume_probe(env,workspace,plugin,persisted['runs'][0]['thread_id'],old_plugin,before)
     result.update(from_version=old_lock['version'],to_version=new_lock['version'],
-                  baseline_archive_sha256=BASELINE_SHA256,native_upgrade=True,
+                  baseline_archive_sha256=baseline_sha256,native_upgrade=True,
                   old_cache_removed_by='native-client' if native_removed else 'qualification-gc')
     return result
 
 
-def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None) -> dict:
+def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None,
+            baseline_sha256: str | None = None) -> dict:
     report = build(source, ref, archive)
     codex_version = subprocess.check_output(['codex', '--version'], text=True).strip()
     if codex_version != 'codex-cli 0.153.4':
@@ -378,7 +395,10 @@ def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None)
             if Path(server['transport']['cwd']).resolve() != plugin:
                 raise ValueError('MCP launcher does not resolve to the installed plugin')
         native_exec = native_exec_probe(env, root, lock['source_commit'])
-        resume = native_upgrade_probe(root, archive, baseline)
+        isolation_root = root/'kb-isolation'
+        isolation_root.mkdir()
+        kb_isolation = native_exec_probe(env, isolation_root, lock['source_commit'], kb_unavailable=True)
+        resume = native_upgrade_probe(root, archive, baseline, baseline_sha256)
         distribution = Path(installed['source'])
         admin = [sys.executable, '-I', str(distribution/'scripts/plugin_admin.py')]
         audit = command([*admin, 'audit', '--home', str(home), '--codex-home', str(codex)], env)
@@ -399,7 +419,8 @@ def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None)
         report.update(schema='openubmc.codex-plugin.qualification.v1', codex=codex_version,
                       deterministic_archive=True, native_install=True, native_uninstall=True,
                       reinstall=True, external_state_preserved=True, mcp_health=doctor['mcp_health'],
-                      native_codex_exec=native_exec, native_thread_resume=resume)
+                      native_codex_exec=native_exec, native_thread_resume=resume,
+                      optional_kb_failure_isolation=kb_isolation)
         report['ok'] = True
     return report
 
@@ -411,9 +432,10 @@ def main() -> int:
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--baseline-archive', type=Path)
+    parser.add_argument('--baseline-sha256', help='trusted SHA-256 for the explicit baseline archive')
     args = parser.parse_args()
     try:
-        report = qualify(args.source.resolve(), args.source_ref, args.archive.resolve(), args.baseline_archive)
+        report = qualify(args.source.resolve(), args.source_ref, args.archive.resolve(), args.baseline_archive, args.baseline_sha256)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         report = {'ok':False, 'error':str(error)}
     args.output.parent.mkdir(parents=True, exist_ok=True)

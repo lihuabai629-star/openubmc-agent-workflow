@@ -308,6 +308,22 @@ class LivePatchRuntimeCliTests(unittest.TestCase):
                     backend_factory=self.backend_factory(ssh, telnet),
                 )
 
+            second_local = root / "same-content.lua"
+            second_local.write_bytes(local.read_bytes())
+            with self.assertRaises(RuntimeMutationFailed) as blocked:
+                run_runtime_mutation(
+                    {
+                        "action": "apply", "intent": "live_patch", "ip": "bmc.example",
+                        "local_path": str(second_local),
+                        "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                        "restart_scope": "none", "deadline": TEST_DEADLINE_SECONDS,
+                    },
+                    state_dir=root / "state",
+                    backend_factory=self.backend_factory(ssh, telnet),
+                )
+            self.assertNotEqual(blocked.exception.operation_id, captured.exception.operation_id)
+            self.assertIn("unfinished", str(blocked.exception).lower())
+
         self.assertEqual(captured.exception.journal["stage"], "mutation_failed")
         self.assertTrue(captured.exception.journal["effects_started"])
         self.assertEqual(len(ssh.uploads), 1)

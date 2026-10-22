@@ -1,6 +1,10 @@
 # Native Windows device execution
 
-Status: Proposed. This specification replaces the Windows→WSL device execution assumption in ADR-0008, #247, #284, and the unpublished 2.1.3 qualification plan. Linux remains supported. A WSL distribution is optional for a separately configured build environment; it is not a prerequisite for device work.
+Status: Retired in 2.2.1. Native Windows adapters and qualification are removed;
+Windows clients use an explicitly selected WSL backend. The remaining text
+records the former proposal.
+
+Historical scope: This specification replaces the Windows→WSL device execution assumption in ADR-0008, #247, #284, and the unpublished 2.1.3 qualification plan. Linux remains supported. A WSL distribution is optional for a separately configured build environment; it is not a prerequisite for device work.
 
 ## Product contract
 

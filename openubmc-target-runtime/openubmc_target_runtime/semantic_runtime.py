@@ -116,6 +116,10 @@ def is_sha256_digest(value: object) -> bool:
     return _SHA256.fullmatch(selected) is not None
 
 EXECUTE_ACTION_FIELD_TYPES = {
+    "attach_qemu_evidence": {
+        "kind": "string", "run_id": "string", "target": "string",
+        "path": "string", "sha256": "string", "deadline": "number",
+    },
     "start": {
         "kind": "string",
         "target": "string",
@@ -163,6 +167,7 @@ EXECUTE_ACTION_FIELDS = {
     kind: frozenset(fields) for kind, fields in EXECUTE_ACTION_FIELD_TYPES.items()
 }
 EXECUTE_ACTION_REQUIRED_FIELDS = {
+    "attach_qemu_evidence": frozenset({"kind", "run_id", "target", "path", "sha256"}),
     "start": frozenset({"kind", "intent"}),
     "respond": frozenset(
         {
@@ -224,6 +229,7 @@ class PreflightReason(str, Enum):
     UNSUPPORTED_CAPABILITY = "unsupported_capability"
     UNSUPPORTED_SELECTOR_KIND = "unsupported_selector_kind"
     MDB_GRAMMAR = "mdb_grammar"
+    SYSTEMD_SELECTION = "systemd_selection"
     DUPLICATE_SELECTOR_ID = "duplicate_selector_id"
     FRESHNESS_MODE = "freshness_mode"
     LIVE_MAX_AGE = "live_max_age"
@@ -456,7 +462,14 @@ class ObservationSelector:
                 validate_systemd_names(value.get("names"))
             except ValueError as error:
                 raise AgentPreflightError(
-                    str(error), field=f"selectors[{index - 1}].names",
+                    str(error),
+                    reason=PreflightReason.SYSTEMD_SELECTION,
+                    field=f"selectors[{index - 1}].names",
+                    limit={
+                        "allowed_forms": ["1 to 16 distinct literal .service IDs", ['failed']],
+                        "examples": [["ras.service"], ["failed"]],
+                        "queries_allowed": False,
+                    },
                 ) from None
             return cls(selector_id=selector_id, kind=kind, names=tuple(value["names"]))
         if kind == "capability":
@@ -1164,6 +1177,17 @@ class SubmitGate:
 
 
 @dataclass(frozen=True)
+class AttachQemuEvidence:
+    run_id: str
+    target: str
+    path: str
+    sha256: str
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
+
+
+@dataclass(frozen=True)
 class ResumeRun:
     run_id: str
     command_id: str = ""
@@ -1202,7 +1226,7 @@ class ReconcileRun:
 
 
 RunCommand: TypeAlias = (
-    StartRun | SubmitGate | ResumeRun | CancelRun | CancelIncident | ReconcileRun
+    StartRun | SubmitGate | ResumeRun | CancelRun | CancelIncident | ReconcileRun | AttachQemuEvidence
 )
 
 
@@ -1283,6 +1307,10 @@ def _validate_gate_response_shape(response: Mapping[str, object]) -> None:
 
 def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
     """Return the canonical semantic payload persisted and fingerprinted for a command."""
+    if isinstance(command, AttachQemuEvidence):
+        return {"schema": f"{SEMANTIC_RUNTIME_SCHEMA}/qemu-evidence-input-v1",
+                "run_id": command.run_id, "target": command.target,
+                "path": command.path, "sha256": command.sha256}
     if isinstance(command, SubmitGate):
         return {
             "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
@@ -1855,6 +1883,17 @@ def decode_run_command(
     run_id = _text(action.get("run_id"))
     if not run_id:
         raise AgentGatewayError(f"{kind or 'execute'} requires run_id")
+    if kind == "attach_qemu_evidence":
+        digest = _text(action.get("sha256")).removeprefix("sha256:")
+        if not is_sha256_digest(digest) or digest != digest.lower():
+            raise AgentGatewayError("QEMU evidence sha256 must be lowercase SHA-256")
+        target, path = _text(action.get("target")), _text(action.get("path"))
+        if not target or len(target) > TARGET_MAX_BYTES or not path.startswith("/"):
+            raise AgentGatewayError("QEMU evidence requires a target and absolute local path")
+        command = AttachQemuEvidence(run_id, target, path, digest, caller_deadline=caller_deadline)
+        command = replace(command, command_id="qemu-attach-" + fingerprint(run_command_semantic_input(command))[:32])
+        _identity, digest = run_command_identity(command, operation_id=operation_id)
+        return replace(command, input_digest=digest)
     if kind == "respond":
         response = action.get("response")
         if not isinstance(response, Mapping):

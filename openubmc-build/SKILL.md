@@ -1,6 +1,6 @@
 ---
 name: openubmc-build
-description: "Build and test openUBMC components or firmware: 编译组件、生成代码、运行测试、打 HPM 包、构建失败。Use for bmcgo validation, component Conan packaging, or product HPM builds with verified local evidence. Explicit Bingo builds route to openubmc-bingo-build, while Bingo CLI source development routes to openubmc-bingo-development. Route environment setup, firmware activation, live diagnosis, and package upload to their owning skills."
+description: "Build and test openUBMC components or firmware: 编译组件、生成代码、运行测试、打 HPM 包、构建失败。Use for bmcgo validation, Conan dependency/build diagnosis, component packaging or product HPM builds. Bingo requests are unsupported without substituting commands. Plugin configuration, SDK installation, firmware activation, live diagnosis and uploads have separate owners."
 ---
 
 # openUBMC Build
@@ -20,7 +20,7 @@ Resolve every helper path relative to this `SKILL.md`. In examples, `<skill-dir>
 
 ## Route First
 
-Run `scripts/build_route.py` before selecting a build tool. An explicit Bingo build command or Bingo CLI development request is a handoff and must not fall through to `bmcgo` or raw `conan create`. Product/HPM and component-package routes require their workspace precondition. Tool substitution requires the equivalence receipt described in [references/build-routing.md](references/build-routing.md).
+Run `scripts/build_route.py` before selecting a build tool. An explicit Bingo build command or Bingo CLI development request is unsupported and must not fall through to `bmcgo` or raw `conan create`. Product/HPM and component-package routes require their workspace precondition. Tool substitution requires the equivalence receipt described in [references/build-routing.md](references/build-routing.md).
 
 For a Windows/WSL task already owned by a Target Runtime Case, check the
 Runtime MCP protocol and continue the typed `execute` Run when its build
@@ -30,12 +30,8 @@ only; it does not close a deployment or runtime-verification Gate. A complete
 tool-equivalence claim remains pending until the Build Plan binds it to actual
 checkout, command, dependency lock, artifact, and release gates.
 
-On native Windows, device Runtime remains available without a compiler, Conan,
-or Bingo. If a build request has no selected capable build host, return the
-typed `build_environment_unavailable` blocker with the actual host and missing
-tools; leave any Build Gate pending. Use WSL only when the task explicitly
-selects it as a build environment. Device operations stay on their bound
-Windows Runtime.
+Run the plugin and build tooling inside Linux or WSL. Native Windows execution
+returns `unsupported_platform`; it does not probe or install a native backend.
 
 Choose one mode before any persistent write:
 
@@ -204,6 +200,11 @@ execute:
 Resume an interrupted continuation with `execute(kind=resume)` and the current `run_id`. A completed Gate cannot be reopened to replace its artifact; start a new Run for another delivery. Runtime owns the Upgrade continuation. Do not upload from Build or acquire a target lease. Do not perform an upgrade from Build.
 
 ## Supporting References
+
+When the requested next stage is a source commit, fork push, or MR/PR, read
+`openubmc-code-submit`. Carry the source revision, changed components, actual
+checks, artifact identity and package-binding gaps. A successful build does not
+authorize a code push or imply that a later amended commit was built.
 
 Read only when the selected branch requires them:
 

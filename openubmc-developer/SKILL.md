@@ -7,8 +7,7 @@ description: "Use only for unresolved openUBMC decisions about source ownership,
 
 At a stage change, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>) and its owner; carry the Run and authorization.
 
-Fit source work and component-local verification into the current repository structure.
-Scale analysis, design and implementation to the task's uncertainty and risk.
+Fit source work and local verification into the repository structure; scale the work to uncertainty and risk.
 
 ## Keep the primary owner clear
 
@@ -163,6 +162,7 @@ Review the completed diff against the selected precedent for misplaced logic,
 duplicate ownership, layer leakage, bypassed interfaces, unnecessary public
 abstractions, incomplete generation, and missed consumers.
 
+Use [community checks](references/community-checks.md) for changed interface, concurrency, Web Backend or Redfish contracts, and [interface coverage](references/interface-coverage.md) for their documentation.
 Hand off source changes with behavior, files, focused checks, workspace state and remaining gaps.
 For read-only work, report ownership, flow, precedent, change surface, alternatives and evidence gaps.
 
@@ -171,8 +171,8 @@ package build, a live-target patch, firmware upgrade, or publication. When the
 user asks only for a downstream-ready handoff, read
 [downstream-handoffs.md](references/downstream-handoffs.md), provide the minimal
 source facts, and stop without loading the downstream Skill. Continue with
-`openubmc-build`, `openubmc-live-patch`, `openubmc-upgrade`, or
-`openubmc-publish` only when the user explicitly asks to execute that stage.
+`openubmc-build`, `openubmc-live-patch`, `openubmc-upgrade`, `openubmc-publish`, or
+`openubmc-code-submit` only when the user explicitly asks to execute that stage.
 Carry the user's requested sequence forward, but let each owner validate its own
 inputs and authorization.
 
@@ -199,7 +199,7 @@ change requires it.
 - Persistence lifetime, migration, deletion, upgrade, or rollback:
   [persistence-compatibility.md](references/persistence-compatibility.md)
 - Northbound or management-interface translation:
-  [interface-mapping.md](references/interface-mapping.md)
+  [interface-mapping.md](references/interface-mapping.md), [DSL recipes](references/mapping-dsl-recipes.md)
 - User-space device files, sysfs, ioctl, mmap, or driver ABI:
   [native-user-space-and-driver-abi.md](references/native-user-space-and-driver-abi.md)
 - Service startup, dependency ordering, manifests, and product assembly:

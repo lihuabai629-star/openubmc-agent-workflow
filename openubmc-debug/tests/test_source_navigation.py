@@ -15,9 +15,37 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from _workflow_source import navigate_source, search_source_terms
+from _source_catalog import SourceCatalog
 
 
 class SourceNavigationTests(unittest.TestCase):
+    def test_provenance_uses_the_allocated_deadline_across_multiple_repositories(self):
+        self.fixtures()
+        elapsed = [0.0]
+        real_run = subprocess.run
+        def delayed_metadata(*args, **kwargs):
+            result = real_run(*args, **kwargs)
+            elapsed[0] += 0.3
+            return result
+        matches = [{"path": f"{repo}/src/drive.lua"} for repo in
+                   ("a-community", "b-other", "z-product")]
+        with patch("_source_catalog.time.monotonic", side_effect=lambda: elapsed[0]), \
+                patch("_source_catalog.subprocess.run", side_effect=delayed_metadata):
+            provenance = SourceCatalog(self.root, timeout=8).annotate(matches)
+        self.assertGreater(elapsed[0], 2)
+        self.assertEqual(provenance["warnings"], [])
+        self.assertTrue(all(item["source"]["commit"] for item in matches))
+
+    def test_exhausted_provenance_budget_reports_a_gap_and_stops_subprocesses(self):
+        elapsed = [0.0]
+        with patch("_source_catalog.time.monotonic", side_effect=lambda: elapsed[0]):
+            catalog = SourceCatalog(self.root, timeout=0.1)
+            elapsed[0] = 0.2
+            with patch("_source_catalog.subprocess.run") as run:
+                self.assertIsNone(catalog._git(self.root, "rev-parse", "HEAD"))
+            run.assert_not_called()
+        self.assertIn("provenance_time_limit", catalog.warnings)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -174,12 +202,7 @@ class SourceNavigationTests(unittest.TestCase):
     def test_local_index_cache_is_private(self):
         self.fixtures()
         self.navigate("0xE001")
-        if os.name == "nt":
-            from openubmc_target_runtime.windows_private import verify_private_path
-            verify_private_path(self.index.parent)
-            verify_private_path(self.index)
-        else:
-            self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(self.index).st_mode & 0o777, 0o600)
 
     def test_unchanged_truncated_file_keeps_index_partial_until_reindexed(self):
         repo = self.repository("product", {"long.lua": "local value = 1\n" * 20001})

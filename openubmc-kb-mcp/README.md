@@ -13,16 +13,15 @@
 
 如果账号要求验证码，服务会拒绝知识库调用并返回错误，不会尝试绕过验证码。Token 不写入日志；访问令牌和刷新令牌保存在当前系统用户的私有缓存中，用于跨 Codex 重启复用登录状态。
 
-默认缓存位置：
-
-- Windows：`%LOCALAPPDATA%\openubmc-mcp\token-cache.json`
-- Linux：`~/.cache/openubmc-mcp/token-cache.json`
+Linux/WSL 默认缓存前缀为 `~/.cache/openubmc-mcp/token-cache.json`。
+实际文件带账号、配置版本和服务版本身份的哈希后缀。多个客户端使用 Linux `flock`
+协调刷新，锁内重新读取缓存；旧请求的 401 不会清除新令牌。进程退出后内核释放锁。
 
 访问令牌临近过期时，MCP 会优先使用 `refresh_token` 自动续期；服务端不支持续期、令牌被撤销或缓存不可用时，才回退到用户名和密码登录。OneID 的服务端失效、账号锁定和验证码策略仍然有效，客户端不能将服务端令牌改成真正永久有效。
 
 ## 仓库内运行
 
-需要 Node.js 20 或更高版本：
+需要 Linux/WSL、Node.js 20 或更高版本和 `flock`（util-linux）：
 
 ```bash
 cd openubmc-kb-mcp
@@ -77,6 +76,8 @@ npm run check
 | `KB_RESPONSE_TOO_LARGE` | 缩小查询范围或页面大小；不会自动重试超量响应 |
 | `KB_TIMEOUT` | 检查上游响应速度，必要时调整本地请求总期限 |
 | `KB_CANCELLED` | 调用已取消；任务仍需要时再发起新请求 |
+| `KB_AUTH_LOCK_UNAVAILABLE` | 检查私有缓存权限和本地 `flock` |
+| `KB_AUTH_LOCK_TIMEOUT` | 等待另一个客户端完成认证后重试，保留共享缓存 |
 | `KB_TOOL_FAILED` | 检查本地诊断信息，不自动重复调用 |
 
 每次工具调用默认有 120 秒总期限，覆盖认证、共享令牌刷新、一次 401 重试及响应体读取。可在本地 KB JSON 配置中设置 `requestTimeoutMs`，取值为 1–900000 的整数毫秒。各阶段不会重新计时。

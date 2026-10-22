@@ -1,12 +1,18 @@
 ---
 name: openubmc-environment-setup
-description: Automatically install, inspect, repair, update, or uninstall the shared openUBMC agent workflow for Codex on Debian/Ubuntu Linux, WSL, or inside an existing Docker container. Use when preparing a workstation or container, installing required command-line tools, importing the full or Target Runtime-focused openUBMC Skill bundle, linking Skills for Codex, preserving independently updated Skill links while switching the managed source, registering the Target Runtime or openubmc-kb MCP server, selecting a private BMC/OS credentials file, repairing that managed configuration, or retiring workflow-owned entries from an older multi-client installation. Do not use to install SDKs, compilers, Docker itself, or to build, debug, publish, or upgrade openUBMC.
+description: "Use for explicit openUBMC workflow installation, update, removal, health-check or private-account configuration requests, or a confirmed plugin/MCP startup or required local-configuration blocker in Linux/WSL. Ordinary development, build/Conan failures, device diagnosis and optional KB failures stay with their task owner."
 ---
 
 # openUBMC Environment Setup
 
 When the task enters another workflow stage, read [the phase handoff](<../openubmc-debug/references/skill-routing.md>)
 and load its owner before acting; carry the existing Run and authorization.
+
+Apply the Setup entry conditions in the phase handoff. Continue ordinary tasks with existing
+configuration; inspect or repair only the capability explicitly requested or currently blocked.
+Available setup tools, optional health warnings and an absent logical credential file do not
+establish a blocker. Native plugin installations use their packaged Setup owner and `pluginctl.py`;
+the installer below manages standalone installations.
 
 Use the bundled installer as the only writer for this workflow. It installs
 Skill links, the standalone Target Runtime, the bundled `openubmc-kb` stdio
@@ -82,9 +88,10 @@ This profile links only `openubmc-environment-setup`, `openubmc-debug`,
 `openubmc-upgrade`, and `openubmc-live-patch`. It deploys and registers the
 Target Runtime MCP, but leaves `openubmc-dt-testing` and openubmc-kb
 configuration untouched. The default `full` profile installs those seven plus
-`openubmc-bingo-build`, `openubmc-bingo-development`, `openubmc-dt-testing`,
-`openubmc-publish`, `openubmc-lua-component`, and `openubmc-qemu-testing`, for
-13 Skills in total. The selected profile is persisted; check, repair, update,
+`openubmc-dt-testing`, `openubmc-publish`, `openubmc-qemu-testing`,
+`openubmc-doc-review`, `openubmc-log-bundle-analyzer`, and `openubmc-code-submit`,
+for 13 Skills in total.
+The selected profile is persisted; check, repair, update,
 refresh, reinstall, and uninstall use the recorded profile automatically.
 
 When switching the Environment Setup or Runtime source, preserve a Skill that
@@ -154,6 +161,10 @@ repair and update remove them while preserving unrelated files and entries.
 KB health failure is non-blocking.
 
 ## Credentials
+
+Use this entry for explicit account changes or a required account that Runtime resolution or
+target-specific authentication evidence proves unusable. Diagnose source conflicts before editing;
+network, TLS, permission and business errors remain with the task owner. Reuse working accounts.
 
 For interactive account setup, launch the bundled local page and show its printed session URL:
 

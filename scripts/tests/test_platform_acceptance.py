@@ -102,7 +102,7 @@ class PlatformAcceptanceTests(unittest.TestCase):
     def test_new_matrix_keeps_every_required_platform_open(self) -> None:
         report = acceptance.assess(acceptance.initial_report(SOURCE))
         self.assertFalse(report["release_ready"])
-        self.assertEqual(len([item for item in report["blockers"] if "untested" in item]), 5)
+        self.assertEqual(len([item for item in report["blockers"] if "untested" in item]), 3)
 
     def test_complete_native_evidence_can_qualify_same_source(self) -> None:
         report = acceptance.assess(passing_matrix())
@@ -198,27 +198,6 @@ class PlatformAcceptanceTests(unittest.TestCase):
         self.assertFalse(report["release_ready"])
         self.assertTrue(any("complete validation" in item for item in report["blockers"]))
 
-    def test_native_runtime_identity_or_second_effect_blocks_release(self) -> None:
-        matrix = passing_matrix()
-        route = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
-        route["routing"]["effect_count_after"] = 2
-        route["routing"]["credential_revision_after"] = "different"
-        self.assertFalse(acceptance.assess(matrix)["release_ready"])
-
-    def test_wsl_evidence_cannot_replace_the_native_windows_device_row(self) -> None:
-        matrix = passing_matrix()
-        native = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
-        native.update(status="untested", reason="Native device workflow not yet qualified")
-        self.assertFalse(acceptance.assess(matrix)["release_ready"])
-        self.assertTrue(any("windows-native-device" in item for item in acceptance.assess(matrix)["blockers"]))
-
-    def test_wsl_row_is_optional_and_native_route_must_stay_on_windows(self) -> None:
-        matrix = passing_matrix()
-        self.assertTrue(acceptance.assess(matrix)["release_ready"])
-        native = next(row for row in matrix["rows"] if row["id"] == "windows-native-device")
-        native["hosts"][1] = host("runtime", "Linux", "x86_64", "wsl2")
-        native["routing"]["selected_wsl"] = "Ubuntu-24.04"
-        self.assertFalse(acceptance.assess(matrix)["release_ready"])
 
     def test_desktop_outcome_must_match_the_plugin_run(self) -> None:
         matrix = passing_matrix()
@@ -231,8 +210,8 @@ class PlatformAcceptanceTests(unittest.TestCase):
     def test_billing_skipped_ci_job_cannot_pass_even_with_success_claim(self) -> None:
         matrix = passing_matrix()
         ci = next(row for row in matrix["rows"] if row["id"] == "hosted-ci")
-        ci["ci_run"]["jobs"][2]["conclusion"] = "skipped"
-        ci["ci_run"]["jobs"][2]["steps_count"] = 0
+        ci["ci_run"]["jobs"][1]["conclusion"] = "skipped"
+        ci["ci_run"]["jobs"][1]["steps_count"] = 0
         self.assertFalse(acceptance.assess(matrix)["release_ready"])
         self.assertFalse(acceptance.evaluate_ci_run(
             {"id": 123, "path": acceptance.WORKFLOW_PATH, "head_sha": SOURCE,
@@ -244,7 +223,7 @@ class PlatformAcceptanceTests(unittest.TestCase):
 
     def test_wrong_commit_or_package_identity_blocks_release(self) -> None:
         matrix = passing_matrix()
-        windows = next(row for row in matrix["rows"] if row["id"] == "windows-bootstrap")
+        windows = next(row for row in matrix["rows"] if row["id"] == "linux-x86_64")
         windows["package_sha256"] = "b" * 64
         windows["source_commit"] = "b" * 40
         report = acceptance.assess(matrix)

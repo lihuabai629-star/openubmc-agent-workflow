@@ -36,16 +36,14 @@ EXPECTED_BUNDLE = (
     ("openubmc-log-analyzer", "openubmc-log-analyzer"),
     ("openubmc-developer", "openubmc-developer"),
     ("openubmc-build", "openubmc-build"),
-    ("openubmc-bingo-build", "openubmc-bingo-build"),
-    ("openubmc-bingo-development", "openubmc-bingo-development"),
     ("openubmc-upgrade", "openubmc-upgrade"),
     ("openubmc-live-patch", "openubmc-live-patch"),
     ("openubmc-dt-testing", "testing"),
     ("openubmc-publish", "openubmc-publish"),
-    ("openubmc-lua-component", "lua-component"),
     ("openubmc-qemu-testing", "qemu-testing"),
     ("openubmc-doc-review", "openubmc-doc-review"),
     ("openubmc-log-bundle-analyzer", "openubmc-log-bundle-analyzer"),
+    ("openubmc-code-submit", "openubmc-code-submit"),
 )
 EXPECTED_TARGET_RUNTIME_BUNDLE = (
     ("openubmc-environment-setup", "openubmc-environment-setup"),
@@ -55,6 +53,7 @@ EXPECTED_TARGET_RUNTIME_BUNDLE = (
     ("openubmc-build", "openubmc-build"),
     ("openubmc-upgrade", "openubmc-upgrade"),
     ("openubmc-live-patch", "openubmc-live-patch"),
+    ("openubmc-log-bundle-analyzer", "openubmc-log-bundle-analyzer"),
 )
 
 class EnvironmentSetupTests(unittest.TestCase):
@@ -1732,7 +1731,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             self.assertFalse(retired.exists())
             self.assertFalse(retired.is_symlink())
 
-    def test_target_runtime_profile_manages_only_its_seven_skills(self) -> None:
+    def test_legacy_runtime_profile_includes_the_shared_log_analyzer(self) -> None:
         self.prepare_credentials()
         shutil.rmtree(self.source / "testing")
         skills_dir = installer.client_skills_dir(self.home, "codex")
@@ -1750,7 +1749,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        self.assertIn("skills=7", output)
+        self.assertIn("skills=8", output)
         state = installer.load_state(self.home)
         self.assertEqual(state["skill_profile"], "target-runtime")
         self.assertEqual(
@@ -4932,7 +4931,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result, 0, output.getvalue())
         document = json.loads(output.getvalue())
         self.assertEqual(document["workflow"]["skill_profile"], "target-runtime")
-        self.assertEqual(document["workflow"]["skill_count"], 7)
+        self.assertEqual(document["workflow"]["skill_count"], 8)
         self.assertEqual(document["planned_workflow"]["skill_profile"], "full")
         self.assertEqual(document["planned_workflow"]["skill_count"], len(EXPECTED_BUNDLE))
         self.assertTrue(document["planned_workflow"]["openubmc_kb_managed"])
@@ -5063,7 +5062,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                             document["workflow"]["skill_profile"],
                             "target-runtime",
                         )
-                        self.assertEqual(document["workflow"]["skill_count"], 7)
+                        self.assertEqual(document["workflow"]["skill_count"], 8)
 
     def test_check_json_blocks_missing_supported_client_ownership_records(self) -> None:
         self.prepare_credentials()

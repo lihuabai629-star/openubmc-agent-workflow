@@ -27,15 +27,8 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 ROWS: dict[str, tuple[str, ...]] = {
     "linux-x86_64": ("complete_repository_validation", "immutable_plugin_qualification"),
-    "windows-bootstrap": ("native_plugin_activation", "unavailable_mcp_setup"),
-    "windows-native-device": (
-        "healthy_mcp", "native_route", "credential_reuse", "diagnosis_run",
-        "existing_hpm_upgrade", "live_patch_rollback",
-        "one_effect_after_interruption", "build_unavailable_isolated",
-        "install_upgrade_uninstall",
-    ),
     "desktop-synthetic": ("same_run_outcome",),
-    "hosted-ci": ("ci_preflight", "ci_complete_validation", "ci_windows_bootstrap"),
+    "hosted-ci": ("ci_preflight", "ci_complete_validation"),
 }
 OPTIONAL_ROWS = {
     "windows-wsl-runtime": (
@@ -47,7 +40,6 @@ OPTIONAL_ROWS = {
 CI_JOBS = {
     "CI contract preflight": "ci_preflight",
     "Complete repository validation": "ci_complete_validation",
-    "Windows marketplace bootstrap": "ci_windows_bootstrap",
 }
 
 
@@ -250,30 +242,6 @@ def _row_errors(row: dict[str, Any], source_commit: str) -> list[str]:
             errors.append("native Linux x86_64 client and Runtime hosts are required")
         if row.get("emulated") is not False:
             errors.append("emulated Linux cannot certify native x86_64")
-    elif row_id == "windows-bootstrap":
-        if not _ran_script(row, "scripts/qualify_windows_plugin.ps1"):
-            errors.append("existing native Windows qualification command is required")
-        if not _host(row, "client", "Windows", "x86_64", "native-windows"):
-            errors.append("native Windows x86_64 client is required")
-    elif row_id == "windows-native-device":
-        if not _host(row, "client", "Windows", "x86_64", "native-windows") or not _host(
-            row, "runtime", "Windows", "x86_64", "native-windows"
-        ) or not _host(row, "target", "Synthetic", "none", "fixture"):
-            errors.append("Windows client, native Windows Runtime and synthetic target must be separate")
-        routing = row.get("routing")
-        if not isinstance(routing, dict) or (
-            routing.get("execution_host") != "windows-native"
-            or routing.get("selected_wsl") is not None
-            or type(routing.get("backend_pid")) is not int
-            or routing["backend_pid"] <= 0
-            or not _nonempty(routing.get("credential_revision_before"))
-            or routing.get("credential_revision_before") != routing.get("credential_revision_after")
-            or not _nonempty(routing.get("run_id_before"))
-            or routing.get("run_id_before") != routing.get("run_id_after")
-            or routing.get("effect_count_before") != 1
-            or routing.get("effect_count_after") != 1
-        ):
-            errors.append("native Windows route, credential reuse or single-Effect continuity is unproven")
     elif row_id == "windows-wsl-runtime":
         if not _host(row, "client", "Windows", "x86_64", "native-windows") or not _host(
             row, "runtime", "Linux", "x86_64", "wsl2"
@@ -305,14 +273,12 @@ def _row_errors(row: dict[str, Any], source_commit: str) -> list[str]:
         ):
             errors.append("same Run/Outcome or Desktop source identity is unproven")
     elif row_id == "hosted-ci":
-        if not _host(row, "linux-runner", "Linux", "x86_64", "github-hosted") or not _host(
-            row, "windows-runner", "Windows", "x86_64", "github-hosted"
-        ) or not _ci_valid(row, source_commit):
+        if not _host(row, "linux-runner", "Linux", "x86_64", "github-hosted") or not _ci_valid(row, source_commit):
             errors.append("exact-commit hosted CI jobs did not all execute successfully")
     elif row_id == "macos-arm64-local":
         if not _host(row, "client", "Darwin", "arm64", "native-macos"):
             errors.append("local Mac host identity is missing")
-    if row_id in ("linux-x86_64", "windows-bootstrap", "windows-native-device", "windows-wsl-runtime"):
+    if row_id in ("linux-x86_64", "windows-wsl-runtime"):
         if isinstance(artifacts, dict) and artifacts.get("plugin_archive") != row.get("package_sha256"):
             errors.append("plugin archive artifact does not match package digest")
     if row_id == "desktop-synthetic":
@@ -370,10 +336,10 @@ def assess(
             blockers.extend(f"{row_id}: {error}" for error in errors)
         if row_id in required_rows and row.get("status") != "passed":
             blockers.append(f"{row_id}: {row.get('status')} - {row.get('reason', 'reason missing')}")
-    passed = [selected[row_id] for row_id in ("linux-x86_64", "windows-bootstrap", "windows-native-device", "hosted-ci") if selected[row_id].get("status") == "passed"]
+    passed = [selected[row_id] for row_id in ("linux-x86_64", "hosted-ci") if selected[row_id].get("status") == "passed"]
     digests = {row["package_sha256"] for row in passed if _hash(row.get("package_sha256"))}
     if len(digests) > 1:
-        blockers.append("Linux, Windows and hosted CI plugin package digests differ")
+        blockers.append("Linux and hosted CI plugin package digests differ")
     if validation_mode == "installed-candidate" and digests != {
         report.get("candidate_archive_sha256")
     }:

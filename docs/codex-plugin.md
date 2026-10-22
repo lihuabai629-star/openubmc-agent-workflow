@@ -1,14 +1,15 @@
 # Codex plugin
 
-The `openubmc` plugin contains the fifteen workflow Skills, Runtime, and knowledge MCP launchers.
+The `openubmc` plugin contains 11 default workflow Skills, shared log-analysis resources,
+an optional documentation-review resource, the Runtime engine, and MCP launchers.
 The package version, source commit, and file inventory travel together in `plugin-lock.json`.
 The supported qualification host is Codex CLI 0.153.4 on Linux, Python 3.12, and Node.js 20 or newer.
 See [Python entrypoints](../plugin/python-entrypoints.md) for standalone commands and initialized module imports.
 
 ## Install a release
 
-The public marketplace distribution is documented in [the marketplace README](../plugin/marketplace-readme.md).
-Its MCP entries opt into `--prepare-on-start`, which prepares verified dependencies on first use.
+The recommended native marketplace distribution is documented in [the marketplace README](../plugin/marketplace-readme.md).
+Its MCP bootstrap prepares verified dependencies on demand for the selected capability.
 The archive installation below remains the ownership-aware migration path for a previous loose installation.
 
 Download the archive and checksum from the same release. Run these commands in a new directory:
@@ -101,8 +102,9 @@ python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --capability kb
 ```
 
 Doctor reports each selected capability's dependency and MCP readiness. An overall failure
-can coexist with a ready Runtime when KB is unavailable. Codex still loads both declared MCP
-entries; capability selection in these commands does not disable the KB registration.
+can coexist with a ready Runtime when KB is unavailable. The KB entry is optional in the Host;
+its startup failure does not make Runtime startup fail. Capability selection in these commands
+does not disable the KB registration.
 First-use preparation installs only the dependencies of the server being launched.
 
 Preparation prints one JSON progress event per pip/npm stage to stderr. Default deadlines are

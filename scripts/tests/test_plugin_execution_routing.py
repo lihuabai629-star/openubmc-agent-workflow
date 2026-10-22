@@ -87,6 +87,7 @@ for line in sys.stdin:
         self, *, windows: bool, healthy: bool, doctor_tools: list[str] | None = None,
         arguments: dict | None = None, raw_input: str | None = None,
         tool_name: str = "execute",
+        wsl: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         call_log = self.root / f"calls-{'windows' if windows else 'linux'}-{'healthy' if healthy else 'unhealthy'}"
         call_log.unlink(missing_ok=True)
@@ -94,6 +95,8 @@ for line in sys.stdin:
                                             "tools": (["observe", "execute"] if doctor_tools is None
                                                       else doctor_tools)}), encoding="utf-8")
         environment = dict(os.environ)
+        environment.pop("OPENUBMC_EXECUTION_HOST", None)
+        environment.pop("OPENUBMC_SELECTED_WSL_DISTRO", None)
         environment.update({
             "HOME": str(self.root / "home"),
             "LOCALAPPDATA": str(self.root / "local-app-data"),
@@ -104,6 +107,8 @@ for line in sys.stdin:
             "USERPROFILE": r"C:\Users\fixture",
             "CODEX_HOME": r"C:\Users\fixture\.codex",
         })
+        if wsl is not None:
+            environment.update(OPENUBMC_EXECUTION_HOST="wsl", OPENUBMC_SELECTED_WSL_DISTRO=wsl)
         messages = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2024-11-05"}},
@@ -112,7 +117,7 @@ for line in sys.stdin:
              "params": {"name": tool_name, "arguments": arguments if arguments is not None else {
                  "kind": "start", "intent": "diagnosis-only", "target": "fixture.invalid"}}},
         ]
-        if not healthy:
+        if not healthy or windows:
             messages.insert(2, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                                 "params": {"name": "openubmc_setup_status", "arguments": {}}})
         result = subprocess.run(
@@ -140,16 +145,42 @@ for line in sys.stdin:
         self.assertTrue(receipt["requested_scope_mac"].startswith("hmac-sha256:"))
         self.assertNotIn("fixture.invalid", result.stderr)
 
-    def test_installed_windows_path_uses_native_backend(self) -> None:
+    def test_installed_windows_path_rejects_native_backend(self) -> None:
         result, call_log = self.invoke(windows=True, healthy=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+        self.assertEqual(replies[4]["result"]["structuredContent"]["reason"], "unsupported_platform")
+        self.assertFalse(call_log.exists())
+        self.assertNotIn("openubmc-routing ", result.stderr)
+
+    def test_installed_wsl_path_reports_explicit_backend_selection(self) -> None:
+        result, call_log = self.invoke(windows=False, healthy=True, wsl="0630")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(call_log.read_text(), "execute\n")
         audit = next(json.loads(line.removeprefix("openubmc-routing "))
                      for line in result.stderr.splitlines() if line.startswith("openubmc-routing "))
         self.assertEqual(audit["client_environment"], "windows")
-        self.assertEqual(audit["execution_host"], "windows-native")
-        self.assertIsNone(audit["selected_wsl"])
+        self.assertEqual(audit["execution_host"], "wsl")
+        self.assertEqual(audit["selected_wsl"], "0630")
         self.assertEqual(audit["protocol"]["probe"], "initialize/tools/list")
+
+    def test_wsl_setup_status_preserves_backend_selection(self) -> None:
+        result, call_log = self.invoke(windows=False, healthy=False, wsl="0630")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = {item["id"]: item for item in map(json.loads, result.stdout.splitlines())}
+        status = replies[4]["result"]["structuredContent"]
+        self.assertEqual(status["host"], "windows")
+        self.assertEqual(status["execution_host"], "wsl")
+        self.assertEqual(status["backend"]["selected_wsl"], "0630")
+        self.assertFalse(call_log.exists())
+
+    def test_unbound_wsl_marker_cannot_claim_selected_host(self) -> None:
+        result, _ = self.invoke(windows=False, healthy=True, wsl="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        audit = next(json.loads(line.removeprefix("openubmc-routing "))
+                     for line in result.stderr.splitlines() if line.startswith("openubmc-routing "))
+        self.assertEqual(audit["execution_host"], "linux")
+        self.assertIsNone(audit["selected_wsl"])
 
     def test_runtime_accepted_wide_read_only_observation_reaches_installed_backend(self) -> None:
         selectors = [{"id": f"mdb-{index}", "kind": "mdb", "queries": [

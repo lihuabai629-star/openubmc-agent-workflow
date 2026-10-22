@@ -1693,7 +1693,7 @@ def _structured_results(
     telnet = _mapping(lanes.get("telnet"))
     files = _mapping(telnet.get("files"))
     results: list[dict[str, object]] = []
-    from .systemd_contract import systemd_unit_summaries
+    from .systemd_contract import systemd_gap_details, systemd_unit_summaries
     for selector_id, child in _mapping(runtime_result.get("systemd")).items():
         child = _mapping(child)
         results.append({
@@ -1701,6 +1701,7 @@ def _structured_results(
             "request": ", ".join(str(name) for name in child.get("requested", [])),
             "status": "available" if child.get("complete") is True else "unavailable",
             "value": {"boot_id": child.get("boot_id"), "gaps": child.get("gaps", []),
+                "gap_details": systemd_gap_details(child),
                 "units": systemd_unit_summaries(child)},
             "observed_at": child.get("completed_at") or value.get("observed_at"),
             "evidence_ids": evidence_ids,
@@ -1744,8 +1745,7 @@ def _structured_results(
             if name in raw_delta
         }
         if raw_delta:
-            results.append(
-                _plain_result(
+            clock_result = _plain_result(
                     result_id="target-clock",
                     kind="target-clock",
                     request="BMC clock movement during diagnosis",
@@ -1756,7 +1756,13 @@ def _structured_results(
                     ),
                     evidence_ids=evidence_ids,
                 )
-            )
+            if raw_delta.get("comparable") is not True or not all(
+                isinstance(raw_delta.get(name), str) and raw_delta[name].strip()
+                for name in ("before", "after")
+            ):
+                clock_result["status"] = "unavailable"
+                clock_result["gap"] = "target_clock_not_comparable"
+            results.append(clock_result)
         else:
             results.append(
                 {

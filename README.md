@@ -6,53 +6,36 @@ Codex. The integrated Skills baseline is
 
 ## Install
 
-The bootstrap downloads the installer and leaves only the managed checkout:
+The supported backend runs inside Linux or WSL. Install through the native Codex marketplace:
 
 ```bash
-WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
-export GH_TOKEN="$(gh auth token)"
-gh api \
-  "repos/lihuabai629-star/openubmc-agent-workflow/contents/bootstrap.py?ref=${WORKFLOW_REF}" \
-  --header "Accept: application/vnd.github.raw" \
-  | python3 - --ref "${WORKFLOW_REF}"
-unset GH_TOKEN
+codex plugin marketplace add lihuabai629-star/openubmc-codex-plugins
+codex plugin add openubmc@openubmc-public
 ```
 
-Use the same immutable ref in the bootstrap URL and `--ref`. Managed installation rejects a
-missing ref, a branch such as `main`, or a name that does not resolve as an exact remote tag.
-Private GitHub access uses `GH_TOKEN` or `GITHUB_TOKEN` only for authenticated downloads and Git
-fetches; the installer does not write the token to the checkout remote, installer state, or logs.
+Start a new Codex task after installation or an update. The public marketplace version and
+local development version are separate; inspect the selected version with `codex plugin list --json`.
+See [plugin installation and lifecycle](docs/codex-plugin.md) for preparation, private account
+configuration, migration and recovery.
 
-The default `full` profile installs 15 Skills, the Target Runtime, and the standalone
-`openubmc-kb` stdio MCP. The smaller runtime profile keeps the seven runtime-path Skills:
+The default catalog contains 11 workflow Skills: plugin management, diagnosis, log analysis,
+development, bmcgo build, UT/IT, QEMU, source submission, upgrade, live patch and Conan upload.
+Local log analysis and remote collection share one entry and analysis core. Documentation review
+is an explicit optional resource outside default discovery. Runtime identity and recovery guidance
+are part of plugin management.
 
-```bash
-WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
-export GH_TOKEN="$(gh auth token)"
-gh api \
-  "repos/lihuabai629-star/openubmc-agent-workflow/contents/bootstrap.py?ref=${WORKFLOW_REF}" \
-  --header "Accept: application/vnd.github.raw" \
-  | python3 - --ref "${WORKFLOW_REF}" --skill-profile target-runtime
-unset GH_TOKEN
-```
+`openubmc-code-submit` selects internal GitLab or community GitCode rules from repository facts.
+It carries source, build and QEMU evidence into delivery. Conan binary upload belongs to
+`openubmc-publish`. GitCode public messages require preview and explicit confirmation.
 
-Codex receives the managed Skill links and stdio MCP entries. Repair, update, rollback, and
-uninstall can retire workflow-owned entries from older multi-client installations without touching
-unrelated client configuration.
+Runtime exposes `observe` for bounded live queries and `execute` for stateful workflows.
+The knowledge base is optional: missing credentials or service failure does not make it a
+prerequisite for source or Runtime work. The panel provides knowledge queries, progress and
+evidence reads; the Host decides its display location.
 
-## Codex plugin distribution
-
-The Codex plugin packages the fifteen Skills and both MCP launchers under one verified release
-identity. See [plugin installation and lifecycle](docs/codex-plugin.md) for archive verification,
-migration, health checks, update, rollback, and audit commands.
-
-The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
-queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
-Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
-The evidence-gated compatibility retirement is complete on canonical `main`: legacy Agent inputs
-and the compatibility profile are rejected, while explicit old-event upcasters and historical
-telemetry readers remain. See [Agent Semantic Gateway](docs/agent-semantic-gateway.md) and the
-[machine-readable roadmap closeout](docs/roadmap-completion.json).
+The old bootstrap and loose `full` / `target-runtime` profiles are retained for migration and
+rollback. New installations use the native plugin. Windows clients may use an explicitly
+configured WSL stdio bridge; native Windows backend installation is retired.
 
 ## Architecture and evolution
 
@@ -67,50 +50,36 @@ are maintained in the following records:
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
 - [Roadmap completion evidence](docs/roadmap-completion.json)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
-- [Runtime-internal model planning prototype](docs/model-planning-prototype.md)
 - [Product closeout qualification](docs/product-closeout-qualification.md)
 - [Codex Adoption Qualification](docs/codex-adoption-qualification.md)
 - [Continuous closeout evidence collector](docs/continuous-closeout-qualification.md)
 
-## Credentials
+## Credentials and lifecycle
 
-BMC and OS credentials:
-
-```bash
-python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py" credentials
-```
-
-openUBMC KB OneID credentials:
+Use the installed plugin's private configuration page for target accounts, OneID and Conan
+account settings:
 
 ```bash
-python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py" credentials --kb
+python3 -I <plugin-root>/scripts/pluginctl.py configure
+python3 -I <plugin-root>/scripts/pluginctl.py doctor
 ```
 
-An existing private KB configuration can be imported with `credentials --kb --kb-config <file>`.
-The MCP starts and reports configuration status even before OneID credentials are added.
-
-## Lifecycle
+Credentials and Runtime history remain outside the package. KB requires the user's authorized
+OneID application configuration; the plugin supplies no shared OAuth secret.
 
 ```bash
-INSTALLER="$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py"
-
-python3 "$INSTALLER" check
-python3 "$INSTALLER" repair
-python3 "$INSTALLER" update
-python3 "$INSTALLER" rollback
-python3 "$INSTALLER" uninstall
+codex plugin marketplace upgrade openubmc-public
+codex plugin add openubmc@openubmc-public
+codex plugin remove openubmc@openubmc-public
 ```
 
-For tag/commit installations, `update` revalidates the recorded immutable ref. To move to a newer
-release, rerun the bootstrap with the new tag or full commit; the previous commit becomes the
-rollback target. Legacy branch-based installations fail check, install, repair, and update until
-they are migrated by rerunning bootstrap with an immutable ref. `rollback` restores the previous
-known-good revision as an exact commit and keeps the displaced revision available for another
-rollback. JSON install and check output reports `requested_ref`, `ref_kind`, and `resolved_commit`.
+For a previous loose installation, preview `pluginctl.py migrate --disable-only --preview`
+before applying `migrate --disable-only`. Retain its transaction ID for restoration.
+See [migration and recovery](docs/codex-plugin.md) for ownership checks and separate archive administration.
 
 ## Validation
 
-Pull requests and `main` pushes run Linux validation and native Windows plugin bootstrap. Ordinary checks write status and report checksums to the Actions summary without uploading artifacts. A summary does not replace full release evidence.
+Pull requests and `main` pushes run Linux validation and package checks. Ordinary checks write status and report checksums to the Actions summary without uploading artifacts. A summary does not replace full release evidence.
 
 The manual release workflow attaches selected evidence and its SHA-256 checksum to the existing draft Release, including failed gate results. Promotion requires every release gate to succeed; evidence upload failures also fail the job.
 
@@ -135,7 +104,9 @@ verification.
 
 ## Offline reviews
 
-Use `openubmc-doc-review` for Markdown security, links, language, structure and product-consistency review. Its deterministic scanners never execute commands found in documents. Use `openubmc-log-bundle-analyzer` for local diagnostic bundles: bounded extraction and scanning, file-and-line evidence, timelines, event correlations, structured summaries and catalog coverage audits. Remote collection remains owned by `openubmc-log-analyzer`.
+For an explicit documentation audit, read `<plugin-root>/optional-skills/openubmc-doc-review/SKILL.md`.
+Its scanners do not execute document commands. `openubmc-log-analyzer` owns both local diagnostic
+bundle analysis and remote collection, with bounded scanning and file-and-line evidence.
 
 ## Skill entrypoint and package manifest
 
@@ -155,7 +126,7 @@ In short:
 
 ## Immutable releases
 
-The development source version is 2.1.7. The current public Codex plugin release is
+The development source version is 2.2.8. The last recorded public Codex plugin release is
 [2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.
@@ -229,3 +200,10 @@ Approved outcomes may become an inert Golden Scenario, knowledge item, or ADR. G
 must carry a matching deterministic Case Replay Bundle. Hard-to-reverse architecture conclusions
 must become ADRs linked to their Case and Replay evidence. Promotion artifacts are always marked
 non-executable and never modify workflow execution rules automatically.
+
+The backend is supported inside Linux or WSL. Windows clients can forward stdio
+through a local copy of `scripts/openubmc-wsl-bridge.js`, pointing at the installed
+Linux package; they need
+no native Python, SSH adapter, credential store or Runtime installation.
+The plugin includes the [Codex panel](codex-panel/README.md) for knowledge queries
+and workflow receipts.

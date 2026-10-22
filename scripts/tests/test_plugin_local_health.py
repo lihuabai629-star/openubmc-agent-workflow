@@ -143,7 +143,7 @@ class PluginHealthTests(unittest.TestCase):
                 self.assertTrue(state['integrity'])
                 self.assertEqual(len(state['source_commit']), 40)
                 self.assertEqual(state['execution']['host'], 'wsl' if 'microsoft' in os.uname().release.lower() else 'linux')
-                self.assertFalse(state['execution']['native_windows_build_supported'])
+                self.assertNotIn('native_windows_build_supported', state['execution'])
                 self.assertEqual(state['knowledge_authentication'], 'not_checked')
                 self.assertEqual(state['remote_target_authentication'], 'not_checked')
                 self.assertFalse(state['local_configuration']['targets']['configured'])

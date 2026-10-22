@@ -162,7 +162,7 @@ test("coalesces concurrent token requests into one refresh", async () => {
   assert.equal(requests, 1);
 });
 
-test("stops on an invalid refresh token and requires local re-login", async () => {
+test("recovers an invalid refresh token with one configured account login", async () => {
   const now = 1_700_000_000_000;
   const store = memoryStore({ accessToken: "expired", refreshToken: "invalid-refresh", expiresAt: now - 1 });
   const calls = [];
@@ -175,10 +175,11 @@ test("stops on an invalid refresh token and requires local re-login", async () =
     }
   });
 
-  await assert.rejects(
-    () => client.getAccessToken(),
-    error => error.code === "KB_RELOGIN_REQUIRED"
-  );
+  let logins = 0;
+  const renewed = { accessToken: "renewed", refreshToken: "renewed-refresh", expiresAt: now + 3600000 };
+  client.authenticate = async () => { logins += 1; return renewed; };
+  assert.equal(await client.getAccessToken(), "renewed");
+  assert.equal(logins, 1);
   assert.deepEqual(calls, [config.tokenEndpoint]);
-  assert.equal(store.snapshot(), undefined);
+  assert.deepEqual(store.snapshot(), renewed);
 });

@@ -92,6 +92,33 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
     def mode(self, value):
         (self.root/'mode').write_text(value)
 
+    def test_setup_operation_repairs_drifted_cache_through_real_cli(self):
+        prepared = self.prepare('--capability', 'kb', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        cache = Path(json.loads(prepared.stdout)['capability_dependencies']['kb'])
+        (cache/'knowledge/node_modules/fixture.js').write_text('damaged')
+        script = r'''
+const {spawnSync} = require('node:child_process');
+const {createSetupOperations} = require(process.argv[1]);
+const adapter = {decodeOutput:String,run:(cmd,args,opts)=>spawnSync(cmd,[...args,'--offline'],opts)};
+console.log(JSON.stringify(createSetupOperations(adapter,'kb').prepareBackend({
+  command:process.argv[2],prefix:['-I',process.argv[3]]})));
+'''
+        result = subprocess.run(['node', '-e', script,
+            str(ROOT/'plugin/openubmc/scripts/openubmc-bootstrap-operations.js'),
+            sys.executable, str(self.plugin/'scripts/pluginctl.py')],
+            env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['ok'], result.stdout)
+        self.mode('fail')
+        self.assertEqual(self.prepare('--capability', 'kb', '--offline').returncode, 0)
+        (self.plugin/'openubmc-kb-mcp/src/server.js').write_text('damaged package')
+        damaged = subprocess.run(['node', '-e', script,
+            str(ROOT/'plugin/openubmc/scripts/openubmc-bootstrap-operations.js'),
+            sys.executable, str(self.plugin/'scripts/pluginctl.py')],
+            env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(json.loads(damaged.stdout)['reason'], 'package_integrity_failed')
+
     def test_page_repair_timeout_stops_dependency_workers(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('repair_page', ROOT/'openubmc-environment-setup/scripts/config_page.py')
@@ -159,6 +186,23 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertEqual(report['codex_configuration']['changes']['mcp_servers'], ['openubmc-target-runtime'])
         self.assertIn('repair-overrides', report['codex_configuration']['repair_action'])
         self.assertEqual(config.read_text(), original)
+
+    def test_startup_prerequisites_do_not_claim_protocol_health_and_detect_cache_drift(self):
+        prepared = self.prepare('--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.env['FIXTURE_NULL_SERVER'] = '1'
+        command = [*self.cli[:-1], 'doctor', '--capability', 'runtime', '--prerequisites-only']
+        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report['prerequisites_ready'])
+        self.assertFalse(report['startup_ready'])
+        self.assertEqual(report['mcp_health']['runtime'], {'ok': False, 'checked': False, 'tools': []})
+        root = Path(json.loads(prepared.stdout)['capability_dependencies']['runtime'])
+        (root/'unexpected.py').write_text('unlisted dependency content')
+        drifted = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(drifted.returncode, 2, drifted.stderr)
+        self.assertFalse(json.loads(drifted.stdout)['prerequisites_ready'])
 
     def test_malformed_kb_receipt_does_not_hide_healthy_runtime(self):
         prepared = self.prepare('--offline')

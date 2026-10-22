@@ -84,6 +84,17 @@ test("MCP retries evidenced transient network failure but not unknown local erro
   }
 });
 
+test("MCP exposes actionable token-lock failures without secret details", async t => {
+  for (const [code, retryable] of [["KB_AUTH_LOCK_UNAVAILABLE", false], ["KB_AUTH_LOCK_TIMEOUT", true]]) {
+    const result = await query(t, { fetch: async () => {
+      throw Object.assign(new Error(config.password), { code });
+    } });
+    assert.equal(result.structuredContent.error.code, code);
+    assert.equal(result.structuredContent.error.retryable, retryable);
+    assert.equal(JSON.stringify(result).includes(config.password), false);
+  }
+});
+
 test("MCP reports denied KB access without repeating authentication", async t => {
   const requests = [];
   const result = await query(t, {

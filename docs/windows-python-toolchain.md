@@ -1,5 +1,9 @@
 # Windows CI Python 3.12 toolchain
 
+Retired in 2.2.1. The native Windows toolchain and its CI jobs are removed.
+Windows clients use the selected Linux/WSL backend; the following is historical
+context and its commands no longer apply to the current source.
+
 The Runtime support contract remains CPython 3.12 on Windows x64. Linux CI stays
 on 3.12.13, and `requirements-ci.lock` retains all existing versions and hashes.
 

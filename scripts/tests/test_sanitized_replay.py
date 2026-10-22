@@ -25,7 +25,7 @@ class SanitizedReplayTests(unittest.TestCase):
         result = evaluate_case(case)
         self.assertEqual(result["observed_status"], "failed")
         self.assertEqual(result["dimensions"]["skill_routing"]["observed_behavior"]["owner"],
-                         "openubmc-bingo-build")
+                         "openubmc-build")
 
     def test_execution_host_is_taken_from_the_live_router(self):
         path = ROOT / "evaluation" / "sanitized-replays" / "execution-host-negative.json"
@@ -41,7 +41,7 @@ class SanitizedReplayTests(unittest.TestCase):
     def test_live_fallback_exposes_required_receipt_fields(self):
         path = ROOT / "evaluation" / "sanitized-replays" / "execution-host-negative.json"
         case = json.loads(path.read_text(encoding="utf-8"))
-        case["probe"]["host"] = "windows-native"
+        case["probe"]["host"] = "wsl"
         case["probe"]["shell_host"] = "windows-native"
         case["probe"]["initialized"] = False
         case["probe"]["expected_observation"] = {
