@@ -188,7 +188,13 @@ class PluginSkillEntryTests(unittest.TestCase):
             if skill["name"] not in workflow["profiles"]["full"]:
                 continue
             entry = self.plugin / "skills" / skill["path"] / "SKILL.md"
-            pointers = re.findall(r"\[the phase handoff\]\(<?([^>)]+)>?\)", entry.read_text())
+            content = entry.read_text()
+            if skill["name"] == "openubmc-log-bundle-analyzer":
+                # The offline analyzer also ships independently without other Skills.
+                self.assertIn("select and read the current owner through the Host catalog", content)
+                self.assertNotIn("../openubmc-debug/", content)
+                continue
+            pointers = re.findall(r"\[the phase handoff\]\(<?([^>)]+)>?\)", content)
             self.assertEqual(len(pointers), 1, skill["name"])
             self.assertEqual((entry.parent / pointers[0]).resolve(), guide.resolve())
         lua_policy = self.plugin / "skills/lua-component/agents/openai.yaml"

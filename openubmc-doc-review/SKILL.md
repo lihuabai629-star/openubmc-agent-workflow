@@ -11,4 +11,4 @@ Read [the review workflow](references/workflow-guide.md) before reviewing. The p
 
 Run `python3 scripts/static_review.py <file-or-directory> --profile quick|full|release`. Resolve scripts from this Skill's resource directory. Report findings, unavailable checks, evidence and remaining gaps; do not convert scanner candidates into confirmed defects without review.
 
-For a stage change, read [the handoff](../openubmc-debug/references/skill-routing.md) and the next owner's Skill. Preserve the existing Run and authorization. Documentation-only work does not start a device workflow.
+For a stage change, read [the phase handoff](../openubmc-debug/references/skill-routing.md) and the next owner's Skill. Preserve the existing Run and authorization. Documentation-only work does not start a device workflow.
