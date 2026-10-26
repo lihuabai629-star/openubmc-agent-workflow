@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from dataclasses import dataclass
@@ -135,6 +136,66 @@ class ScriptedSshTransport:
 
 
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
+    def test_standalone_bundle_resolves_the_selected_local_target_account(self) -> None:
+        redfish = CallbackRedfishTransport()
+        with tempfile.TemporaryDirectory() as raw:
+            config = Path(raw) / "credentials.json"
+            config.write_text(json.dumps({"schema_version": 1, "credentials": {
+                "default": {"user": "default-user", "password": "default-password"},
+                "target": {"user": "target-user", "password": "target-password"}},
+                "defaults": {"bmc": {"redfish": "default"}},
+                "targets": {"192.0.2.10": {"bmc": {"redfish": "target"}}}}))
+            config.chmod(0o600)
+            parsed = pull_bundle.parse_args(["--ip", "192.0.2.10", "--transport", "redfish", "--json"])
+            with mock.patch.dict(os.environ, {"OPENUBMC_CREDENTIALS_CONFIG": str(config)}, clear=True):
+                with target_runtime_adapter.open_log_bundle_runtime_lease(
+                    args=parsed, redfish_transport=redfish,
+                ) as lease:
+                    lease._redfish_lane().request("fixture-read", replay_safe=True,
+                                                 callback=lambda _session: {})
+        self.assertEqual(redfish.opens, 1)
+        self.assertEqual(redfish.credentials[0].user, "target-user")
+        self.assertEqual(redfish.credentials[0].password, "target-password")
+
+    def test_cli_reports_runtime_bundle_errors_as_json(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(target_runtime_adapter, "open_log_bundle_runtime_lease",
+                side_effect=runtime_pull_bundle.BundlePullError("missing_secret", "Configured account is missing")), \
+                redirect_stdout(output):
+            code = pull_bundle.main(["--ip", "192.0.2.10", "--transport", "redfish", "--json"])
+        self.assertEqual(code, 1)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "missing_secret")
+
+    def test_bundle_credentials_use_the_loaded_runtime_without_a_global_import(self) -> None:
+        original_import = builtins.__import__
+
+        def isolated_import(name, *args, **kwargs):
+            if name == "openubmc_target_runtime" or name.startswith("openubmc_target_runtime."):
+                raise ModuleNotFoundError("Runtime is available only through its validated loader")
+            return original_import(name, *args, **kwargs)
+
+        for selected in (False, True):
+            with self.subTest(runtime_selected=selected):
+                redfish = CallbackRedfishTransport()
+                values = {"OPENUBMC_REDFISH_USER": "fixture-user",
+                          "OPENUBMC_REDFISH_PASSWORD": "fixture-password"}
+                if selected:
+                    values["__runtime_selected__"] = "1"
+                with mock.patch.dict(os.environ, {}, clear=True), \
+                        mock.patch("builtins.__import__", side_effect=isolated_import):
+                    with target_runtime_adapter.open_log_bundle_runtime_lease(
+                        args=args(transport="redfish", redfish_user="", redfish_password=""),
+                        task_id="isolated-bundle-credentials", redfish_transport=redfish,
+                        credential_values=values,
+                    ) as lease:
+                        lease._redfish_lane().request("fixture-read", replay_safe=True,
+                                                     callback=lambda _session: {})
+                self.assertEqual(redfish.opens, 1)
+                self.assertEqual(redfish.credentials[0].user, "fixture-user")
+                self.assertEqual(redfish.credentials[0].password, "fixture-password")
+
     def test_orchestrated_bundle_accepts_selected_key_without_a_password(self) -> None:
         class KeyTransport(ScriptedSshTransport):
             def open_master(self, *, target, credentials):

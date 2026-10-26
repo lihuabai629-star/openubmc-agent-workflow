@@ -5,6 +5,7 @@
 - Authorized OS identity and network observations can use BMC SSH and native SOL when no OS IP is available. BMC and OS accounts remain separate; busy consoles are left untouched and owned logins are closed after collection.
 - The configuration page accepts an OS console account without an OS IP. Linux/WSL packages include the pinned SOL transport dependencies.
 - WebUI upgrade rejection diagnostics retain the endpoint and bounded, redacted server error codes and messages.
+- Standalone diagnostic bundle collection resolves accounts through its validated Runtime loader without requiring a global Python package installation.
 
 ## 2.2.9 (development)
 

@@ -55,7 +55,7 @@ completion. Diagnose invalid or conflicting sources before changing them. Networ
 and business errors stay in Debug. For an authorized OS task without an explicit address, consult
 the resolver example in that Skill to call `CredentialResolver.associated_os`; this read-only lookup
 does not enter setup or open a page. If no OS address exists and the task authorizes host OS access,
-use the bounded [OS console selector](os-console.md) through BMC SSH and its native SOL command.
+select the bounded `os_console` probes through BMC SSH and native SOL.
 The association itself authorizes no connection.
 Keep passwords, key contents, and raw resolved
 credential objects out of command arguments, model context, logs, and receipts. A successful local

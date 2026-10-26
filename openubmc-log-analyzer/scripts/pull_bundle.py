@@ -1358,7 +1358,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--redfish-task-timeout", type=int, default=900, help="Redfish 采集任务超时时间，单位秒。")
     parser.add_argument("--redfish-poll-interval", type=int, default=5, help="Redfish 采集任务轮询间隔，单位秒。")
     parser.add_argument("--json", action="store_true", help="输出 JSON 结构化结果。")
-    return parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    parsed = parser.parse_args(arguments)
+    for transport in ("ssh", "redfish"):
+        setattr(parsed, f"_{transport}_user_explicit",
+                any(item.split("=", 1)[0] == f"--{transport}-user" for item in arguments))
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1443,7 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
             json_mode=args.json,
         )
         return 0
-    except BundlePullError as exc:
+    except (BundlePullError, target_runtime_adapter.pull_bundle.BundlePullError) as exc:
         emit_result(
             build_payload(
                 ok=False,

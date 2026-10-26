@@ -243,7 +243,7 @@ Agent `structuredContent` remains bounded to `ObservationReceipt` or `Turn`. Raw
 ledgers, Runtime sequencing, incident metrics, and governance projections remain operator-facing.
 
 For an authorized OS task with a BMC IP and no OS IP, use the
-[`os_console` selector](os-console.md) through BMC SSH and its native SOL command
+`os_console` selector through BMC SSH and its native SOL command
 for host identity and network observations.
 Its facts describe the host OS rather than the BMC's service manager.
 

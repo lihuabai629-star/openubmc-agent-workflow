@@ -24,16 +24,13 @@ Route by task:
 
 Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface:
 
-- For current systemd service failures, use a `systemd` selector with literal `.service` names
-  or `["failed"]` discovery; see the Agent semantic interface reference below.
-- For an authorized OS task with a BMC IP but no OS IP, use `os_console` through BMC SSH and native SOL
-  before declaring OS access unavailable; read [OS serial access](references/os-console.md).
+- For service failures, use a `systemd` selector with literal `.service` names or `["failed"]`.
+- For an authorized OS task with BMC IP and no OS IP, select `os_console`; see its reference below.
 - Call `observe` for an exact read-only question using only required selectors.
   A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.
-- Treat one answer as one observation: combine related capability, MDB and systemd selectors needed for
-  the answer in the same `observe` call. Do not run a separate capability preflight; the internal
-  Observation Adapter performs it.
+- Combine capability, MDB, systemd and OS-console selectors in the same `observe` call.
+  Do not run a separate capability preflight.
 - Call `execute` for diagnosis Runs, source changes, builds, patches, upgrades, verification
   or an authorized MDB assignment. Read its property reference before any assignment.
 - A build-upgrade Run may declare `hardware_acceptance.devices` for exact Drive convergence.
@@ -163,7 +160,7 @@ Read the relevant one-hop references:
 
 - Run, Gate and recovery: `references/agent-gateway.md`, `references/host-continuity.md`
 - Remote credentials, preflight, helpers, concurrency, and target automation: `references/remote-automation.md`
-- OS access through BMC SOL when the OS IP is missing: `references/os-console.md`
+- OS identity/network through BMC SOL: `references/os-console.md`
 - Evidence selection and correlation: `references/evidence-workflow.md`
 - Hypothesis-directed Drive diagnosis and fault-chain comparison: `references/diagnostic-advice.md`
 - Combined snapshot details: `references/workflow.md`
