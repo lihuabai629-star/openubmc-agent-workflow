@@ -1,53 +1,31 @@
-# Target Runtime handoff
+# Runtime evidence handoff
 
-When `workflow.next` or `workflow.advance` returns
-`status: waiting_phase_record` with
-`required_phase_type: documentation.review`, it also provides:
+Documentation-only work produces a local review report. It does not start a Run,
+create an approval step or require target access. The public Agent interface has
+`observe` and `execute`; legacy Case workflow and phase-record tools are unavailable.
 
-~~~json
-{
-  "required_skill": "openubmc-doc-review",
-  "handoff_arguments": {
-    "case_id": "case-id",
-    "profile": "quick|full|release",
-    "reviewed_paths": ["docs/example.md"],
-    "source_revision": "revision",
-    "phase_record_contract": {
-      "case_id": "case-id",
-      "expected_revision": 1,
-      "idempotency_key": "cycle:step:result",
-      "phase_type": "documentation.review",
-      "producer_identity": "openubmc-doc-review"
-    }
-  }
-}
-~~~
+For an existing relevant Run, carry its `run_id`, document/source revision, selected
+review paths, profile, report path, confirmed findings, unverified claims and gaps.
+Keep target/product evidence scoped to its actual version and collection time.
+These are review facts, not a fabricated Runtime Gate response.
 
-Use those values directly. The phase result adds:
+Use the current returned Turn:
 
-~~~yaml
-status: completed | failed | cancelled
-source_revision: <reviewed source revision>
-summary: <bounded review outcome>
-profile: quick | full | release
-verdict: pass | pass_with_warnings | fail | incomplete
-reviewed_paths: [<path>]
-report_path: <optional local report path>
-finding_counts:
-  critical: 0
-  major: 0
-  minor: 0
-blockers: []
-unverified_claims: []
-command_validation: not_requested | planned | completed | unavailable
-known_gaps: []
-evidence_ids: []
-~~~
+- `running`: follow the bounded `next_action` only while this active Run belongs to
+  the current task; a report does not authorize another device action.
+- `waiting_response`: use the returned Gate's `input_schema`, `gate_id`,
+  `gate_version`, `schema_digest` and supplied `submission_id`. Submit through
+  `execute` with `kind: respond` only when the actual schema accepts the evidence.
+  Do not add undocumented review fields or invent a documentation Gate.
+- `incident`: preserve its Run/Effect identity and follow the advertised recovery
+  policy. An unknown mutation outcome must not be replayed.
+- `completed`, `failed` or `cancelled`: read the saved Outcome. Do not resume or
+  observe the historical task just to deliver its review report.
 
-Use `status=completed` only with `pass` or `pass_with_warnings`. Use
-`status=failed` for `fail` or `incomplete`, because those verdicts are
-workflow gates rather than successful downstream handoffs.
-
-After recording a terminal phase, call `workflow.next` again. A failed phase
-requires a new `workflow.advance` attempt after the blocker is addressed; do not
-resubmit a different verdict against the same terminal attempt.
+For read-only product verification already authorized by the task, `observe`
+accepts its target and selectors; keep the returned observation reference and
+original evidence. Missing KB or target access remains a stated gap while local
+checks continue. It does not create an automatic release failure or permission
+request. Use [the report fields](report-contract.md) for the local verdict and
+[the current Agent interface](../../openubmc-debug/references/agent-gateway.md)
+for Runtime request examples.

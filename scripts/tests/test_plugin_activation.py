@@ -18,6 +18,22 @@ spec.loader.exec_module(migration)
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_cache_held_as_a_process_working_directory_is_in_use(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            child = subprocess.Popen([sys.executable, '-c',
+                'import sys,time; print("ready",flush=True);time.sleep(30)'],
+                cwd=root, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(), 'ready')
+                self.assertTrue(installer.cache_in_use(root))
+            finally:
+                child.terminate()
+                child.wait(timeout=10)
+                child.stdout.close()
+            self.assertFalse(installer.cache_in_use(root))
+
     def test_native_config_verifier_allows_only_marketplace_timestamp(self):
         home = Path('/private/tmp/synthetic-openubmc-home')
         before = b'model="before"\n'
@@ -167,7 +183,7 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(json.loads((store/'install-audits'/(first['content_digest'][:16]+'.json')).read_bytes())['status'], 'committed')
 
     @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
-    def test_upgrade_atomically_removes_recognized_override_for_retired_cache(self):
+    def test_upgrade_removes_override_and_preserves_old_cache_for_existing_hosts(self):
         first = self.activate()
         config = self.codex/'config.toml'
         stale = Path(first['codex_install']['installedPath'])/'scripts/pluginctl.py'
@@ -183,7 +199,8 @@ class ActivationTests(unittest.TestCase):
         document = __import__('tomllib').loads(config.read_text())
         self.assertEqual(upgraded['version'], '2.0.8')
         self.assertNotIn('openubmc-target-runtime', document.get('mcp_servers', {}))
-        self.assertFalse(stale.exists())
+        self.assertTrue(stale.parent.parent.is_dir())
+        self.assertTrue(upgraded['cache_retained'])
         journal = self.home/'.local/share/openubmc/plugin-store/transactions'/upgraded['transaction']
         backup = journal/'config-before'
         self.assertIn('openubmc-target-runtime', backup.read_text())

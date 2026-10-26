@@ -1310,6 +1310,9 @@ def project_case(
                     ]
             if payload.get("canonical_error") is not None:
                 operation["canonical_error"] = payload.get("canonical_error")
+            if (operation.get("operation") == "debug_collect"
+                    and operation.get("status") in {"completed", "verified", "succeeded"}):
+                projection["verification_gap"] = ""
             if "next_actions" in payload:
                 projection["next_actions"] = list(payload["next_actions"])
             projection["status"] = str(payload.get("case_status", "open"))
@@ -1495,6 +1498,7 @@ def project_case(
                     "status": "pending_retry",
                 }
             projection["status"] = "running"
+            projection["verification_gap"] = str(payload.get("verification_gap", ""))
             projection["next_actions"] = [
                 str(
                     payload.get(

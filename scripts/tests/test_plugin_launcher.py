@@ -24,6 +24,7 @@ class PluginLauncherTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.directory = tempfile.TemporaryDirectory()
         cls.base = Path(cls.directory.name)
+        (cls.base/'home').mkdir()
         cls.plugin = package_fixture(cls.base)
         cls.fake_python = cls.base / "fake-python3"
         cls.fake_python_control = cls.base / "fake-python-control.json"
@@ -286,6 +287,7 @@ for line in sys.stdin:
             OPENUBMC_PLUGIN_PYTHON=str(self.fake_python),
             FAKE_PYTHON_DOCTOR_STATUS="42",
         )
+        Path(env['HOME']).mkdir(exist_ok=True)
         process = subprocess.Popen(
             ["node", str(self.plugin / "scripts/openubmc-mcp-bootstrap.js"), "runtime"],
             env=env,

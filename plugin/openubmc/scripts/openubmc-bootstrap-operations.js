@@ -191,7 +191,8 @@ function createSetupOperations(adapter, capability) {
     return new Promise((resolve, reject) => {
       const child = childProcess.spawn(backend.command,
         [...backend.prefix, "configure", "--kind", kind, "--open-browser"],
-        { env: adapter.childEnvironment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+        { env: adapter.childEnvironment, cwd: adapter.childCwd,
+          stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       configurationProcesses.add(child);
       let output = "";
       let settled = false;

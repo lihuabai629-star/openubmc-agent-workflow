@@ -45,6 +45,13 @@ or a focused debugging loop.
 9. **健康基线先于故障注入**：完整验收或 fault injection 先验证相应健康基线。普通 targeted 调试可用 `baseline.expected_state=not_requested`、`fault_injection=disabled`，不以全设备无告警为前提；不能靠停止 collector、放宽阈值或跳过请求的检查制造健康结果。
 10. **结果契约可校验**：完整流程先验证 `openubmc-qemu-workflow-plan/v1`，结束后验证同一 digest 绑定的 `openubmc-qemu-workflow-result/v1`。Runtime 仅保存已验证结果，不代替 repository launcher 执行 QEMU。
 
+日常开发复用已有缓存及任务拥有的持久实例；新 HPM 验收仍使用 fresh runtime。
+大型 SDK、下载分块、临时归档和 raw 磁盘放仓库外，或用
+`git check-ignore -v -- <精确生成目录>` 确认本地忽略，避免进入宿主 Git 快照。
+在大规模构建/创建磁盘前，用 `du -sh` 与 `df -h` 记录实际占用及输出卷余量；
+WSL 还记录承载 VHDX 的 Windows 卷余量（如 PowerShell `Get-Volume`）。
+按本次预计需求处理低空间，不设置固定阻断阈值，不自动删除用户旧目录。
+
 ## Workflow
 
 ### 0. Classify the Request

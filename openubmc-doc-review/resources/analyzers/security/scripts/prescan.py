@@ -149,10 +149,10 @@ def classify_ip(ip):
 
 # ==================== D2: PII 检查 ====================
 
-RE_PHONE = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
-RE_ID_CARD = re.compile(r'(?<!\d)[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)')
+RE_PHONE = re.compile(r'(?<![A-Za-z0-9_])1[3-9]\d{9}(?![A-Za-z0-9_])')
+RE_ID_CARD = re.compile(r'(?<![A-Za-z0-9_])[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![A-Za-z0-9_])')
 RE_EMAIL = re.compile(r'\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b')
-RE_BANK_CARD = re.compile(r'(?<!\d)\d{16,19}(?!\d)')
+RE_BANK_CARD = re.compile(r'(?<![A-Za-z0-9_])\d{16,19}(?![A-Za-z0-9_])')
 
 
 def luhn_check(card):

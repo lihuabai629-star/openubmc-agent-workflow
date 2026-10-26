@@ -393,15 +393,16 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool, *, capability:
 def execution_snapshot_plan(content: dict[str, bytes], lock: dict,
                             dependencies: Path) -> tuple[dict, dict, Path, str]:
     record = check_dependencies(dependencies)
-    expected = {name: {'sha256': hashlib.sha256(data).hexdigest(),
+    release = {**content, 'plugin-lock.json': canonical(lock)}
+    expected = {'release/'+name: {'sha256': hashlib.sha256(data).hexdigest(),
                        'mode': 0o500 if name.endswith('.sh') else 0o400}
-                for name, data in content.items()}
+                for name, data in release.items()}
     dependency_paths = {}
     for name, identity in record['files'].items():
         if name.startswith('python-packages/'):
             destination = name
         elif name.startswith('knowledge/node_modules/'):
-            destination = 'openubmc-kb-mcp/'+name.removeprefix('knowledge/')
+            destination = name.removeprefix('knowledge/')
         else:
             continue
         expected[destination] = identity
@@ -415,6 +416,8 @@ def execution_snapshot(content: dict[str, bytes], lock: dict, dependencies: Path
     expected, dependency_paths, cache, key = execution_snapshot_plan(content, lock, dependencies)
     cache.mkdir(parents=True, exist_ok=True)
     snapshot = cache/key
+    release = {'release/'+name: data for name, data in
+               {**content, 'plugin-lock.json': canonical(lock)}.items()}
     with (cache/(key+'.lock')).open('a') as mutex:
         _acquire_cache_lock(mutex, blocking=True)
         for stale in cache.glob('.prepare-' + key[:12] + '-*'):
@@ -432,7 +435,7 @@ def execution_snapshot(content: dict[str, bytes], lock: dict, dependencies: Path
                     if 'link' in identity:
                         path.symlink_to(identity['link'])
                     else:
-                        data = content[name] if name in content else (dependencies/dependency_paths[name]).read_bytes()
+                        data = release[name] if name in release else (dependencies/dependency_paths[name]).read_bytes()
                         if hashlib.sha256(data).hexdigest() != identity['sha256']:
                             raise ValueError('Dependency cache changed during snapshot creation')
                         path.write_bytes(data)
@@ -443,7 +446,7 @@ def execution_snapshot(content: dict[str, bytes], lock: dict, dependencies: Path
                 stage.rename(snapshot)
         if snapshot.is_symlink() or dependency_inventory(snapshot) != expected:
             raise ValueError('Execution snapshot drift; remove the damaged execution cache and retry')
-    return snapshot
+    return snapshot/'release'
 
 
 def node_environment() -> dict[str, str]:
@@ -553,7 +556,7 @@ def probe_server(command: str, content: dict[str, bytes], lock: dict, knowledge_
     probe_env['OPENUBMC_MCP_PARENT_PID'] = str(os.getpid())
     process = subprocess.Popen(argv,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, env=probe_env)
+                               text=True, env=probe_env, cwd=Path.home())
     timed_out = False
     try:
         stdout, stderr = process.communicate(request, timeout=12)
@@ -589,6 +592,8 @@ def write_timing(path: Path | None, stage: str, started: float) -> None:
 
 
 def run_verified_backend(argv: list[str], env: dict[str, str]) -> int:
+    # A host may have started us inside an installation cache being replaced.
+    os.chdir(Path.home())
     os.execvpe(argv[0], argv, env)
     return 0
 
@@ -624,11 +629,11 @@ def launch_plan(command: str, content: dict[str, bytes], lock: dict, timings: Pa
         host_command = {'host-hook': 'hook', 'records': 'handoff', 'export-records': 'export', 'verify-records': 'verify', 'prune-records': 'prune'}[command]
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name="__main__")',
-                str(snapshot/'python-packages'), str(snapshot/'scripts/launch_host_hook.py'), host_command, *(page_args or [])]
+                str(snapshot.parent/'python-packages'), str(snapshot/'scripts/launch_host_hook.py'), host_command, *(page_args or [])]
     elif command == 'runtime':
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
-                str(snapshot/'python-packages'), str(snapshot/'scripts/launch_runtime.py')]
+                str(snapshot.parent/'python-packages'), str(snapshot/'scripts/launch_runtime.py')]
     else:
         argv = ['node', str(snapshot/'openubmc-kb-mcp/src/server.js')]
     # Preserve the direct Codex parent across launch. Execution caches contain

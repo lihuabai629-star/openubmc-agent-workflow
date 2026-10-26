@@ -1335,6 +1335,17 @@ class DeferredVerificationSemanticBackend(SemanticBackend):
         return super().debug_collect(task, arguments, context)
 
 
+class UnavailableVerificationBackend(SemanticBackend):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_collect", dict(arguments)))
+        raise OSError(self.reason)
+
+
 class RunningUpgradeSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -12996,10 +13007,11 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertEqual(final["state"], "running")
+        self.assertEqual(final["state"], "incident")
         self.assertIsNone(final["outcome"])
         self.assertFalse(projection.get("run_outcome"))
-        self.assertIn("fresh target verification", final["next"])
+        self.assertEqual(final["incident"]["code"], "verification_retry_exhausted")
+        self.assertTrue(final["gaps"])
 
     def test_conflicting_acceptance_evidence_fails_closed(self) -> None:
         backend = ConflictingAcceptanceSemanticBackend()
@@ -14624,6 +14636,83 @@ class AgentGatewayTests(unittest.TestCase):
             [name for name, _arguments in backend.calls].count("live_patch_run"),
             1,
         )
+
+    def test_verification_stops_for_capability_failure_or_persisted_retry_budget(self) -> None:
+        for reason, legacy, expected_code in (
+            ("COMMAND NOT SUPPORTED: restricted CLP", False,
+             "verification_capability_unavailable"),
+            ("verification transport is temporarily unavailable", False,
+             "verification_retry_exhausted"),
+            ("verification transport is temporarily unavailable", True,
+             "verification_retry_exhausted"),
+        ):
+            with self.subTest(reason=reason, legacy=legacy), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                backend = UnavailableVerificationBackend(reason)
+                database, blobs = root/'runtime.sqlite3', root/'blobs'
+                patch_file = root/'fix.lua'
+                patch_file.write_bytes(b"return 'fix'\n")
+                def open_service():
+                    return RuntimeMcpService(backend,
+                        context_repository=SQLiteRuntimeRepository(database),
+                        blob_repository=FilesystemBlobRepository(blobs))
+                service = open_service()
+                try:
+                    if legacy:
+                        service._test.run_engine.verification_retry_limit = 10
+                    waiting = service.call_exposed_tool("execute", {
+                        "kind": "start", "target": "192.0.2.32",
+                        "intent": "diagnose-and-fix", "delivery_strategy": "live-patch",
+                    }, task_id="verification-policy", operation_id="policy-start")
+                    waiting = accept_diagnosis(service, waiting, task_id="verification-policy")
+                    run_id = waiting["run_id"]
+                    turn = service.call_exposed_tool("execute", {
+                        "kind": "respond", "run_id": run_id, **gate_binding(waiting),
+                        "response": {"status": "completed", "summary": "repair ready",
+                            "payload": {"source_revision": "policy-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(patch_file,
+                                    kind="openubmc-live-patch", target="192.0.2.32", run_id=run_id),
+                                "remote_path": "/opt/bmc/apps/fix.lua", "restart_scope": "skynet"}},
+                    }, task_id="verification-policy", operation_id="policy-response")
+                    if expected_code == "verification_retry_exhausted":
+                        self.assertEqual(turn["state"], "running")
+                        self.assertIn("attempts remain", turn["next"])
+                        for attempt in range(2):
+                            turn = service.call_exposed_tool("execute", {
+                                "kind": "resume", "run_id": run_id,
+                            }, task_id="verification-policy", operation_id=f"policy-resume-{attempt}")
+                    if legacy:
+                        self.assertEqual(turn["state"], "running")
+                        projection = service._test.context_runtime.read_case(run_id)
+                        self.assertTrue(any(s.get("status") == "pending_retry"
+                                            and s.get("workflow_attempt") == 3
+                                            for s in projection["workflow_step_states"].values()))
+                    service.close()
+                    service = open_service()
+                    before = len(backend.calls)
+                    turn = service.call_exposed_tool("execute", {
+                        "kind": "resume", "run_id": run_id,
+                    }, task_id="verification-policy", operation_id="policy-restarted")
+                    self.assertEqual(turn["state"], "incident", turn)
+                    self.assertEqual(turn["incident"]["code"], expected_code)
+                    self.assertTrue(turn["gaps"])
+                    self.assertIn("MutationJournal", turn["next"])
+                    self.assertIsNone(turn["outcome"])
+                    incident_id = turn["incident"]["incident_id"]
+                    again = service.call_exposed_tool("execute", {
+                        "kind": "resume", "run_id": run_id,
+                    }, task_id="verification-policy", operation_id="policy-no-progress")
+                    self.assertEqual(again["incident"]["incident_id"], incident_id)
+                    self.assertEqual(len(backend.calls), before)
+                    self.assertEqual([name for name, _ in backend.calls].count("live_patch_run"), 1)
+                    projection = service._test.context_runtime.read_case(run_id)
+                    self.assertTrue(any(s.get("name") == "live_patch_run"
+                                        and s.get("status") == "completed"
+                                        for s in projection["workflow_step_states"].values()))
+                finally:
+                    service.close()
 
     def test_execute_workflows_resume_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

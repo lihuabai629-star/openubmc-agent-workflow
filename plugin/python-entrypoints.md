@@ -12,6 +12,16 @@ temporary cache location with bytecode writing disabled. Keep logs, extracted fi
 configuration and other output outside the plugin directory. The MCP entries in `.mcp.json`
 select the required interpreter flags automatically.
 
+Prepared execution copies keep the complete release and `plugin-lock.json` in a
+`release` subdirectory, with dependencies alongside it. Helpers remain verifiable
+after the marketplace installation changes. MCP children start from the user's
+home directory so replacing a plugin cache does not invalidate their cwd.
+Normal updates retain older versioned caches for existing hosts. A rollback moves
+newer caches only when no host uses them; it does not remove an active execution
+copy. Runtime verification retries are bounded to three workflow attempts after
+a completed change. Unsupported capabilities and exhausted retries expose an
+Incident and acceptance gap while retaining the completed mutation and journal.
+
 The direct script entrypoints above require Linux or WSL. For native Windows offline analysis, use the independent `openubmc-offline` MCP entry in `.mcp.json`. It verifies the package and runs the shared analyzer from a private temporary copy with Python 3.11+; it does not start Runtime or KB. Its tools accept absolute paths to local bundles and output directories.
 
 For a Python integration that imports a packaged script, initialize the process before

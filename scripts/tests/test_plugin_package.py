@@ -62,6 +62,19 @@ class PluginPackageTests(unittest.TestCase):
             self.assertNotIn('openubmc-doc-review', discovered)
             self.assertNotIn('openubmc-log-bundle-analyzer', discovered)
             self.assertTrue((plugin/'optional-skills/openubmc-doc-review/SKILL.md').is_file())
+            optional = plugin/'optional-skills/openubmc-doc-review'
+            for document, link in (
+                ('SKILL.md', '../../skills/openubmc-debug/references/skill-routing.md'),
+                ('references/completeness-checks.md', '../../../skills/openubmc-developer/references/interface-coverage.md'),
+                ('references/handoff-contract.md', '../../../skills/openubmc-debug/references/agent-gateway.md'),
+            ):
+                text = (optional/document).read_text()
+                self.assertIn(']('+link+')', text)
+                self.assertTrue(((optional/document).parent/link).is_file())
+            for document in ('workflow-guide.md', 'handoff-contract.md'):
+                text = (optional/'references'/document).read_text()
+                for retired in ('workflow.next', 'workflow.advance', 'phase_record_contract'):
+                    self.assertNotIn(retired, text)
             self.assertTrue((plugin/'skills/openubmc-log-bundle-analyzer/scripts/analyze_bundle.py').is_file())
             submission = plugin/'skills/openubmc-code-submit'
             self.assertTrue((submission/'LICENSE.marketplace').is_file())
@@ -217,7 +230,7 @@ class PluginPackageTests(unittest.TestCase):
             installed_root = Path(servers['openubmc-target-runtime']['transport']['cwd'])
             installed_mcp = json.loads((installed_root/'.mcp.json').read_text())['mcpServers']
             self.assertFalse(installed_mcp['openubmc-kb']['required'])
-            self.assertTrue(installed_mcp['openubmc-target-runtime']['required'])
+            self.assertFalse(installed_mcp['openubmc-target-runtime']['required'])
             for name in ('openubmc-target-runtime', 'openubmc-kb'):
                 server = servers[name]
                 transport = server['transport']

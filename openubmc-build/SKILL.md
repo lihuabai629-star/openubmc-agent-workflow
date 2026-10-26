@@ -78,6 +78,16 @@ uses the Plan checkout; changing checkout creates a new Plan.
 
 Worktree is not a cache, log, version, or retry-isolation mechanism.
 
+Keep large SDK downloads, temporary archives and raw images outside the checkout,
+or verify the exact generated directory with `git check-ignore -v -- <path>`.
+Use a precise local `.git/info/exclude` entry when needed; untracked output can
+otherwise enter host Git snapshots. Reuse existing download and build caches.
+Before a large build, inspect actual allocation with `du -sh` and free space with
+`df -h` on the output volume. In WSL also record the Windows volume holding the
+VHDX (for example, `Get-Volume` in PowerShell); guest free space alone does not
+establish host capacity. Address low space according to the expected build size;
+do not impose a fixed threshold or remove old user directories automatically.
+
 ### Make planned writes idempotent
 
 `validate` and `diagnose` do not change component versions, product versions, or Manifest refs.

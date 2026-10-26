@@ -7,7 +7,7 @@ Present one review interface and keep the individual checks internal.
 - One Markdown file, a documentation directory, or an explicit document set.
 - A profile: `quick`, `full`, or `release`. Infer `quick` for an unspecified
   lightweight check and `full` for an unspecified comprehensive review.
-- Optional source tree, product version, or existing Target Runtime Case when the
+- Optional source tree, product version, or existing Runtime Run when the
   user requests product-consistency evidence.
 
 Do not ask the user to select individual analyzers. Select them from the profile and
@@ -40,7 +40,7 @@ degradation rules. Read only the other reference relevant to the active lane:
 - [references/report-contract.md](report-contract.md) when assembling
   the final findings and verdict.
 - [references/handoff-contract.md](handoff-contract.md) whenever the
-  request carries a Target Runtime `case_id` or `phase_record_contract`.
+  request carries a Runtime `run_id` with a current Gate or evidence request.
 
 Maintainers can read [references/provenance.md](provenance.md) when
 updating the bundled analyzers; it is not required during an ordinary review.
@@ -71,31 +71,29 @@ Use the strongest available evidence:
 1. The reviewed document and local repository source/configuration.
 2. Build artifacts, tests, generated schemas, and versioned interface definitions.
 3. Existing openUBMC KB MCP results as candidate locations or explanations.
-4. Existing Target Runtime Case evidence or explicitly authorized read-only target
+4. Existing Runtime Run evidence or explicitly authorized read-only target
    collection.
 
 KB results are not product truth. Runtime observation may be version-specific, so
 record target identity and product version. If evidence conflicts, report the
 conflict instead of choosing the more convenient source.
 
-## Case workflow
+## Run and local review
 
-When `workflow.next` returns `waiting_phase_record` for
-`documentation.review`, consume its handoff directly. Review the supplied paths
-with the supplied profile, submit the typed outcome through `phase_record`, then
-call `workflow.next` again in the same turn. Do not create a separate review
-state or ask the user to restate the scope.
+Documentation review runs directly against the selected local documents. The current
+Agent tools are `observe` and `execute`; there is no standalone documentation Gate
+or legacy Case workflow tool. Do not start a Run or add a Gate for a document task.
 
-Enter a documentation Gate only when that review is part of the requested release
-workflow. Optional review findings or missing product-validation environments do
-not create a new prerequisite for source work, builds or unrelated delivery.
+When review evidence belongs to an existing Run, retain its `run_id` and the actual
+returned Turn. Continue only a relevant active Run. A terminal Outcome is readback,
+not a request to resume or repeat device observations. A `waiting_response` Turn
+requires the advertised Gate's exact `input_schema`, bindings and `submission_id`;
+include review evidence only where that schema accepts it. Never invent a
+`documentation.review` response. See [the handoff reference](handoff-contract.md).
 
-A passing review records `status=completed` and verdict `pass` or
-`pass_with_warnings`. A release-blocking or materially incomplete review records
-`status=failed` with verdict `fail` or `incomplete`; this stops downstream
-build, upgrade, or delivery until a new workflow attempt supplies a passing
-record. Follow [references/handoff-contract.md](handoff-contract.md)
-exactly.
+An optional review or an unavailable product-validation environment does not block
+independent source work, builds or delivery. Report the requested review verdict,
+confirmed blockers and remaining gaps in a local report.
 
 ## Safety and authorization
 
@@ -105,8 +103,8 @@ exactly.
 - Target access, builds, installations, upgrades, file writes, service changes,
   network configuration, and destructive commands require the authorization
   normally required by the host workflow.
-- Prefer an existing Target Runtime Case. Record new target evidence in a Case when
-  the runtime is available; do not create a second state system in this Skill.
+- Reuse an existing relevant Runtime Run when the task already owns one. Authorized
+  read-only product checks use `observe`; a documentation-only review needs no Run.
 - If validation is unavailable, mark the claim `unverified`; do not turn missing
   evidence into a failure.
 

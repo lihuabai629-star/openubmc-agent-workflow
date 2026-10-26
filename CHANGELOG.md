@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.12 (development)
+
+- Post-change verification exposes unsupported capabilities or an exhausted three-attempt budget as an Incident with an acceptance gap. Completed mutations and journals remain intact, including after restart and for previously deferred Runs.
+- Prepared execution copies retain a complete release lock separately from dependencies. Backend children use a stable working directory; updates retain older caches used by existing hosts, and rollback refuses to move an active newer cache.
+- SessionStart distinguishes relevant active Runs from saved terminal Outcomes. Runtime startup is optional for unrelated and offline conversations.
+- Documentation review uses the current Run evidence interface and relocates optional references to the installed Skill paths. Numeric PII checks exclude digits inside hashes and identifiers while retaining separate sensitive values.
+- Debug examples resolve the active plugin root. Source routing distinguishes coexisting implementation generations; build and QEMU guidance keeps large generated files out of host Git snapshots and checks actual output-volume space.
+
 ## 2.2.11 (development)
 
 - Knowledge requests recover an expired refresh token when OneID repeats the expiration message in its `error` field, then continue once with the saved account. Explicit client and scope errors retain their original failure.

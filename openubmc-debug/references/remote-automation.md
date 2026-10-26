@@ -18,7 +18,7 @@ Read this file after choosing a remote evidence path. It defines credentials, ca
 
 Keep the working directory at the task's openUBMC repository so source-root discovery remains
 valid. Invoke each selected bundled helper from the canonical installed Skill path, for example
-`python "$HOME/.agents/skills/openubmc-debug/scripts/preflight_remote.py" ...`; do not change into the
+`python "<plugin-root>/skills/openubmc-debug/scripts/preflight_remote.py" ...`; do not change into the
 Skill directory merely to run a helper.
 
 ## Explicit credentials
@@ -121,7 +121,7 @@ preflight resolves the selected credential source once and reuses one task-scope
 when requested, one Telnet session across its checks.
 
 ```bash
-python "$HOME/.agents/skills/openubmc-debug/scripts/preflight_remote.py" --ip <ip> --json --compact-json
+python "<plugin-root>/skills/openubmc-debug/scripts/preflight_remote.py" --ip <ip> --json --compact-json
 ```
 
 When `workflow_remote.py` is invoked repeatedly through the same MCP task, its TargetRun keeps at

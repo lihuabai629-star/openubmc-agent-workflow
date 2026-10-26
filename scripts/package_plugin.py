@@ -106,6 +106,9 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
     distribution = workflow.get('distribution', {})
     optional_skills = set(distribution.get('optional_skills', []))
     support_skills = set(distribution.get('support_skills', []))
+    skill_destinations = {entry['path']: (
+        'optional-skills/' if entry['name'] in optional_skills else 'skills/'
+    ) + entry['path'] for entry in workflow['skills']}
     for skill in workflow['skills']:
         if skill['name'] not in workflow['profiles']['full']:
             continue
@@ -130,6 +133,13 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
             content = source_content[f'{root}/{relative}']
             if optional and relative == 'SKILL.md':
                 content = content.replace(b'../openubmc-debug/', b'../../skills/openubmc-debug/')
+            elif optional and relative.endswith('.md'):
+                # Optional resources move one directory group away from peers.
+                prefix = '../' * len(PurePosixPath(relative).parts)
+                directory = posixpath.dirname(f'{destination}/{target}')
+                for source_root, installed_root in skill_destinations.items():
+                    content = content.replace((prefix+source_root+'/').encode(),
+                        (posixpath.relpath(installed_root, directory)+'/').encode())
             if support and relative == 'SKILL.md':
                 content = content.replace(b'](references/', b'](')
             payload[f'{destination}/{target}'] = content

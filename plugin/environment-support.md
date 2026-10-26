@@ -33,6 +33,9 @@ python3 -I <plugin-root>/scripts/pluginctl.py doctor
 ```
 
 The MCP launchers check locked dependencies on startup and expose setup tools on failure.
+Runtime and KB are optional Host startup dependencies: an unavailable backend does
+not prevent an ordinary or offline conversation. Device work still requires the
+selected Runtime to return its current protocol state before execution.
 If the affected service is needed now, call `openubmc_setup_status`, then repair only its reported
 cause. Missing or damaged dependencies use `openubmc_setup_prepare` (CLI: `pluginctl.py prepare
 --repair` with `--capability runtime` or `--capability kb`); a modified package requires reinstalling

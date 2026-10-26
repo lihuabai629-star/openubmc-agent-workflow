@@ -203,6 +203,33 @@ class PythonEntrypointTests(unittest.TestCase):
         self.assertIn('serverInfo', response['result'])
         self.assertEqual(inventory(self.plugin), self.before)
 
+    def test_execution_copy_retains_lock_and_helpers_after_installation_is_moved(self):
+        # A prepared execution copy must support subprocess helpers as well as MCP.
+        (self.plugin/'requirements.lock').write_bytes(b'')
+        lock_path = self.plugin/'plugin-lock.json'
+        lock = json.loads(lock_path.read_bytes())
+        lock['files']['requirements.lock'] = hashlib.sha256(b'').hexdigest()
+        del lock['content_digest']
+        canonical = lambda value: (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False)+'\n').encode()
+        lock['content_digest'] = hashlib.sha256(canonical(lock)).hexdigest()
+        lock_path.write_bytes(canonical(lock))
+        self.environment.update(XDG_CACHE_HOME=str(self.home/'cache'), PIP_NO_INDEX='1')
+        prepared = self.run_python('-I', self.plugin/'scripts/pluginctl.py',
+                                   'prepare', '--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        execution = Path(json.loads(prepared.stdout)['capability_snapshots']['runtime'])
+        self.assertEqual(json.loads((execution/'plugin-lock.json').read_bytes()), lock)
+        self.plugin.rename(self.home/'retained-installation')
+        helper = execution/'skills/openubmc-debug/scripts/preflight_remote.py'
+        result = self.run_python('-I', '-B', helper, '--help')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (execution/'skills/openubmc-debug/scripts/_cli_common.py').chmod(0o600)
+        with (execution/'skills/openubmc-debug/scripts/_cli_common.py').open('a') as stream:
+            stream.write('\nraise RuntimeError("unverified helper")\n')
+        result = self.run_python('-I', '-B', helper, '--help')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('inventory mismatch', result.stderr)
+
     def test_supported_module_import_initializes_before_the_importer(self):
         result = self.run_python('-c', MODULE_IMPORT, self.plugin)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -4,6 +4,7 @@ const childProcess = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { performance } = require("perf_hooks");
 
 function decodeOutput(buffer) {
@@ -20,6 +21,7 @@ function createHostAdapter({ pluginRoot, hostPlatform, environment = process.env
   const executionHost = selectedWsl ? "wsl" : hostPlatform === "win32" ? "windows-native" : hostPlatform;
   const clientEnvironment = selectedWsl || hostPlatform === "win32" ? "windows" : hostPlatform;
   const childEnvironment = { ...environment };
+  const childCwd = os.homedir();
   childEnvironment.PYTHONDONTWRITEBYTECODE = "1";
   delete childEnvironment.PYTHONPATH;
   delete childEnvironment.PYTHONHOME;
@@ -29,6 +31,7 @@ function createHostAdapter({ pluginRoot, hostPlatform, environment = process.env
     if (timeout <= 0) throw new Error("host_deadline_exceeded");
     return childProcess.spawnSync(command, args, {
       env: childEnvironment,
+      cwd: childCwd,
       input: options.input,
       encoding: options.encoding || null,
       maxBuffer: options.maxBuffer || 16 * 1024 * 1024,
@@ -99,7 +102,7 @@ function createHostAdapter({ pluginRoot, hostPlatform, environment = process.env
     return resolvePosixBackend();
   }
 
-  return { childEnvironment, clientEnvironment, decodeOutput, executionHost, hostPlatform,
+  return { childEnvironment, childCwd, clientEnvironment, decodeOutput, executionHost, hostPlatform,
     packageIdentity, resolveBackend, run, selectedWsl };
 }
 

@@ -2365,6 +2365,11 @@ def project_run_turn(
     recovery_gap = _text(projection.get("closeout_recovery_gap"))
     if recovery_gap and recovery_gap not in gaps:
         gaps = (*gaps, recovery_gap)
+    verification_gap = _text(projection.get("verification_gap"))
+    if incident is not None and incident.code.startswith("verification_"):
+        verification_gap = incident.message
+    if verification_gap and outcome is None:
+        gaps = tuple(dict.fromkeys((*gaps, verification_gap)))
     diagnostic_receipt = (
         base_turn.diagnostic_receipt if base_turn is not None else None
     )

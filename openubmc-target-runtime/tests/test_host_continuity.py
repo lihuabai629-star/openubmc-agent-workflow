@@ -43,6 +43,31 @@ class HostContinuityTests(unittest.TestCase):
         self.assertNotIn("resume_action", run)
         self.assertFalse(run["terminal_answer"]["delivery_confirmed"])
 
+    def test_session_start_distinguishes_terminal_history_from_current_active_work(self):
+        for status in ("completed", "failed", "cancelled"):
+            with self.subTest(status=status):
+                self.terminal(status)
+                self.capture(status)
+        projections = {key: {"status": "terminal", "intent": "diagnosis-only", "targets": [],
+            "run_outcome": {"status": key, "summary": "verified result", "outcome_id": "outcome-1"}}
+            for key in ("completed", "failed", "cancelled")}
+        projections["active"] = {"status": "open", "intent": "diagnosis-only",
+                                 "current_incident": {"incident_id": "unknown-effect",
+                                     "code": "mutation_outcome_unknown", "message": "inspect journal"}}
+        self.store.capture("task", {"run_id": "active"}, read_run=projections.get)
+        response = self.store.handle_hook({"session_id": "task", "hook_event_name": "SessionStart"},
+                                           read_run=projections.get)
+        text = response["hookSpecificOutput"]["additionalContext"]
+        prefix, raw = text.split('\n', 1)
+        self.assertIn("without resume, observe", prefix)
+        self.assertIn("unknown mutation outcome", prefix)
+        self.assertIn("continue the current request normally", prefix)
+        runs = {run["run_id"]: run for run in json.loads(raw)["runs"]}
+        for status in ("completed", "failed", "cancelled"):
+            self.assertEqual(runs[status]["continuation"], "read_saved_outcome")
+        self.assertEqual(runs["active"]["continuation"], "continue_only_if_relevant")
+        self.assertEqual(projections["active"]["current_incident"]["incident_id"], "unknown-effect")
+
     def test_notes_are_not_authority_and_cannot_fake_a_completed_run(self):
         self.capture()
         self.store.save_notes("task", {"goal": "already completed", "hypotheses": ["done"]})

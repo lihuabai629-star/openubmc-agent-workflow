@@ -7,6 +7,9 @@ description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感�
 
 At a stage change, read [the phase handoff](<references/skill-routing.md>) and its owner; carry the Run and authorization.
 
+Resolve `<plugin-root>` from the active Skill file's parent `skills` directory.
+Use that installation's helpers; do not assume a global `~/.agents/skills` copy.
+
 ## Scope and ownership
 
 Diagnose live symptoms and verify requested deployed behavior.

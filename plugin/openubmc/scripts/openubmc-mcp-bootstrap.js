@@ -31,6 +31,7 @@ function safeWriteError(value) {
 function proxyBackend(backend, preflight) {
   const child = childProcess.spawn(backend.command, [...backend.prefix, capability], {
     env: adapter.childEnvironment,
+    cwd: adapter.childCwd,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });

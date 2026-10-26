@@ -15,6 +15,26 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DependencyPreparationTests(unittest.TestCase):
+    def test_backend_launch_escapes_a_deleted_inherited_working_directory(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            working = root/'old-plugin-cache'
+            working.mkdir()
+            script = '''
+import os, runpy, sys
+from pathlib import Path
+launch = runpy.run_path(sys.argv[1])['run_verified_backend']
+working = Path(sys.argv[2])
+os.chdir(working)
+working.rmdir()
+launch([sys.executable, '-c', 'from pathlib import Path; print(Path.cwd())'], dict(os.environ))
+'''
+            result = subprocess.run([sys.executable, '-I', '-c', script,
+                str(ROOT/'plugin/openubmc/scripts/pluginctl.py'), str(working)],
+                env=dict(os.environ, HOME=str(root)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(root))
+
     def test_dependency_failure_codes_are_stable_without_returning_raw_output(self):
         module = runpy.run_path(str(ROOT/'plugin/openubmc/scripts/pluginctl.py'))
         classify = module['_dependency_failure_code']

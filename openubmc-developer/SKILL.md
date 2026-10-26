@@ -91,6 +91,10 @@ evidence conflicts or leaves a material gap; never use them as proof of the
 current implementation. Record source identity and version when an external
 claim affects the change.
 
+Newer documentation does not retire an older or coexisting implementation route.
+Trace registrations and consumers on the selected branch before choosing a route;
+do not transfer device-tree constraints to resource-tree without source evidence.
+
 Follow a stable repository precedent by default. If precedents conflict or none
 can satisfy the requirement correctly, present the material alternatives before
 a deviation or refactor.
