@@ -92,7 +92,7 @@ Exact file definitions include numeric rotations in the same directory unless th
 
 Wildcard definitions such as `dump_info/AppDump/*/mdb_info.log` expand across component directories. A numeric rotation inherits a wildcard file contract only when its corresponding base file exists and matches that wildcard. Component words present in the problem increase the ranking of matching component paths.
 
-All returned `existing_paths` and evidence `path` values are relative to the validated bundle root so reports remain portable.
+All returned bundle-relative paths, including `existing_paths`, evidence pointers and root-file entries, use `/` on every operating system. Filesystem access retains the operating system's native paths.
 
 Path discovery is fixed-capacity as well as byte-bounded. One analysis shares a 100,000-entry inspection budget across component hints and catalog path expansion. Component-hint enrichment inspects at most 4,096 `AppDump` entries and retains at most 64 matching component hints. Each wildcard pattern and rotated-file family retains at most 4,096 candidates, and each selected log retains at most 4,096 expanded paths. The public `existing_paths` sample contains at most 10 paths; `existing_path_count` and its completeness fields describe the larger bounded discovery result.
 
@@ -189,7 +189,7 @@ For delimited records, `header_present: false` means the first observed row was 
 
 ## Output disclosure
 
-Every success and error envelope includes `output_policy`. The default `shareable` profile always redacts credentials and also hides local locations, IP and MAC addresses, UUIDs, authentication principals, browser identifiers, and common keyed asset identifiers such as serial, board, product, card, and part numbers. The policy field `common_identifier_redaction` describes this best-effort common-pattern coverage; it does not promise removal of every possible identifier. Portable paths below the validated bundle root remain visible so evidence can still be located inside another copy of the same artifact.
+Every success and error envelope includes `output_policy`. The default `shareable` profile always redacts credentials and also hides local locations, IP and MAC addresses, UUIDs, authentication principals, browser identifiers, and common keyed asset identifiers such as serial, board, product, card, and part numbers. Contextual `SN(...)` serials and `unit <identifier> linked to connector` asset labels are also redacted. The policy field `common_identifier_redaction` describes this best-effort common-pattern coverage; it does not promise removal of every possible identifier. Portable paths below the validated bundle root remain visible so evidence can still be located inside another copy of the same artifact.
 
 `--include-sensitive-context` selects the `sensitive_context` profile. Exact target, location, and ordinary identifier context is then retained, but credentials remain redacted. Treat this profile as potentially sensitive and review it before forwarding or publishing it. Automated redaction covers common forms; it is not a substitute for reviewing a report before public disclosure.
 

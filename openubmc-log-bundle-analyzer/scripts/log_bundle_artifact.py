@@ -421,7 +421,7 @@ def validate_bundle_structure(bundle_root: pathlib.Path) -> dict[str, object]:
             elif is_file:
                 root_files.append(
                     {
-                        "path": str(path.relative_to(root)),
+                        "path": path.relative_to(root).as_posix(),
                         "size_bytes": file_size,
                     }
                 )

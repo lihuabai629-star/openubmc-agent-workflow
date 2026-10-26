@@ -320,7 +320,7 @@ class CommunityContractTests(unittest.TestCase):
         manifest = json.loads((SKILL_ROOT / "skill.json").read_text(encoding="utf-8"))
         listed = set(manifest["files"])
         actual = {
-            str(path.relative_to(SKILL_ROOT))
+            path.relative_to(SKILL_ROOT).as_posix()
             for path in SKILL_ROOT.rglob("*")
             if path.is_file()
             and "__pycache__" not in path.parts

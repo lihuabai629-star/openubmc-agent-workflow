@@ -12,6 +12,8 @@ temporary cache location with bytecode writing disabled. Keep logs, extracted fi
 configuration and other output outside the plugin directory. The MCP entries in `.mcp.json`
 select the required interpreter flags automatically.
 
+The direct script entrypoints above require Linux or WSL. For native Windows offline analysis, use the independent `openubmc-offline` MCP entry in `.mcp.json`. It verifies the package and runs the shared analyzer from a private temporary copy with Python 3.11+; it does not start Runtime or KB. Its tools accept absolute paths to local bundles and output directories.
+
 For a Python integration that imports a packaged script, initialize the process before
 the first plugin import:
 

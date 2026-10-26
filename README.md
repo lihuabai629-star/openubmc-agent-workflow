@@ -35,7 +35,7 @@ evidence reads; the Host decides its display location.
 
 The old bootstrap and loose `full` / `target-runtime` profiles are retained for migration and
 rollback. New installations use the native plugin. Windows clients may use an explicitly
-configured WSL stdio bridge; native Windows backend installation is retired.
+configured WSL stdio bridge for Runtime and KB; native Windows installation of those backends is retired. The independent offline-analysis MCP supports native Windows.
 
 ## Architecture and evolution
 
@@ -126,7 +126,7 @@ In short:
 
 ## Immutable releases
 
-The development source version is 2.2.8. The last recorded public Codex plugin release is
+The development source version is 2.2.9. The last recorded public Codex plugin release is
 [2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.
@@ -200,6 +200,10 @@ Approved outcomes may become an inert Golden Scenario, knowledge item, or ADR. G
 must carry a matching deterministic Case Replay Bundle. Hard-to-reverse architecture conclusions
 must become ADRs linked to their Case and Replay evidence. Promotion artifacts are always marked
 non-executable and never modify workflow execution rules automatically.
+
+Offline local analysis also has an independent `openubmc-offline` MCP server on Windows, Linux and WSL. Its `openubmc_analyze_bundle` and `openubmc_read_evidence` tools share the analyzer core with native DSH. Pass absolute paths; the plugin selects Python (`OPENUBMC_PLUGIN_PYTHON`, otherwise `python` on Windows or `python3` elsewhere) and launches JSON workers without a shell. Python 3.11 or later is required; no third-party dependencies, device accounts or Runtime initialization are needed. `OPENUBMC_OFFLINE_OUTPUT_DIR` selects the default artifact directory; otherwise results use the host's private state directory. `OPENUBMC_OFFLINE_TIMEOUT_SECONDS` controls the deadline (default 300, maximum 3600), and `OPENUBMC_OFFLINE_MAX_CONCURRENCY` limits simultaneous workers (default 2, maximum 16).
+
+Analysis saves full redacted UTF-8 JSON outside the input and returns compact evidence pointers, explicit totals, scan failures and truncation. Compact analysis responses are capped at 256 KiB; evidence reads retain at most 32 warning and error samples with full counts. Read original text or gzip lines through the evidence tool; paths remain under `dump_info/`, byte/line limits apply, and credentials and common identifiers are redacted. A complete selected scan does not establish catalog coverage or device health. Runtime device workflows still use the supported backend below.
 
 The backend is supported inside Linux or WSL. Windows clients can forward stdio
 through a local copy of `scripts/openubmc-wsl-bridge.js`, pointing at the installed

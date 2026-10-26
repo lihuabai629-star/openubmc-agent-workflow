@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
@@ -266,7 +267,7 @@ class TimeAndScanHardeningTests(unittest.TestCase):
         first_line = "2026-08-31 08:00:00 login failed\n"
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = pathlib.Path(tmp_dir) / "security.log"
-            path.write_text(first_line + "second line remains\n", encoding="utf-8")
+            path.write_bytes((first_line + "second line remains\n").encode("utf-8"))
             diagnostics: dict[str, object] = {}
             evidence = collect_evidence_lines(
                 path,
@@ -503,7 +504,7 @@ class FindingAndCorrelationHardeningTests(unittest.TestCase):
             root = pathlib.Path(tmp_dir)
             log_dir = root / "dump_info" / "LogDump"
             log_dir.mkdir(parents=True)
-            (log_dir / "operation.log").write_text(operation_line, encoding="utf-8")
+            (log_dir / "operation.log").write_bytes(operation_line.encode("utf-8"))
             (log_dir / "app.log").write_text(
                 "2026-08-31 08:00:02 iam ERROR: incident failed\n",
                 encoding="utf-8",
@@ -637,10 +638,23 @@ class PathDiscoveryBudgetHardeningTests(unittest.TestCase):
             root = pathlib.Path(tmp_dir)
             appdump = root / "dump_info" / "AppDump"
             appdump.mkdir(parents=True)
-            for name in unsafe_names:
-                (appdump / name).mkdir()
-
-            hinted = add_bundle_component_hints(root, reference, problem="evil")
+            if sys.platform == "win32":
+                entries = []
+                for name in unsafe_names:
+                    entry = mock.Mock()
+                    entry.name = name
+                    entry.path = str(appdump / name)
+                    entry.is_symlink.return_value = False
+                    entry.is_dir.return_value = True
+                    entries.append(entry)
+                # Windows cannot materialize glob/control names as literal directory entries.
+                with mock.patch("log_bundle_analysis.os.scandir") as scandir:
+                    scandir.return_value.__iter__.return_value = iter(entries)
+                    hinted = add_bundle_component_hints(root, reference, problem="evil")
+            else:
+                for name in unsafe_names:
+                    (appdump / name).mkdir()
+                hinted = add_bundle_component_hints(root, reference, problem="evil")
 
         dynamic_paths = [
             path
@@ -664,10 +678,23 @@ class PathDiscoveryBudgetHardeningTests(unittest.TestCase):
             root = pathlib.Path(tmp_dir)
             appdump = root / "dump_info" / "AppDump"
             appdump.mkdir(parents=True)
-            for name in unsafe_names:
-                (appdump / name).mkdir()
-
-            hinted = add_bundle_component_hints(root, reference)
+            if sys.platform == "win32":
+                entries = []
+                for name in unsafe_names:
+                    entry = mock.Mock()
+                    entry.name = name
+                    entry.path = str(appdump / name)
+                    entry.is_symlink.return_value = False
+                    entry.is_dir.return_value = True
+                    entries.append(entry)
+                # Win32 strips trailing spaces when creating ordinary directories.
+                with mock.patch("log_bundle_analysis.os.scandir") as scandir:
+                    scandir.return_value.__iter__.return_value = iter(entries)
+                    hinted = add_bundle_component_hints(root, reference)
+            else:
+                for name in unsafe_names:
+                    (appdump / name).mkdir()
+                hinted = add_bundle_component_hints(root, reference)
             # A second normalization is what analyze_bundle performs; it must
             # remain valid even when the bundle contains odd directory names.
             normalize_reference_data(hinted, source="test hinted reference")
@@ -1193,7 +1220,7 @@ class CatalogAndTerminalHardeningTests(unittest.TestCase):
                     discovery_budget=discovery_budget,
                     directory_index=directory_index,
                 )
-                covered.update(str(path.relative_to(root)) for path in paths)
+                covered.update(path.relative_to(root).as_posix() for path in paths)
 
         self.assertEqual(set(representative_paths), covered)
 

@@ -2661,7 +2661,7 @@ def scan_correlation_candidates(
             metadata["candidate_scan_complete"] = False
             metadata["truncated"] = True
             issue = {
-                "path": str(file_path.relative_to(bundle_root)),
+                "path": file_path.relative_to(bundle_root).as_posix(),
                 "code": "correlation_scan_byte_limit_reached",
                 "message": "No analysis byte budget remained for the correlation candidate pass.",
                 "phase": "correlation_candidate_scan",
@@ -2699,7 +2699,7 @@ def scan_correlation_candidates(
             candidate = {
                 "log": record.get("log", ""),
                 "component": record.get("component", ""),
-                "path": str(file_path.relative_to(bundle_root)),
+                "path": file_path.relative_to(bundle_root).as_posix(),
                 "line_number": line_number,
                 "line": safe_line.strip(),
                 "timestamp": parsed_datetime.isoformat(),
@@ -2747,7 +2747,7 @@ def scan_correlation_candidates(
                 if not isinstance(entry, dict):
                     continue
                 issue = {
-                    "path": str(file_path.relative_to(bundle_root)),
+                    "path": file_path.relative_to(bundle_root).as_posix(),
                     **entry,
                     "phase": "correlation_candidate_scan",
                     "log": record.get("log", ""),
@@ -2766,7 +2766,7 @@ def scan_correlation_candidates(
             if isinstance(warnings, list):
                 warnings.append(
                     {
-                        "path": str(file_path.relative_to(bundle_root)),
+                        "path": file_path.relative_to(bundle_root).as_posix(),
                         "code": "correlation_timezone_domain_mismatch",
                         "message": "Timestamped candidate lines in an incompatible timezone domain were excluded.",
                         "phase": "correlation_candidate_scan",
@@ -2790,7 +2790,7 @@ def scan_correlation_candidates(
 def _portable_path(path: object, bundle_root: pathlib.Path) -> str:
     candidate = pathlib.Path(str(path))
     try:
-        return str(candidate.relative_to(bundle_root))
+        return candidate.relative_to(bundle_root).as_posix()
     except ValueError:
         return str(candidate)
 
@@ -3224,7 +3224,7 @@ def analyze_bundle(
                     operation_anchor_discovery_complete = False
                 log_warnings.append(
                     {
-                        "path": str(file_path.relative_to(bundle_root)),
+                        "path": file_path.relative_to(bundle_root).as_posix(),
                         "code": "total_scan_byte_limit_reached",
                         "message": f"Total scan stopped after {max_total_bytes} decompressed bytes.",
                     }
@@ -3257,7 +3257,7 @@ def analyze_bundle(
                 anchor = {
                     "log": "operation.log",
                     "component": item.get("component", ""),
-                    "path": str(file_path.relative_to(bundle_root)),
+                    "path": file_path.relative_to(bundle_root).as_posix(),
                     "line_number": line_number,
                     "line": safe_line.strip(),
                     "timestamp": parsed_datetime.isoformat(),
@@ -3301,7 +3301,7 @@ def analyze_bundle(
                 default_timezone=analysis_timezone,
             )
             if structured_collector is not None:
-                structured_summary = structured_collector.finish(str(file_path.relative_to(bundle_root)))
+                structured_summary = structured_collector.finish(file_path.relative_to(bundle_root).as_posix())
                 if structured_summary is not None:
                     file_warnings = diagnostics.get("warnings", [])
                     file_errors = diagnostics.get("errors", [])
@@ -3364,7 +3364,7 @@ def analyze_bundle(
                         operation_anchor_discovery_complete = False
                     destination.append(
                         {
-                            "path": str(file_path.relative_to(bundle_root)),
+                            "path": file_path.relative_to(bundle_root).as_posix(),
                             **entry,
                         }
                     )
@@ -3441,7 +3441,7 @@ def analyze_bundle(
                 "scan_mode": item.get("scan_mode", "text"),
                 **catalog_dimensions(item),
                 "existing_paths": [
-                    str(path.relative_to(bundle_root))
+                    path.relative_to(bundle_root).as_posix()
                     for path in existing_paths[:DEFAULT_ANALYSIS_MAX_PATHS]
                 ],
                 "existing_path_count": len(existing_paths),
@@ -3456,7 +3456,7 @@ def analyze_bundle(
                 "existing_paths_truncated": (
                     log_path_discovery_truncated or len(existing_paths) > DEFAULT_ANALYSIS_MAX_PATHS
                 ),
-                "scanned_paths": [str(path.relative_to(bundle_root)) for path in scanned_paths],
+                "scanned_paths": [path.relative_to(bundle_root).as_posix() for path in scanned_paths],
                 "scanned_path_count": len(scanned_paths),
                 "scan_truncated": log_scan_truncated,
                 "scan_errors": log_errors,

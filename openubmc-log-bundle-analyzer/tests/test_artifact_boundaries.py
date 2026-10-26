@@ -51,10 +51,18 @@ class ExtractedDirectoryBoundaryTests(unittest.TestCase):
                     log_dir = root / "dump_info" / "LogDump"
                     log_dir.mkdir(parents=True)
                     (log_dir / "app.log").write_text("error\n", encoding="utf-8")
-                    (root / "dump_info" / relative_name).write_text("opaque\n", encoding="utf-8")
-
-                    with self.assertRaises(BundleAnalysisError) as raised:
-                        artifact.validate_bundle_structure(root)
+                    if os.name == "nt":
+                        entry = mock.Mock()
+                        entry.name = relative_name
+                        # Windows interprets backslashes as separators and rejects control names.
+                        with mock.patch.object(artifact.os, "scandir") as scandir:
+                            scandir.return_value.__iter__.return_value = iter([entry])
+                            with self.assertRaises(BundleAnalysisError) as raised:
+                                artifact.validate_bundle_structure(root)
+                    else:
+                        (root / "dump_info" / relative_name).write_text("opaque\n", encoding="utf-8")
+                        with self.assertRaises(BundleAnalysisError) as raised:
+                            artifact.validate_bundle_structure(root)
 
                 self.assertEqual(raised.exception.code, "bundle_layout_invalid")
 
@@ -63,12 +71,29 @@ class ExtractedDirectoryBoundaryTests(unittest.TestCase):
             with self.subTest(component_name=repr(component_name)):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     root = pathlib.Path(tmp_dir)
-                    component_dir = root / "dump_info" / "AppDump" / component_name
-                    component_dir.mkdir(parents=True)
-                    (component_dir / "mdb_info.log").write_text("object\n", encoding="utf-8")
+                    appdump = root / "dump_info" / "AppDump"
+                    appdump.mkdir(parents=True)
+                    entry = mock.Mock()
+                    entry.name = component_name
+                    original_scandir = artifact.os.scandir
 
-                    with self.assertRaises(BundleAnalysisError) as raised:
-                        artifact.validate_bundle_structure(root)
+                    def scandir(directory):
+                        if pathlib.Path(directory) != appdump:
+                            return original_scandir(directory)
+                        entries = mock.MagicMock()
+                        entries.__iter__.return_value = iter([entry])
+                        return entries
+
+                    if os.name == "nt":
+                        with mock.patch.object(artifact.os, "scandir", side_effect=scandir):
+                            with self.assertRaises(BundleAnalysisError) as raised:
+                                artifact.validate_bundle_structure(root)
+                    else:
+                        component_dir = appdump / component_name
+                        component_dir.mkdir()
+                        (component_dir / "mdb_info.log").write_text("object\n", encoding="utf-8")
+                        with self.assertRaises(BundleAnalysisError) as raised:
+                            artifact.validate_bundle_structure(root)
 
                 self.assertEqual(raised.exception.code, "bundle_layout_invalid")
 

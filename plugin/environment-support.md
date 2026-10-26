@@ -39,10 +39,11 @@ cause. Missing or damaged dependencies use `openubmc_setup_prepare` (CLI: `plugi
 the selected marketplace version. Do not modify the package, bypass hashes or duplicate registrations.
 After startup repair, start a new task when needed to reload that service.
 
-Node.js 20+, Git, Codex, Python 3.11+ with pip, and `flock` (util-linux) are required inside Linux or WSL.
-The backend, credentials, dependency caches and Run history remain there.
+Runtime and KB require Node.js 20+, Git, Codex, Python 3.11+ with pip, and `flock` (util-linux) inside Linux or WSL.
+Their backend, credentials, dependency caches and Run history remain there.
 Windows clients use an explicitly selected WSL distribution and the stdio bridge
-`scripts/openubmc-wsl-bridge.js`; native Windows execution is unsupported.
+`scripts/openubmc-wsl-bridge.js`; native Windows execution of Runtime and KB is unsupported.
+The independent `openubmc-offline` MCP supports native Windows, Linux and WSL with Python 3.11+ and the Codex Node host. Its local analysis and evidence tools require no third-party Python packages, device accounts or Runtime startup. Pass absolute paths; see [Python entrypoints](../../PYTHON.md) for launch isolation.
 SDKs, compilers, Docker installation and Conan remotes belong to their respective workflows.
 
 Use `openubmc_setup_open_configuration` only for an account change identified below, not after

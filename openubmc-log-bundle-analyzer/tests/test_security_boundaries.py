@@ -26,6 +26,14 @@ from log_bundle_structured import make_structured_collector  # type: ignore  # n
 
 
 class BundlePathBoundaryTests(unittest.TestCase):
+    def make_symlink(self, link: pathlib.Path, target: pathlib.Path, *, directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows requires Developer Mode or a symlink privilege for this fixture")
+            raise
+
     def test_locate_bundle_root_rejects_dump_info_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = pathlib.Path(tmp_dir)
@@ -33,7 +41,7 @@ class BundlePathBoundaryTests(unittest.TestCase):
             source.mkdir(parents=True)
             candidate = base / "candidate"
             candidate.mkdir()
-            (candidate / "dump_info").symlink_to(source, target_is_directory=True)
+            self.make_symlink(candidate / "dump_info", source, directory=True)
 
             with self.assertRaisesRegex(BundleAnalysisError, "symbolic links"):
                 locate_bundle_root(candidate)
@@ -46,7 +54,7 @@ class BundlePathBoundaryTests(unittest.TestCase):
             (source / "security.log").write_text("outside\n", encoding="utf-8")
             candidate = base / "candidate"
             candidate.mkdir()
-            (candidate / "dump_info").symlink_to(source.parent, target_is_directory=True)
+            self.make_symlink(candidate / "dump_info", source.parent, directory=True)
 
             with self.assertRaisesRegex(BundleAnalysisError, "symbolic links"):
                 validate_bundle_structure(candidate)
@@ -59,12 +67,12 @@ class BundlePathBoundaryTests(unittest.TestCase):
             log_dir.mkdir(parents=True)
             outside = base / "outside.log"
             outside.write_text("password=outside-secret\n", encoding="utf-8")
-            (log_dir / "security.log").symlink_to(outside)
+            self.make_symlink(log_dir / "security.log", outside)
 
             with self.assertRaisesRegex(BundleAnalysisError, "symbolic links"):
                 validate_bundle_structure(root)
 
-    def test_ensure_bundle_path_rejects_parent_escape_and_symlink(self) -> None:
+    def test_ensure_bundle_path_rejects_parent_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = pathlib.Path(tmp_dir)
             root = base / "bundle"
@@ -74,12 +82,18 @@ class BundlePathBoundaryTests(unittest.TestCase):
             safe_file.write_text("login failed\n", encoding="utf-8")
             outside = base / "outside.log"
             outside.write_text("outside\n", encoding="utf-8")
-            linked_file = log_dir / "linked.log"
-            linked_file.symlink_to(outside)
-
             self.assertEqual(ensure_bundle_path(root, safe_file), safe_file.resolve())
             with self.assertRaisesRegex(BundleAnalysisError, "escapes the bundle root"):
                 ensure_bundle_path(root, pathlib.Path("../outside.log"))
+
+    def test_ensure_bundle_path_rejects_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = pathlib.Path(tmp_dir) / "bundle"
+            root.mkdir()
+            outside = pathlib.Path(tmp_dir) / "outside.log"
+            outside.write_text("outside\n", encoding="utf-8")
+            linked_file = root / "linked.log"
+            self.make_symlink(linked_file, outside)
             with self.assertRaisesRegex(BundleAnalysisError, "symbolic links"):
                 ensure_bundle_path(root, linked_file)
 
@@ -151,6 +165,22 @@ class RedactionBoundaryTests(unittest.TestCase):
             "part number(col 11) part number unavailable board number of failures "
             "product part number changed"
         )
+
+        self.assertEqual(redact_public_text(raw), (raw, False))
+
+    def test_shareable_asset_context_redacts_identifiers_and_preserves_diagnostics(self) -> None:
+        raw = "unit 12345678901234567890 linked to connector CPU1; SN(SAMPLE-SERIAL-1) failed"
+
+        safe, changed = redact_public_text(raw)
+
+        self.assertTrue(changed)
+        self.assertNotIn("12345678901234567890", safe)
+        self.assertNotIn("SAMPLE-SERIAL-1", safe)
+        self.assertIn("unit <redacted>-asset linked to connector CPU1", safe)
+        self.assertIn("SN(<redacted>-asset) failed", safe)
+
+    def test_shareable_asset_context_preserves_hashes_and_unrelated_unit_text(self) -> None:
+        raw = 'object_path_hash="0123456789abcdef01234567"; unit 42 test failed; SN()'
 
         self.assertEqual(redact_public_text(raw), (raw, False))
 
@@ -343,7 +373,6 @@ class RedactionBoundaryTests(unittest.TestCase):
         self.assertEqual(shareable["output_policy"]["profile"], "shareable")
         shareable_text = json.dumps(shareable, ensure_ascii=False)
         for value in (
-            str(root),
             "10.0.0.8",
             "Administrator",
             "AA:BB:CC:DD:EE:FF",
@@ -352,11 +381,14 @@ class RedactionBoundaryTests(unittest.TestCase):
             "credential-secret",
         ):
             self.assertNotIn(value, shareable_text)
+        self.assertEqual(shareable["request"]["bundle_dir"], "<redacted-path>")
         self.assertEqual(shareable["result"]["bundle"]["bundle_root"], "<redacted-path>")
 
         self.assertEqual(sensitive_context["output_policy"]["profile"], "sensitive_context")
         sensitive_text = json.dumps(sensitive_context, ensure_ascii=False)
-        for value in (str(root), "10.0.0.8", "Administrator", "AA:BB:CC:DD:EE:FF", "SN-123", "Mozilla/5.0"):
+        self.assertEqual(sensitive_context["request"]["bundle_dir"], str(root))
+        self.assertEqual(sensitive_context["result"]["bundle"]["bundle_root"], str(root))
+        for value in ("10.0.0.8", "Administrator", "AA:BB:CC:DD:EE:FF", "SN-123", "Mozilla/5.0"):
             self.assertIn(value, sensitive_text)
         self.assertNotIn("credential-secret", sensitive_text)
 

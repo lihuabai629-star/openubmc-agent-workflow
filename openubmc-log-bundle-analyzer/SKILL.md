@@ -7,7 +7,9 @@ description: Validate and analyze local openUBMC one-click log bundles with boun
 
 Analyze a supplied local `.tar`/`.tar.gz` or extracted `dump_info` tree. Require a problem statement except for explicit `--validate-only` checks. This Skill opens no network connection. Remote collection and live investigation require their own available workflow owners.
 
-Run `python3 scripts/analyze_bundle.py --bundle <archive> --problem '<question>' --json`, or use `--bundle-dir <directory>`. Resolve scripts from this Skill's resource directory. Read [the analysis workflow](references/workflow-guide.md) for input limits and the evidence/report rules.
+Prefer `openubmc_analyze_bundle` for analysis and `openubmc_read_evidence` for original file-and-line verification. Codex prefixes both names with `mcp__openubmc-offline__` and requires absolute input/output directory paths; native DSH uses the unprefixed names and resolves relative paths from the Session directory. Read the returned scan limits and errors before drawing conclusions. Full redacted JSON is saved at `artifact`.
+
+When these tools are unavailable, run `python3 scripts/analyze_bundle.py --bundle <archive> --problem '<question>' --output-json analysis.json`, or use `--bundle-dir <directory>`. Resolve scripts from this Skill's resource directory. Read [the analysis workflow](references/workflow-guide.md) for input limits and the evidence/report rules.
 
 Keep file-and-line evidence, scan failures, truncation, definition reliability and missing coverage explicit. Timelines and event correlations provide context and do not establish causality. Structured summaries omit sensitive values; unknown status codes remain opaque. Use `scripts/audit_catalog_coverage.py` for explicit catalog coverage audits.
 

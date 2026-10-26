@@ -262,6 +262,10 @@ PUBLIC_ID_SHORT_LABEL_RE = re.compile(
     r"(?:(?:\s*[:=]\s*)|\s+))"
     r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;\]}]+)"
 )
+PUBLIC_ASSET_CONTEXT_RE = re.compile(
+    r"(?i)(?P<prefix>\bunit[ \t]+)\S+(?P<suffix>[ \t]+linked[ \t]+to[ \t]+connector\b)"
+    r"|(?P<serial_prefix>\bSN\()[^)\r\n]+(?P<serial_suffix>\))"
+)
 PUBLIC_USER_AGENT_RE = re.compile(
     r"(?i)(?P<prefix>\b(?:user-agent|x-forwarded-for|remote_addr|remote-addr)\s*[:=]\s*)"
     r"(?P<value>[^\r\n]+)"
@@ -356,6 +360,14 @@ def _redact_public_assignments(value: str) -> tuple[str, bool]:
     redacted, count = PUBLIC_ID_ASSIGNMENT_RE.subn(replace, value)
     redacted, delimited_label_count = PUBLIC_ID_DELIMITED_LABEL_RE.subn(replace, redacted)
     redacted, short_label_count = PUBLIC_ID_SHORT_LABEL_RE.subn(replace, redacted)
+    redacted, asset_context_count = PUBLIC_ASSET_CONTEXT_RE.subn(
+        lambda match: (
+            f"{match.group('prefix') or match.group('serial_prefix')}"
+            f"{REDACTED_VALUE}-asset"
+            f"{match.group('suffix') or match.group('serial_suffix')}"
+        ),
+        redacted,
+    )
     # User-Agent values frequently contain spaces and therefore need a
     # remainder-of-line replacement rather than the token-oriented rule above.
     redacted, header_count = PUBLIC_USER_AGENT_RE.subn(
@@ -394,6 +406,7 @@ def _redact_public_assignments(value: str) -> tuple[str, bool]:
         count
         + delimited_label_count
         + short_label_count
+        + asset_context_count
         + header_count
         + quoted_ua_count
         + bare_ua_count

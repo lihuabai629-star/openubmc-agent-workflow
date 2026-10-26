@@ -8,6 +8,7 @@ import pathlib
 import re
 import sys
 import tarfile
+import tempfile
 
 from log_bundle_analysis import (
     DEFAULT_ANALYSIS_MAX_BYTES_PER_FILE,
@@ -243,6 +244,7 @@ def emit_result(
     *,
     json_mode: bool,
     include_sensitive_context: bool = False,
+    output_json: str = "",
 ) -> None:
     location_values, host_values = _collect_disclosure_literals(payload)
     payload = redact_payload_strings(  # type: ignore[assignment]
@@ -251,6 +253,16 @@ def emit_result(
         location_literals=tuple(sorted(location_values, key=len, reverse=True)),
         host_literals=tuple(sorted(host_values, key=len, reverse=True)),
     )
+    if output_json:
+        try:
+            with pathlib.Path(output_json).expanduser().open("x", encoding="utf-8", newline="\n") as output:
+                json.dump(payload, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+        except OSError as exc:
+            raise BundleAnalysisError(
+                "output_write_failed",
+                "Could not create JSON output; choose a new file in an existing writable directory.",
+            ) from exc
     if json_mode:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -421,6 +433,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON 结构化结果。")
     parser.add_argument(
+        "--output-json", default="",
+        help="将成功结果另存为 UTF-8 JSON（无 BOM）；目标须为日志目录之外、已有目录内的新文件。",
+    )
+    parser.add_argument(
         "--include-sensitive-context",
         action="store_true",
         help=(
@@ -526,6 +542,22 @@ def main(argv: list[str] | None = None) -> int:
             include_sensitive_context=args.include_sensitive_context,
         )
         return 1
+    payload = run_request(args)
+    try:
+        emit_result(
+            payload,
+            json_mode=args.json,
+            include_sensitive_context=args.include_sensitive_context,
+            output_json=args.output_json if payload["ok"] else "",
+        )
+    except BundleAnalysisError as exc:
+        payload = {**payload, "ok": False, "code": exc.code, "error": exc.redacted_message}
+        emit_result(payload, json_mode=args.json, include_sensitive_context=args.include_sensitive_context)
+    return 0 if payload["ok"] else 1
+
+
+def run_request(args: argparse.Namespace) -> dict[str, object]:
+    """Analyze validated options without printing or writing the result payload."""
     request = {
         "bundle": args.bundle,
         "bundle_dir": args.bundle_dir,
@@ -577,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
             source_kind = "local_archive"
             archive_sha256 = sha256_file(archive_path)
             extract_parent = pathlib.Path(
-                args.extract_dir or "/tmp/openubmc-log-bundle-analyzer/extract"
+                args.extract_dir or pathlib.Path(tempfile.gettempdir()) / "openubmc-log-bundle-analyzer/extract"
             )
             request["extract_dir"] = str(extract_parent)
             extract_result = extract_archive(archive_path, extract_parent)
@@ -649,6 +681,13 @@ def main(argv: list[str] | None = None) -> int:
                 "The bundle archive changed while it was being validated or analyzed.",
             )
 
+        if args.output_json and pathlib.Path(args.output_json).expanduser().resolve().is_relative_to(
+            extract_result.bundle_root.resolve()
+        ):
+            raise BundleAnalysisError(
+                "output_path_invalid", "JSON output must be outside the input bundle directory.",
+            )
+
         result = {
             "source_kind": source_kind,
             "bundle": {
@@ -661,19 +700,14 @@ def main(argv: list[str] | None = None) -> int:
         }
         if analysis is not None:
             result["analysis"] = analysis
-        emit_result(
-            build_payload(
-                ok=True,
-                code="ok",
-                error="",
-                request=request,
-                result=result,
-                include_sensitive_context=args.include_sensitive_context,
-            ),
-            json_mode=args.json,
+        return build_payload(
+            ok=True,
+            code="ok",
+            error="",
+            request=request,
+            result=result,
             include_sensitive_context=args.include_sensitive_context,
         )
-        return 0
     except BundleAnalysisError as exc:
         partial_result: dict[str, object] = {
             "source_kind": source_kind,
@@ -687,46 +721,36 @@ def main(argv: list[str] | None = None) -> int:
         }
         if analysis is not None:
             partial_result["analysis"] = analysis
-        emit_result(
-            build_payload(
-                ok=False,
-                code=exc.code,
-                error=exc.redacted_message,
-                request=request,
-                result=partial_result,
-                include_sensitive_context=args.include_sensitive_context,
-            ),
-            json_mode=args.json,
+        return build_payload(
+            ok=False,
+            code=exc.code,
+            error=exc.redacted_message,
+            request=request,
+            result=partial_result,
             include_sensitive_context=args.include_sensitive_context,
         )
-        return 1
     except Exception as exc:
         # This is the final CLI boundary.  Library helpers still raise precise
         # exceptions, but an unexpected defect must not escape as a traceback
         # that violates the JSON contract or exposes raw bundle data.
         safe_error, _ = redact_sensitive_text(str(exc))
-        emit_result(
-            build_payload(
-                ok=False,
-                code="runtime_error",
-                error=safe_error,
-                request=request,
-                result={
-                    "source_kind": source_kind,
-                    "bundle": {
-                        "archive_path": str(archive_path) if archive_path else "",
-                        "sha256": archive_sha256,
-                        "extract_dir": str(extract_result.extract_dir) if extract_result else "",
-                        "bundle_root": str(extract_result.bundle_root.resolve()) if extract_result else "",
-                    },
-                    "validation": validation,
+        return build_payload(
+            ok=False,
+            code="runtime_error",
+            error=safe_error,
+            request=request,
+            result={
+                "source_kind": source_kind,
+                "bundle": {
+                    "archive_path": str(archive_path) if archive_path else "",
+                    "sha256": archive_sha256,
+                    "extract_dir": str(extract_result.extract_dir) if extract_result else "",
+                    "bundle_root": str(extract_result.bundle_root.resolve()) if extract_result else "",
                 },
-                include_sensitive_context=args.include_sensitive_context,
-            ),
-            json_mode=args.json,
+                "validation": validation,
+            },
             include_sensitive_context=args.include_sensitive_context,
         )
-        return 1
 
 
 if __name__ == "__main__":

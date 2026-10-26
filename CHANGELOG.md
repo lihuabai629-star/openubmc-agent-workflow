@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.9 (development)
+
+- Offline analysis and bounded evidence reads use shared structured tools through Codex MCP and native DSH adapters on Windows, Linux and WSL. Full redacted JSON remains local while model responses retain coverage limits and failures.
+- Analyzer output uses portable evidence paths and UTF-8 JSON without a BOM; new result files preserve existing files.
+
 ## 2.2.8 (development)
 
 - Upgrade preflight and local Redfish account diagnostics reuse activated target accounts through the Runtime resolver, retaining explicit credential sources and TLS policy.
