@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.13 (development)
+
+- Runtime and KB keep stdio connections while the current parent process identity is verified. Idle expiration remains for unverifiable owners; parent loss, stdin closure and explicit shutdown still drain active requests. Already closed Host connections require an MCP reload.
+
 ## 2.2.12 (development)
 
 - Post-change verification exposes unsupported capabilities or an exhausted three-attempt budget as an Incident with an acceptance gap. Completed mutations and journals remain intact, including after restart and for previously deferred Runs.

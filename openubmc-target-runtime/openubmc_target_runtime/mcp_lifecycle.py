@@ -318,7 +318,7 @@ class McpProcessLifecycle:
             self._write_record(self.status())
 
     def exit_reason_if_due(self) -> str | None:
-        """Expire idle or unattributed processes only after active requests drain."""
+        """Retain a live host connection; expire unowned idle processes after draining."""
 
         with self._lock:
             if self._exit_reason is not None:
@@ -343,6 +343,7 @@ class McpProcessLifecycle:
                 reason = "parent-exited"
             elif (
                 lifecycle_state in {"idle", "unknown-owner"}
+                and not status["parent_identity_currently_verified"]
                 and float(status["idle_seconds"]) >= self.idle_timeout_seconds
             ):
                 reason = "idle-timeout"

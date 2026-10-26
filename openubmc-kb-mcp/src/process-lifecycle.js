@@ -324,7 +324,8 @@ export class McpProcessLifecycle {
     if (this.requestedExitReason !== null) reason = this.requestedExitReason;
     else if (status.lifecycle_state === "orphaned") reason = "parent-exited";
     else if (
-      status.lifecycle_state === "idle"
+      ["idle", "unknown-owner"].includes(status.lifecycle_state)
+      && !status.parent_identity_currently_verified
       && status.idle_seconds >= this.idleTimeoutSeconds
     ) reason = "idle-timeout";
     if (reason === null) {

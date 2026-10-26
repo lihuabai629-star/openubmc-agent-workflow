@@ -162,6 +162,8 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
       OPENUBMC_MCP_CODEX_IDENTITY: JSON.stringify({ version: "codex-cli 0.150.0" }),
       OPENUBMC_MCP_FORMAL_RUN: "1",
       OPENUBMC_MCP_PARENT_PID: String(process.pid),
+      OPENUBMC_MCP_IDLE_TIMEOUT_SECONDS: "0.05",
+      OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS: "0.01",
       OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot,
       OPENUBMC_KB_STATE_PATH: join(dir, "kb-state"),
       OPENUBMC_TARGET_RUNTIME_STATE_DIR: join(dir, "runtime-state")
@@ -170,6 +172,7 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
   const client = new Client({ name: "smoke-test", version: "1.0.0" });
   try {
     await client.connect(transport);
+    await delay(150);
     await client.listTools();
   } finally {
     await client.close();

@@ -128,12 +128,13 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
         )
 
-    def test_unattributed_process_expires_only_after_active_requests_drain(self) -> None:
+    def test_unverifiable_parent_expires_only_after_active_requests_drain(self) -> None:
         for active in (False, True):
             with self.subTest(active=active), tempfile.TemporaryDirectory() as raw:
                 clock = FakeClock()
                 lifecycle = self.make_lifecycle(raw, clock, process_alive=lambda _pid: True,
                                                 client="unknown-client")
+                lifecycle._process_identity = lambda _pid: "unknown"
                 self.assertEqual(lifecycle.status()["lifecycle_state"], "unknown-owner")
                 if active:
                     lifecycle.begin_request()
@@ -145,7 +146,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     clock.monotonic += 301
                 self.assertEqual(lifecycle.exit_reason_if_due(), "idle-timeout")
 
-    def test_idle_timeout_waits_for_the_active_request_to_finish(self) -> None:
+    def test_live_host_connection_remains_usable_after_the_idle_limit(self) -> None:
         clock = FakeClock()
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
@@ -161,12 +162,26 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 self.assertIsNone(lifecycle.exit_reason_if_due())
 
             self.assertEqual(lifecycle.status()["idle_seconds"], 0)
-            clock.monotonic += 30
-            self.assertEqual(lifecycle.exit_reason_if_due(), "idle-timeout")
+            clock.monotonic += 3600
+            self.assertIsNone(lifecycle.exit_reason_if_due())
+            with lifecycle.request():
+                self.assertEqual(lifecycle.status()["active_requests"], 1)
+            lifecycle.request_task_closeout()
+            self.assertEqual(lifecycle.exit_reason_if_due(), "task-closeout")
             recorded = json.loads(lifecycle.record_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(recorded["exit_reason"], "idle-timeout")
+        self.assertEqual(recorded["exit_reason"], "task-closeout")
         self.assertEqual(recorded["active_requests"], 0)
+
+    def test_verified_parent_retains_an_unattributed_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            clock = FakeClock()
+            lifecycle = self.make_lifecycle(raw, clock, process_alive=lambda _pid: True,
+                                            client="unknown-client")
+            clock.monotonic += 3600
+            self.assertIsNone(lifecycle.exit_reason_if_due())
+            with lifecycle.request():
+                self.assertEqual(lifecycle.status()["active_requests"], 1)
 
     def test_status_distinguishes_orphaned_and_unknown_owner_records(self) -> None:
         clock = FakeClock()
@@ -891,7 +906,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     parent_pid=os.getppid(),
                     state_path=root / "state",
                     lifecycle_root=root,
-                    idle_timeout_seconds=30,
+                    idle_timeout_seconds=0.05,
                 )
                 StdioMcpServer(
                     Endpoint(),
@@ -960,6 +975,18 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     {1, 2},
                     "buffered tools/list request waited for stdin EOF",
                 )
+                time.sleep(0.15)
+                self.assertIsNone(child.poll(), "a live stdio host was expired while idle")
+                child.stdin.write(b'{"jsonrpc":"2.0","id":3,"method":"tools/list"}\n')
+                child.stdin.flush()
+                readable, _, _ = select.select([child.stdout], [], [], 1)
+                self.assertTrue(readable, "stdio did not accept a request after idle")
+                response = json.loads(child.stdout.readline())
+                self.assertEqual(response["id"], 3)
+                child.stdin.close()
+                self.assertEqual(child.wait(timeout=5), 0)
+                record = json.loads(next(lifecycle_root.glob("*.json")).read_text())
+                self.assertEqual(record["exit_reason"], "stdin-closed")
             finally:
                 if child.stdin is not None and not child.stdin.closed:
                     child.stdin.close()

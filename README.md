@@ -126,7 +126,7 @@ In short:
 
 ## Immutable releases
 
-The development source version is 2.2.12. The last recorded public Codex plugin release is
+The development source version is 2.2.13. The last recorded public Codex plugin release is
 [2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.

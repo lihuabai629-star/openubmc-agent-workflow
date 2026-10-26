@@ -53,3 +53,10 @@ existing bytecode. The package cache is not a Python `site-packages` directory.
 If integrity verification reports unexpected bytecode or another changed file, restore the
 verified distribution through the plugin installation flow. The integrity check continues
 to reject extra files rather than treating them as trusted executable code.
+
+Runtime and KB stdio connections remain available while their recorded parent
+process identity is still live, including during long model turns or user pauses.
+The idle budget applies only when current ownership cannot be verified. Parent
+loss, closed stdin, explicit closeout and signals still drain accepted requests
+before exit. Installing a new package cannot reconnect a Host channel that
+already closed; the affected Host must reload its MCP connection.

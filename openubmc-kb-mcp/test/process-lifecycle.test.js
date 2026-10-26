@@ -43,8 +43,11 @@ test("records ownership and never expires while a request is active", async () =
     assert.equal(lifecycle.status().lifecycle_state, "active");
     assert.equal(lifecycle.exitReasonIfDue(), null);
   });
-  monotonic += 30;
-  assert.equal(lifecycle.exitReasonIfDue(), "idle-timeout");
+  monotonic += 3600;
+  assert.equal(lifecycle.exitReasonIfDue(), null);
+  await lifecycle.request(async () => {});
+  lifecycle.requestTaskCloseout();
+  assert.equal(lifecycle.exitReasonIfDue(), "task-closeout");
 
   const recorded = JSON.parse(await readFile(lifecycle.recordPath, "utf8"));
   assert.equal(recorded.component, "knowledge-mcp");
@@ -63,7 +66,7 @@ test("records ownership and never expires while a request is active", async () =
   assert.equal(recorded.state_path, join(root, "kb-state"));
   assert.equal(recorded.runtime_state_root, join(root, "runtime-state"));
   assert.equal(recorded.lifecycle_state, "stopped");
-  assert.equal(recorded.exit_reason, "idle-timeout");
+  assert.equal(recorded.exit_reason, "task-closeout");
   assert.match(lifecycle.recordPath, /knowledge-mcp-1201-process-1201-start\.json$/);
 });
 
@@ -110,6 +113,26 @@ test("an unreadable live parent identity remains unknown-owner", async () => {
   assert.equal(lifecycle.status().lifecycle_state, "unknown-owner");
   assert.equal(lifecycle.status().parent_identity_verified, true);
   assert.equal(lifecycle.status().parent_identity_currently_verified, false);
+});
+
+test("an unverified idle owner expires but a verified unknown-client connection remains", async () => {
+  const root = await privateFixtureDirectory("openubmc-mcp-idle-owner-");
+  let monotonic = 100;
+  let parentIdentity = "process-1200-start";
+  const lifecycle = new McpProcessLifecycle({
+    component: "knowledge-mcp", version: "test", client: "unknown-client",
+    taskId: "unknown-task", sessionId: "unknown-session", parentPid: 1200,
+    processId: 1201, statePath: join(root, "state"), lifecycleRoot: join(root, "processes"),
+    idleTimeoutSeconds: 30, monotonicClock: () => monotonic,
+    processAlive: () => true,
+    processIdentity: pid => pid === 1200 ? parentIdentity : "process-1201-start"
+  });
+  monotonic += 3600;
+  assert.equal(lifecycle.exitReasonIfDue(), null);
+  await lifecycle.request(async () => {});
+  parentIdentity = "unknown";
+  monotonic += 31;
+  assert.equal(lifecycle.exitReasonIfDue(), "idle-timeout");
 });
 
 test("startup ownership stays unknown until parent identity is verified", async () => {
