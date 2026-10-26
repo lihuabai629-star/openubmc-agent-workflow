@@ -249,10 +249,22 @@ class NativePluginSkillEntryTests(unittest.TestCase):
             self.assertEqual(len(hooks), 3)
             # Authorize only this verified fixture's exact Hook hashes. Keep
             # normal Host trust enforcement active during the native test.
-            trusted = "{" + ", ".join(
-                json.dumps(hook["key"]) + " = { trusted_hash = " + json.dumps(hook["currentHash"]) + " }"
-                for hook in hooks
-            ) + "}"
+            trusted_entries = []
+            for hook in hooks:
+                # Newer Hosts expose command/content digests joined by '/'.
+                # Bind both fields; older Hosts expose only the command digest.
+                hashes = hook["currentHash"].split("/")
+                self.assertIn(len(hashes), (1, 2))
+                for digest in hashes:
+                    self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+                fields = ", ".join(
+                    name + " = " + json.dumps(digest)
+                    for name, digest in zip(
+                        ("trusted_hash", "trusted_content_hash"), hashes
+                    )
+                )
+                trusted_entries.append(json.dumps(hook["key"]) + " = { " + fields + " }")
+            trusted = "{" + ", ".join(trusted_entries) + "}"
             observed = []
 
             class Handler(http.server.BaseHTTPRequestHandler):
