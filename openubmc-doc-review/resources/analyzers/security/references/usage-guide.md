@@ -119,10 +119,10 @@ flowchart TD
 
 | 配合Skill | 场景 |
 |-----------|------|
-| [doc-quality-auditor-human](../doc-quality-auditor-human/SKILL.md) | 安全检查通过后，检查人阅读体验质量 |
-| [doc-quality-auditor](../doc-quality-auditor/SKILL.md) | 安全检查通过后，检查GEO/SEO质量 |
-| [doc-typo-tester](../doc-typo-tester/SKILL.md) | 安全检查通过后，检查中文错别字 |
-| [doc-spelling-tester](../doc-spelling-tester/SKILL.md) | 安全检查通过后，检查英文拼写 |
+| 人阅读体验分析 | 安全检查通过后，检查人阅读体验质量 |
+| 内容质量分析 | 安全检查通过后，检查GEO/SEO质量 |
+| [中文错别字分析](../../typo/references/usage-guide.md) | 安全检查通过后，检查中文错别字 |
+| 英文拼写分析 | 安全检查通过后，检查英文拼写 |
 
 ### 建议检查顺序
 

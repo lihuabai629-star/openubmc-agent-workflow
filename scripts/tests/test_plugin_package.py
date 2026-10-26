@@ -67,10 +67,21 @@ class PluginPackageTests(unittest.TestCase):
                 ('SKILL.md', '../../skills/openubmc-debug/references/skill-routing.md'),
                 ('references/completeness-checks.md', '../../../skills/openubmc-developer/references/interface-coverage.md'),
                 ('references/handoff-contract.md', '../../../skills/openubmc-debug/references/agent-gateway.md'),
+                ('resources/analyzers/security/references/usage-guide.md', '../../typo/references/usage-guide.md'),
+                ('resources/analyzers/typo/references/common-homophones.md', './rules-complete.md'),
             ):
                 text = (optional/document).read_text()
                 self.assertIn(']('+link+')', text)
                 self.assertTrue(((optional/document).parent/link).is_file())
+            arguments = base/'original-cli-arguments.json'
+            arguments.write_text('{}', encoding='utf-8')
+            reconcile = subprocess.run([
+                sys.executable, '-I', str(plugin/'skills/openubmc-live-patch/scripts/runtime_cli.py'),
+                'reconcile', '--task-id', 'missing-cli-task', '--operation-id', 'missing-cli-operation',
+                '--arguments-file', str(arguments), '--state-dir', str(base/'cli-state'),
+            ], cwd=base, capture_output=True, text=True, timeout=15)
+            self.assertEqual(reconcile.returncode, 1, reconcile.stderr)
+            self.assertIn('no durable mutation journal', json.loads(reconcile.stdout)['error'])
             for document in ('workflow-guide.md', 'handoff-contract.md'):
                 text = (optional/'references'/document).read_text()
                 for retired in ('workflow.next', 'workflow.advance', 'phase_record_contract'):

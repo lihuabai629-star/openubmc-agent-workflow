@@ -67,9 +67,18 @@ Keep the Live Patch operation in that Run; never replay Apply, create a new oper
 new journal merely because the transport disconnected. A terminal MutationJournal receipt, target
 epoch advance, and fresh verification are recorded by the Runtime; do not duplicate them.
 
-If the mutation outcome is unknown, stop automatic resume and call
-`execute(kind=control, command=reconcile)` for the same durable
-journal explicitly. This is not a request for another Apply confirmation. Automatic recovery may
+If a public Run's mutation outcome is unknown, stop automatic resume and call
+`execute(kind=control, command=reconcile)` with that Run's `run_id` and Effect identity.
+Direct CLI journals are separate: their `live-patch-cli-*` task IDs are not public Run IDs.
+For a direct CLI failure, use `scripts/runtime_cli.py reconcile --task-id <journal.task_id>
+--operation-id <journal.operation_id> --arguments-file <private-original-arguments.json>`
+with the original state directory (`--state-dir` if overridden). The JSON object contains the
+original Runtime mutation arguments, including target, paths, selectors and restart scope;
+resolve credentials locally. This entry checks the existing journal and inspects/verifies only:
+it never starts Apply, uploads, restores/removes a file, or restarts the target. Missing journals or
+changed operation parameters fail without mutation. Apply recovery pins the original journal
+checksum even if the local file changed or was deleted. A `replan` result remains a gap and does
+not authorize re-application. This is not a request for another Apply confirmation. Automatic recovery may
 execute rollback only when the Case carries the distinct rollback authorization. Otherwise preserve
 the original operation as `recovery_blocked`. A later explicit rollback intent is necessary but is
 not by itself proof that recovery ran; keep the Run blocked until a recovery-capable path

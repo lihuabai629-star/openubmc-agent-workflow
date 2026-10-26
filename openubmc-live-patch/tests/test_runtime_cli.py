@@ -5,12 +5,15 @@ import gzip
 import hashlib
 from pathlib import Path
 import re
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SKILL_SCRIPTS = REPO_ROOT / "openubmc-live-patch" / "scripts"
 sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch" / "scripts"))
@@ -20,6 +23,7 @@ from openubmc_live_patch.runtime_backend import LivePatchMcpBackend  # noqa: E40
 from runtime_cli import (  # type: ignore  # noqa: E402
     RuntimeMutationFailed,
     run_runtime_mutation,
+    reconcile_runtime_mutation,
 )
 
 
@@ -199,6 +203,35 @@ class FakeTelnetTransport:
         return None
 
 
+class ReconciliationTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, *, fail_at: str = "verify") -> None:
+        super().__init__(digest)
+        self.fail_next_verification = True
+        self.fail_at = fail_at
+
+    def run_command(self, session, command: str, **kwargs):
+        if "verify_sha256" in command and self.fail_next_verification and self.fail_at == "verify":
+            self.commands.append(command)
+            self.fail_next_verification = False
+            raise OSError("verification connection lost after mutation")
+        if "live_patch_recovery_inspected" in command or "backup_exists" in command:
+            self.commands.append(command)
+            stdout = (
+                f"remote_sha256={self.digest}\nremote_mode={self.current_mode}\n"
+                f"remote_uid={self.current_uid}\nremote_gid={self.current_gid}\n"
+                "remote_exists\nlive_patch_recovery_inspected"
+                if "live_patch_recovery_inspected" in command else
+                f"backup_sha256={self.digest}\nbackup_mode=440\nbackup_uid=104\nbackup_gid=104\nbackup_exists"
+            )
+            return TelnetCommandResult(stdout=stdout, returncode=0, framing_complete=True,
+                                       timed_out=False, connection_closed=False, raw=stdout.encode())
+        result = super().run_command(session, command, **kwargs)
+        if "p=r;" in command and self.fail_next_verification and self.fail_at == "restore":
+            self.fail_next_verification = False
+            raise OSError("restore completed but response lost")
+        return result
+
+
 class LivePatchRuntimeCliTests(unittest.TestCase):
     def backend_factory(self, ssh, telnet):
         return lambda store: LivePatchMcpBackend(
@@ -210,6 +243,108 @@ class LivePatchRuntimeCliTests(unittest.TestCase):
             ssh_transport_factory=lambda _arguments: ssh,
             telnet_transport_factory=lambda _arguments: telnet,
         )
+
+    def test_reconcile_without_journal_never_opens_a_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(ValueError, "no durable mutation journal"):
+                reconcile_runtime_mutation(
+                    {}, task_id="missing-task", operation_id="missing-operation",
+                    state_dir=Path(raw),
+                    backend_factory=lambda _store: self.fail("missing journal opened a backend"),
+                )
+
+    def test_reconcile_cli_without_journal_refuses_before_target_access(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            arguments = root / "arguments.json"
+            arguments.write_text("{}", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SKILL_SCRIPTS / "runtime_cli.py"), "reconcile",
+                 "--task-id", "missing-task", "--operation-id", "missing-operation",
+                 "--arguments-file", str(arguments), "--state-dir", str(root / "state")],
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["identity_kind"], "cli-mutation-journal")
+            self.assertIn("no durable mutation journal", payload["error"])
+            self.assertEqual(list((root / "state/mutations").glob("*.json")), [])
+
+    def test_apply_reconcile_keeps_original_identity_when_local_file_changes_or_disappears(self) -> None:
+        for deleted in (False, True):
+            with self.subTest(deleted=deleted), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                local = root / "unit.lua"
+                local.write_text("return true\n", encoding="utf-8")
+                digest = hashlib.sha256(local.read_bytes()).hexdigest()
+                ssh = FakeSshTransport()
+                telnet = ReconciliationTelnetTransport(digest)
+                arguments = {"action": "apply", "intent": "diagnose-and-fix", "delivery_strategy": "live-patch",
+                             "ip": "bmc.example", "local_path": str(local),
+                             "remote_path": "/opt/bmc/apps/demo/unit.lua", "restart_scope": "none",
+                             "deadline": TEST_DEADLINE_SECONDS}
+                with self.assertRaises(RuntimeMutationFailed) as failed:
+                    run_runtime_mutation(arguments, state_dir=root / "state",
+                                         backend_factory=self.backend_factory(ssh, telnet))
+                journal = failed.exception.journal
+                if deleted:
+                    local.unlink()
+                else:
+                    local.write_text("return false\n", encoding="utf-8")
+                before = len(telnet.commands)
+                with self.assertRaisesRegex(ValueError, "original journal identity"):
+                    reconcile_runtime_mutation(
+                        {**arguments, "remote_path": "/opt/bmc/apps/demo/other.lua"},
+                        task_id=journal["task_id"], operation_id=journal["operation_id"],
+                        state_dir=root / "state",
+                        backend_factory=lambda _store: self.fail("changed parameters opened a backend"),
+                    )
+                recovered = reconcile_runtime_mutation(
+                    arguments, task_id=journal["task_id"], operation_id=journal["operation_id"],
+                    state_dir=root / "state", backend_factory=self.backend_factory(ssh, telnet),
+                )
+                self.assertEqual(recovered["journal"]["stage"], "verified")
+                self.assertEqual(recovered["operation_id"], journal["operation_id"])
+                self.assertEqual(recovered["journal"]["expected_checksum"], digest)
+                self.assertEqual(len(ssh.uploads), 1)
+                self.assert_reconciliation_reads_only(telnet.commands[before:])
+
+    def test_rollback_reconcile_retains_empty_local_identity_and_never_restores_again(self) -> None:
+        for fail_at in ("verify", "restore"):
+            with self.subTest(fail_at=fail_at):
+                self.check_rollback_reconciliation(fail_at)
+
+    def check_rollback_reconciliation(self, fail_at: str) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ssh = FakeSshTransport()
+            telnet = ReconciliationTelnetTransport("b" * 64, fail_at=fail_at)
+            arguments = {"action": "rollback", "ip": "bmc.example",
+                         "backup_path": "/tmp/unit.lua.bak.1", "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                         "restart_scope": "none", "deadline": TEST_DEADLINE_SECONDS}
+            with self.assertRaises(RuntimeMutationFailed) as failed:
+                run_runtime_mutation(arguments, state_dir=root / "state",
+                                     backend_factory=self.backend_factory(ssh, telnet))
+            journal = failed.exception.journal
+            self.assertEqual(journal["expected_checksum"], "b" * 64)
+            self.assertEqual(journal["stage"], "verification_failed" if fail_at == "verify" else "mutation_failed")
+            before = len(telnet.commands)
+            recovered = reconcile_runtime_mutation(
+                arguments, task_id=journal["task_id"], operation_id=journal["operation_id"],
+                state_dir=root / "state", backend_factory=self.backend_factory(ssh, telnet),
+            )
+            self.assertEqual(recovered["journal"]["stage"], "verified")
+            self.assertEqual(recovered["operation_id"], journal["operation_id"])
+            self.assertEqual(ssh.uploads, [])
+            self.assert_reconciliation_reads_only(telnet.commands[before:])
+
+    def assert_reconciliation_reads_only(self, commands: list[str]) -> None:
+        self.assertTrue(any("live_patch_recovery_inspected" in command for command in commands))
+        for command in commands:
+            self.assertNotIn("p=i;", command)
+            self.assertNotIn("p=r;", command)
+            self.assertNotIn("restart_ok", command)
+            self.assertNotIn("mount -o remount", command)
 
     def test_apply_retry_uses_deterministic_identity_and_durable_journal(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -274,6 +409,15 @@ class LivePatchRuntimeCliTests(unittest.TestCase):
             self.assertEqual(ssh.uploads, [])
 
             telnet.path_guard_ok = True
+            inspected = reconcile_runtime_mutation(
+                arguments,
+                task_id=captured.exception.journal["task_id"],
+                operation_id=captured.exception.operation_id,
+                state_dir=root / "state",
+                backend_factory=self.backend_factory(ssh, telnet),
+            )
+            self.assertEqual(inspected["journal"]["stage"], "replan_required")
+            self.assertEqual(ssh.uploads, [])
             retried = run_runtime_mutation(
                 arguments,
                 state_dir=root / "state",

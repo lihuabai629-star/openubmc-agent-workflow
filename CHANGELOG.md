@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.14 (development)
+
+- Direct Live Patch CLI journals have an explicit reconcile-only command with the original task and operation IDs. Recovery pins the original artifact identity and refuses missing or mismatched journals without a new mutation; CLI task IDs remain separate from public Runs.
+- Documentation review analyzer references resolve to bundled resources instead of removed peer Skill entries.
+
 ## 2.2.13 (development)
 
 - Runtime and KB keep stdio connections while the current parent process identity is verified. Idle expiration remains for unverifiable owners; parent loss, stdin closure and explicit shutdown still drain active requests. Already closed Host connections require an MCP reload.

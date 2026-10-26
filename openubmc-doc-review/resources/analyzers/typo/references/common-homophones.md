@@ -2,7 +2,7 @@
 
 本文件为 `doc-typo-tester` skill 的参考文件，按拼音字母顺序排列，便于快速查找。
 
-> **注意**：完整对照表以 [SKILL.md](../SKILL.md) 为准。本文件为辅助速查，可能不同步更新。新增对照项请同时查看以下文件：
+> **注意**：完整对照表以 [检查规则](./rules-complete.md) 为准。本文件为辅助速查，可能不同步更新。新增对照项请同时查看以下文件：
 > - [pinyin-errors.md](./pinyin-errors.md) — 拼音输入错误（Rule 6.2）
 > - [tech-terms.md](./tech-terms.md) — 技术术语（Rule 7.2）
 > - [confusing-words.md](./confusing-words.md) — 易混词（Rule 4.x）
