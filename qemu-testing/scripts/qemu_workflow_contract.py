@@ -252,7 +252,7 @@ def validate_plan(
         "launcher.authorization_enforcement",
     )
     mode = _text(enforcement.get("mode"), "launcher.authorization_enforcement.mode")
-    if mode not in {"repository_launcher", "reviewed_wrapper", "read_only_blocked"}:
+    if mode not in {"repository_launcher", "reviewed_wrapper", "task_command", "read_only_blocked"}:
         raise ContractError("unsupported launcher authorization enforcement mode")
     if mode != "read_only_blocked":
         _text(enforcement.get("seam"), "launcher.authorization_enforcement.seam")
@@ -371,8 +371,10 @@ def validate_plan(
         if missing:
             raise ContractError("full-x86 verification omits checks: " + ", ".join(missing))
     tls_mode = _text(verification.get("tls_mode"), "verification.tls_mode")
-    if tls_mode not in TLS_MODES and not (weaken_intent and weaken_authorized
-                                          and tls_mode == "weakened_authorized"):
+    tls_required = bool(set(required_smoke) & {"web", "redfish"})
+    if (tls_mode not in TLS_MODES
+            and not (not tls_required and tls_mode == "not_applicable")
+            and not (weaken_intent and weaken_authorized and tls_mode == "weakened_authorized")):
         raise ContractError("verification.tls_mode is not a trusted verification mode")
     not_before = _timestamp(verification.get("not_before"), "verification.not_before")
     if not_before > now:
@@ -415,12 +417,14 @@ def validate_plan(
         raise ContractError("full QEMU smoke requires at least 120 seconds of stability observation")
     if scenario == "daily-development":
         baseline = _mapping(plan.get("baseline"), "baseline")
-        if baseline.get("expected_state") != "healthy":
-            raise ContractError("daily-development requires a healthy baseline")
         if baseline.get("fault_injection") not in {"disabled", "after-baseline"}:
             raise ContractError(
                 "daily-development fault injection must be disabled or after-baseline"
             )
+        baseline_required = profile == "full-x86" or baseline.get("fault_injection") == "after-baseline"
+        allowed_baselines = {"healthy"} if baseline_required else {"healthy", "not_requested"}
+        if baseline.get("expected_state") not in allowed_baselines:
+            raise ContractError("requested full acceptance or fault injection requires a healthy baseline")
 
     return {
         "schema": PLAN_SCHEMA,
@@ -587,7 +591,8 @@ def validate_result(
             raise ContractError("guest boot identity changed during stability observation")
         if stability_layer.get("service_identities_unchanged") is not True:
             raise ContractError("service identities changed during stability observation")
-    if guest_passed and plan.get("scenario") == "daily-development":
+    if (guest_passed and plan.get("scenario") == "daily-development"
+            and plan.get("baseline", {}).get("expected_state") == "healthy"):
         baseline = _mapping(result.get("baseline"), "result.baseline")
         _text(baseline.get("status"), "result.baseline.status")
         if status == "completed" and baseline.get("status") != "healthy":

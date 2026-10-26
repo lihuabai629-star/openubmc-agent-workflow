@@ -166,6 +166,12 @@ Use this entry for explicit account changes or a required account that Runtime r
 target-specific authentication evidence proves unusable. Diagnose source conflicts before editing;
 network, TLS, permission and business errors remain with the task owner. Reuse working accounts.
 
+When the user already supplied an account for the authorized target and purpose, follow
+[Credentials supplied for an authorized task](../docs/credential-exposure-response.md#credentials-supplied-for-an-authorized-task)
+and continue directly. A missing saved record does not require repeated entry or rotation.
+Use the page below for missing input, the user's chosen entry method, or an unavailable
+private local input path.
+
 For interactive account setup, launch the bundled local page and show its printed session URL:
 
 ~~~bash
@@ -175,8 +181,16 @@ python3 -B <skills-repository>/openubmc-environment-setup/scripts/config_page.py
 For a specific IP supplied during a task, add `--focus-target <IP> --purpose bmc|os --transport ssh|redfish`.
 Point the user to **连接并记住这台设备** on the page. The user enters the account in the browser;
 the page verifies the selected IP and saves an active IP override only after success. A failed
-connection or configuration conflict leaves the existing active account in place. Never copy a
-chat-pasted password into a command or tool argument; follow the credential exposure response.
+connection or configuration conflict leaves the existing active account in place. Keep values
+in private local input; command text and tool arguments contain only non-secret references.
+
+BMC checks follow internal Runtime transport defaults; they do not require
+certificate qualification before remembering an authenticated account. OS SSH
+retains strict host-key verification. Add `--strict-checks` only when that
+qualification is requested. The receipt's `transport_verification` distinguishes
+authentication success from certificate/host-key verification.
+Carry an already selected SSH policy with `--ssh-host-key-policy`; this also
+supports authorized OS tests without adding another host-key confirmation.
 
 For an OS console account without an OS IP, focus the BMC with `--purpose bmc`.
 In the device row, enable the separate OS account and leave the associated OS IP empty.
@@ -342,8 +356,8 @@ source, Runtime, and credential-preservation state; check retains its detailed r
 - `credentials` changes only the private credential file.
 - If a credential may have appeared in a task, process, Runtime record, or log,
   follow [Credential exposure response](../docs/credential-exposure-response.md).
-  Rotate it at its owning authority and never paste the old value into chat or a
-  command to prove exposure.
+  Authorized task use follows that runbook's supplied-account path; rotation is
+  a separate account-authority action. Keep the old value out of chat and commands.
 - `uninstall` removes only installer-owned configuration and preserves the
   credentials file.
 - Add `--purge-credentials` to an explicit uninstall only when the private file

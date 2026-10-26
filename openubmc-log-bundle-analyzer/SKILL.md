@@ -5,7 +5,7 @@ description: Validate and analyze local openUBMC one-click log bundles with boun
 
 # openUBMC local log bundle analysis
 
-Analyze a supplied local `.tar`/`.tar.gz` or extracted `dump_info` tree. Require a problem statement except for explicit `--validate-only` checks. This Skill opens no network connection. Remote collection and live investigation require their own available workflow owners.
+Analyze a supplied local `.tar`/`.tar.gz` or extracted `dump_info` tree. Reuse the task's problem statement; for a general request to inspect a bundle, use that inspection intent as `problem` and begin a broad scan without asking for a narrower symptom. This Skill opens no network connection. Remote collection and live investigation require their own available workflow owners.
 
 Prefer `openubmc_analyze_bundle` for analysis and `openubmc_read_evidence` for original file-and-line verification. Codex prefixes both names with `mcp__openubmc-offline__` and requires absolute input/output directory paths; native DSH uses the unprefixed names and resolves relative paths from the Session directory. Read the returned scan limits and errors before drawing conclusions. Full redacted JSON is saved at `artifact`.
 

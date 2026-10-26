@@ -1,5 +1,31 @@
 # openUBMC workflow entry and phase handoff
 
+## Continue authorized work
+
+Carry the user's established scope and decisions across turns and owners. Fill
+routine CLI switches, authorization fields, Plans and Gate responses from that
+scope yourself; they are internal bookkeeping, not new user approval steps.
+Choose ordinary implementation details, focused checks and reversible isolation
+without an extra confirmation. An authorized multi-stage task continues through
+its remaining stages without asking the user to authorize each stage again.
+
+Run only checks that affect the requested result. Reuse evidence until its input
+or relevant target state changes. Optional KB, telemetry, certificate/signature
+qualification, broad smoke suites and release-only provenance are not prerequisites
+for ordinary development or a task that did not request those assurances. Record
+unavailable checks as gaps, continue independent work and state the actual result.
+Honor an established transport policy without asking again or describing a
+connection with verification disabled as certificate/host-key verification.
+
+Before pausing, inspect local sources and available evidence and try the smallest
+in-scope remedy. Pause only for necessary missing input, a materially ambiguous
+target/action, a genuine concurrent-write conflict, or an action outside the
+established authorization. An unknown prior mutation outcome blocks only actions
+that could replay or conflict with it; reconcile its existing journal while
+continuing independent work. Preserve target/artifact identity, credentials in
+private input, other users' state and truthful acceptance results. User-mandated
+public-message confirmation and platform-enforced requirements still apply.
+
 Use this reference for an openUBMC task's first workflow action, a change of
 deliverable, or continuation after compaction. Select by the user's current
 request and fresh Runtime Gate or Incident. A log excerpt, historical session,

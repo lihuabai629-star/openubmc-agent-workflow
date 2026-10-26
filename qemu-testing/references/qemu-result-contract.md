@@ -65,14 +65,21 @@ launcher and QEMU acceptance. Paths are absolute. File identities contain
 ```
 
 `launcher.authorization_enforcement.mode=read_only_blocked` is valid only for a
-plan without `launch` or `stop`. Non-loopback ports and weakened verification
+plan without `launch` or `stop`. `task_command` records the agent's scoped
+command-boundary review and needs no separate wrapper. Intent and authorization
+fields are filled from the same established task decisions, not separate user
+approval steps. Non-loopback ports and weakened verification
 each need matching intent and authorization. Full smoke has a minimum 120-second
 stability window. An authorized weakened plan additionally records
 `verification.weakened_scope`, a future RFC3339 `verification.expires_at`, the
 exact `verification.weakened_checks`, and a non-empty
 `verification.recovery_steps`; its smoke rows use `weakened_authorized`.
 For a narrow requested probe, select `verification.profile=targeted` and list
-only the requested checks. Full x86 acceptance requires every check shown above.
+only the requested checks. If these exclude Web/Redfish, `tls_mode=not_applicable`
+is accepted without a certificate check. A targeted probe without fault injection
+can use `baseline={"expected_state":"not_requested","fault_injection":"disabled"}`;
+it does not require an unrelated healthy-device/active-alarm baseline. Full x86
+acceptance and fault injection retain their requested healthy baseline.
 
 ## Result
 

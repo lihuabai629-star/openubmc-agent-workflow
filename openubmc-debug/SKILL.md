@@ -27,6 +27,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 - For service failures, use a `systemd` selector with literal `.service` names or `["failed"]`.
 - For an authorized OS task with BMC IP and no OS IP, select `os_console`; see its reference below.
 - Call `observe` for an exact read-only question using only required selectors.
+  Use the established target and credentials. Internal Gate response fields are
+  filled by the Agent from evidence; they are not requests for human approval.
   A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.
 - Combine capability, MDB, systemd and OS-console selectors in the same `observe` call.
@@ -47,7 +49,9 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   persisted evidence; do not restate or invent them.
 - `execute(kind=resume)` only reattaches the current Run. It does not answer or repair an
   unanswered diagnosis Gate, so an unchanged Gate is not a reason to retry resume. Mark the Gate
-  failed or cancelled when no defensible diagnosis can be formed; development must remain closed.
+  failed or cancelled when no defensible diagnosis can be formed; that Run cannot
+  claim an accepted diagnosis. Continue independent authorized source inspection
+  and checks while preserving the diagnostic gap.
   `response_required=true` with `progress.status=no_progress` means respond using the returned
   binding instead of issuing another resume.
 - For `completed`, `failed`, or `cancelled`, deliver the Outcome and remaining gaps.
@@ -147,8 +151,9 @@ business acceptance.
 
 ## Read-only invariants
 
-- Keep all remote actions read-only in diagnostic helpers and `observe`. Diagnostic SSH uses
-  `insecure`; the typed property workflow requires strict host verification.
+- Keep all remote actions read-only in diagnostic helpers and `observe`. BMC SSH
+  and the typed property workflow reuse the configured host-key policy; no extra
+  strict-host prerequisite is added for an already authorized property assignment.
 - Bound object trees, logs, files, source searches, deadlines, and output. Preserve timestamps and
   relevant excerpts.
 - Treat current alarm reads as current state and historical event APIs as history.

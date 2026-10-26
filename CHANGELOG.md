@@ -2,6 +2,9 @@
 
 ## 2.2.10 (development)
 
+- Supplied task credentials use private local input without repeated entry. BMC account checks and typed property assignments reuse the selected transport policy; strict certificate/host-key qualification remains optional.
+- Routine validation can run directly; targeted QEMU checks use scoped commands without requiring a wrapper, TLS qualification or a full healthy-device baseline. Missing optional checks remain visible as gaps.
+- Existing HPM identity checks report release-provenance labels as warnings while preserving digest, size and product-version conflicts.
 - Authorized OS identity and network observations can use BMC SSH and native SOL when no OS IP is available. BMC and OS accounts remain separate; busy consoles are left untouched and owned logins are closed after collection.
 - The configuration page accepts an OS console account without an OS IP. Linux/WSL packages include the pinned SOL transport dependencies.
 - WebUI upgrade rejection diagnostics retain the endpoint and bounded, redacted server error codes and messages.

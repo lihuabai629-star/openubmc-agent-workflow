@@ -86,6 +86,10 @@ with the supplied profile, submit the typed outcome through `phase_record`, then
 call `workflow.next` again in the same turn. Do not create a separate review
 state or ask the user to restate the scope.
 
+Enter a documentation Gate only when that review is part of the requested release
+workflow. Optional review findings or missing product-validation environments do
+not create a new prerequisite for source work, builds or unrelated delivery.
+
 A passing review records `status=completed` and verdict `pass` or
 `pass_with_warnings`. A release-blocking or materially incomplete review records
 `status=failed` with verdict `fail` or `incomplete`; this stops downstream

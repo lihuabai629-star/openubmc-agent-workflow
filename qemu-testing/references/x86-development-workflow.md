@@ -30,6 +30,10 @@ index and identities.
 
 Classify the requested result before collecting inputs:
 
+For ordinary launch or focused debugging, use targeted checks and disable fault
+injection. A full healthy-device/alarm baseline is needed only for requested
+full acceptance or fault injection; targeted plans may mark it `not_requested`.
+
 | Scenario | Baseline | Additional acceptance |
 | --- | --- | --- |
 | `daily-development` | All expected devices and services healthy | Inject faults only after the healthy baseline and only when requested |
@@ -69,9 +73,10 @@ Create one `openubmc-qemu-workflow-plan/v1` document following
 input identities, a task-scoped runtime root, port plan, requested smoke checks,
 verification mode, normalized intent and matching authorization.
 
-Validate it before any process or network mutation. This checks the data and
-current inputs; execution still needs the repository launcher or wrapper's
-enforceable authorization boundary:
+Validate it before process or network mutation. The Agent fills internal fields
+from the established task, using `task_command` for ordinary scoped commands or
+an existing launcher/wrapper boundary. Do not request a new approval for that
+bookkeeping. Choose targeted verification unless full acceptance was requested:
 
 ```bash
 python3 <qemu-skill>/scripts/qemu_workflow_contract.py validate-plan <plan.json>

@@ -48,8 +48,9 @@ password variables or replace them with ad hoc legacy parsing. Explicit per-oper
 retain their legacy source family and should be used only when that account selection is intended.
 
 For a Runtime-resolved missing required account or confirmed target/account authentication
-rejection needing an account update, follow `openubmc-environment-setup` to launch
-the focused configuration page, present its session link and await its secret-free completion
+rejection needing an account update, follow `openubmc-environment-setup`. Reuse
+an account already supplied for that authorized scope through its private local
+input path; when needed, launch the focused page, present its session link and await its secret-free completion
 event before continuing the authorized task. Do not require the user to launch it or announce
 completion. Diagnose invalid or conflicting sources before changing them. Network, TLS, permission
 and business errors stay in Debug. For an authorized OS task without an explicit address, consult
@@ -63,17 +64,14 @@ lookup establishes neither remote authentication nor authority for a target muta
 
 ## Transport security and local dependencies
 
-Distinguish the configured Redfish transport from the strict configuration checker. Historical
-internal BMC transport bindings may permit insecure TLS; the configuration checker's Redfish
-connection verifies certificates. Preserve the selected check policy: a strict-check failure
-remains unverified. Never silently retry that check with `verify=False`, an insecure TLS option,
-or another credential record. Correct certificate trust or the matching endpoint before retrying
-the strict check.
-
-An existing explicit authorization for insecure transport can be reused within its original
-scope without another confirmation. Report that transport's actual result with certificate
-verification disabled; it does not qualify certificate validation or replace a failed strict
-check. A historical transport default does not broaden a task's explicit validation boundary.
+Configuration checks follow the internal Runtime's BMC transport policy; Setup's
+`--strict-checks` opts into certificate/host-key qualification. OS SSH retains
+strict host-key verification. Reuse established insecure-transport authorization
+within its original scope without another confirmation. Record connection and
+authentication results with the actual transport policy; verification disabled
+does not establish certificate trust. A failed optional trust check does not
+block other authorized observations or require an account edit. An explicitly
+requested strict check keeps its failure rather than retrying a weaker policy.
 
 SSH-backed lanes require the local `ssh` executable. `sshpass` is conditional on password
 authentication; key/agent authentication does not need it. `rg` is conditional on local source
@@ -252,7 +250,7 @@ upgrade, or rollback authorizes that named mutation and is projected onto intern
 second confirmation. Apply or upgrade authorization never implies rollback. The selected TLS
 policy and the Live Patch exceptions `force_path`, `no_backup`, and `no_remount` are frozen task
 facts. Reuse matching authorization only within its original scope; the transport-security rules
-above keep strict checks distinct from historical insecure transport. Live Patch exceptions remain
+above distinguish authentication from optional strict qualification. Live Patch exceptions remain
 explicit. Stop automatic advancement when a mutation outcome is unknown, or when recovery requires
 a rollback that was not separately authorized.
 

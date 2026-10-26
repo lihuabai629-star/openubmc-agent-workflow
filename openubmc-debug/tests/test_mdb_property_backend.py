@@ -77,6 +77,20 @@ class Transport:
 
 
 class MdbPropertyBackendTests(unittest.TestCase):
+    def test_property_binding_reuses_bmc_transport_policy_without_an_extra_strict_gate(self):
+        import os
+        self.backend.transport_factory = None
+        for selected in ("insecure", "strict"):
+            with self.subTest(policy=selected), patch.dict(os.environ, {"OPENUBMC_SSH_HOST_KEY_POLICY": selected}):
+                task = self.backend.open_task("property-policy-" + selected)
+                try:
+                    with patch.object(backend, "OpenSshControlMasterTransport", return_value=self.transport) as constructor:
+                        binding = self.backend.binding(task, self.arguments, self.contract)
+                    self.assertEqual(binding.target.policy.ssh_host_key_policy, selected)
+                    self.assertEqual(constructor.call_args.kwargs["host_key_policy"], selected)
+                finally:
+                    self.backend.close_task(task)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

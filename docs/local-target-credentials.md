@@ -126,6 +126,8 @@ of authentication and does not trigger saving. Standalone library users can inje
 `VerifiedCredentialMemory` into `RuntimeMcpService`; it is not a global side effect.
 
 If a credential may have entered a task transcript, process, Runtime record, or
-log, follow [Credential exposure response](credential-exposure-response.md). The
-response rotates the identity at its owning authority and activates a new private
-revision without sending the value through the Agent Interface.
+log, follow [Credential exposure response](credential-exposure-response.md).
+For an account the user has already supplied for an authorized task, use its
+[supplied-account path](credential-exposure-response.md#credentials-supplied-for-an-authorized-task)
+without repeated entry. Rotation remains a separate action at the account's
+owning authority; replacement values stay outside the Agent Interface.

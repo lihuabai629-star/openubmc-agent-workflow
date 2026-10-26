@@ -88,6 +88,12 @@ An exact IP override selects a complete record; authentication failure never fal
 
 ### Change or check an account
 
+If the user has already supplied an account for the authorized target and purpose,
+follow [Credentials supplied for an authorized task](references/credential-exposure-response.md#credentials-supplied-for-an-authorized-task)
+and continue directly. A missing saved record does not require repeated entry or
+rotation. Use the page below when the required input is missing, the user chooses
+it, or private local handling of the supplied account is unavailable.
+
 Open the focused page for an explicit account change, a Runtime-resolved missing required account,
 or a confirmed authentication rejection for the selected target/account that needs replacement.
 Explain the specific reason and start the page yourself. Reuse working accounts without a page.
@@ -98,18 +104,19 @@ dependency failures stay with Build; only a confirmed account update uses this p
 When a task has a target IP and the user wants its account remembered after a successful connection,
 start the targets page with `--focus-target <IP> --purpose bmc|os --transport ssh|redfish --wait-for-save`.
 Show the page URL and direct the user to **连接并记住这台设备**. The user enters the username and password
-there and explicitly starts a strict connection check. Only a verified connection creates an active
+there and starts a connection check using the task's transport policy. Only a successful connection creates an active
 IP-specific credential; a rejected check or concurrent configuration edit leaves the active account
 unchanged. The completion event is secret-free and subsequent Runtime requests use the newly active
 revision. A verified SSH scope does not verify Redfish, and a BMC account does not authorize OS access.
-Do not transfer a chat-pasted password to a tool or command; treat it as exposed and use the rotation
-procedure below before it is saved through the local page.
+Keep credential values in private local input; tool arguments and command text contain only
+non-secret references.
 
 If a credential may already have appeared in a persisted task, treat it as exposed and follow
 [Credential exposure response](references/credential-exposure-response.md). Identify affected
 accounts from non-secret target, purpose, record, revision and time metadata; never ask the user
-to paste the old value into chat or a command. Rotation stays an explicit operator action at the
-account authority, followed by local revision activation and capability verification.
+to paste the old value into chat or a command. This response does not block authorized use as
+described above. Rotation stays an explicit operator action at the account authority, followed
+by local revision activation and capability verification.
 
 ```bash
 python3 -I -B <plugin-root>/scripts/pluginctl.py configure --kind targets --wait-for-save
@@ -171,15 +178,21 @@ association; a task already holding a snapshot needs a request-boundary refresh.
 mapping never verifies credentials
 or authorizes an OS connection.
 
-SSH checks preserve strict host identity verification, Redfish checks verify TLS, and no check retries a rejected IP override with global credentials. Conan authenticates only an existing named remote and uses the native per-user token cache. KB requires the user's authorized OAuth application settings; interactive authentication requirements remain visible as such. The plugin supplies no shared OAuth client secret.
+BMC connection checks use the existing internal Runtime transport defaults:
+Redfish accepts device certificates and SSH uses its configured host-key policy.
+OS SSH retains strict host-key verification. Use `configure --strict-checks`
+only when certificate/host-key qualification is requested. Results record
+`transport_verification` separately from successful authentication; a disabled
+check is not a certificate-verification pass. A strict-check failure affects
+that assurance, not unrelated task work or an already authorized runtime
+connection. No authentication rejection retries another account automatically.
+Conan authenticates only an existing named remote through its native token
+cache. KB uses the user's OAuth settings and exposes required interaction; the
+plugin supplies no shared OAuth client secret.
 
-These strict checks are distinct from historical Runtime transport bindings that may permit
-insecure TLS. A strict-check failure remains unverified. Report the certificate or endpoint trust
-problem; never silently retry the check with TLS verification disabled or reinterpret it as missing
-credentials. If insecure transport is already explicitly authorized, report any connection result
-within that scope with certificate verification disabled: it does not qualify certificate validation
-or replace the strict check. Reuse that authorization without asking again; it does not change the
-check policy.
+For an established SSH policy, including an authorized OS test with verification
+disabled, pass `--ssh-host-key-policy strict|accept-new|insecure` yourself. The
+existing task decision supplies this choice; it needs no repeated confirmation.
 
 For a machine without an accessible browser, the existing `install_environment.py credentials` hidden-input helper remains available. A headless page can be started with `configure --no-browser`; open its session URL in the same machine's browser. Run the helper on the host containing the installed plugin and credentials.
 

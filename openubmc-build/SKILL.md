@@ -71,7 +71,10 @@ Treat `build_type`, `stage`, `target`, `remote`, and `version` as independent in
 
 Use the checkout already selected by the user, handoff, or active task. Record its canonical root, Git HEAD, concrete git dir/common dir, and dirty-content fingerprint in the Build Plan.
 
-The default new-worktree budget is zero. Use another checkout only when the user or handoff selected it, or after showing a concrete Git-ref or write-conflict isolation need and receiving user confirmation. A dirty tree by itself is not such a conflict. A retry uses the Plan checkout; changing checkout creates a new Plan.
+Reuse the selected checkout. For a concrete Git-ref or write-conflict isolation need,
+create an isolated checkout yourself and report its path; routine reversible isolation
+needs no extra confirmation. A dirty tree alone does not require isolation. A retry
+uses the Plan checkout; changing checkout creates a new Plan.
 
 Worktree is not a cache, log, version, or retry-isolation mechanism.
 
@@ -88,6 +91,11 @@ For packaging modes, determine explicit expected and target values once, then us
 A retry never recalculates or increments a version.
 
 ### One Plan, one exact command
+
+For ordinary `validate` work without an existing Plan or Runtime build Gate, run the
+selected command directly, retaining cwd, argv, changed outputs and its bounded log.
+Packaging and an explicitly selected Plan/Attempt workflow use the contract below;
+do not require release metadata or a new Plan for a routine compile, generation or UT.
 
 A Build Plan binds one semantic command. `bmcgo gen`, a component package build, and a product HPM build are separate Plans when each must run.
 
@@ -107,7 +115,7 @@ Read [references/build-plan.md](references/build-plan.md) before creating or ret
 
 ### Retry as an Attempt
 
-Execute only through `scripts/run_build_attempt.py --plan <plan.json> --run-root <run-root>`.
+For Plan-based work, execute through `scripts/run_build_attempt.py --plan <plan.json> --run-root <run-root>`.
 
 An Attempt has the state sequence:
 

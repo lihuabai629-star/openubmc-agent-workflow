@@ -155,6 +155,34 @@ class QemuWorkflowContractTests(unittest.TestCase):
         with self.assertRaisesRegex(CONTRACT.ContractError, "local process control"):
             CONTRACT.validate_plan(selected_plan)
 
+    def test_targeted_task_command_needs_no_wrapper_certificate_or_healthy_baseline(self):
+        selected_plan = plan()
+        selected_plan["launcher"]["authorization_enforcement"] = {
+            "mode": "task_command", "seam": "scoped argv and runtime identity review",
+            "evidence_ids": ["launcher-source-review"],
+        }
+        selected_plan["verification"].update(
+            required_smoke=["process"], tls_mode="not_applicable",
+            check_modes={"process": "local_process_identity"}, stability_seconds=1,
+        )
+        selected_plan["baseline"] = {"expected_state": "not_requested", "fault_injection": "disabled"}
+        receipt = result(selected_plan)
+        receipt.pop("baseline")
+        self.assertEqual(CONTRACT.validate_result(selected_plan, receipt)["status"], "completed")
+        selected_plan["authorization"]["local_process_control"] = False
+        with self.assertRaisesRegex(CONTRACT.ContractError, "local process control"):
+            CONTRACT.validate_plan(selected_plan)
+
+    def test_not_applicable_cannot_bypass_requested_tls_or_fault_baseline(self):
+        selected_plan = plan()
+        selected_plan["verification"]["tls_mode"] = "not_applicable"
+        with self.assertRaisesRegex(CONTRACT.ContractError, "tls_mode"):
+            CONTRACT.validate_plan(selected_plan)
+        selected_plan = plan()
+        selected_plan["baseline"]["expected_state"] = "not_requested"
+        with self.assertRaisesRegex(CONTRACT.ContractError, "healthy baseline"):
+            CONTRACT.validate_plan(selected_plan)
+
     def test_non_loopback_exposure_requires_intent_and_authorization(self):
         selected_plan = plan()
         selected_plan["ports"][0]["bind"] = "0.0.0.0"

@@ -54,10 +54,11 @@ merely to route work owned entirely by another Skill.
   the responsible area, expected change surface, material risk, and validation
   approach. An explicit implementation request does not need a second approval
   merely because the change is non-trivial.
-- Pause only when repository evidence leaves alternatives that materially change
-  behavior, compatibility, risk, or scope; a required contract or generator is
-  unavailable; user work overlaps inseparably; or safe validation cannot be
-  established. Explain the concrete decision or blocker. Determine the
+- Choose routine implementation alternatives from repository precedent and task
+  scope. A missing optional check is a reported gap, not a reason to stop source
+  work. Pause only for a necessary user decision that materially changes scope,
+  inseparable concurrent edits, or a missing contract/generator that prevents a
+  correct change. Explain the concrete decision or blocker. Determine the
   behavior-owning module or layer from the repository instead of asking the user
   to name an owner.
 
@@ -170,9 +171,10 @@ Source completion alone does not authorize dependency resolution, a product or
 package build, a live-target patch, firmware upgrade, or publication. When the
 user asks only for a downstream-ready handoff, read
 [downstream-handoffs.md](references/downstream-handoffs.md), provide the minimal
-source facts, and stop without loading the downstream Skill. Continue with
+source facts, and stop without loading the downstream Skill. For a task whose
+downstream stages were already authorized, continue directly with
 `openubmc-build`, `openubmc-live-patch`, `openubmc-upgrade`, `openubmc-publish`, or
-`openubmc-code-submit` only when the user explicitly asks to execute that stage.
+`openubmc-code-submit` within that established scope.
 Carry the user's requested sequence forward, but let each owner validate its own
 inputs and authorization.
 

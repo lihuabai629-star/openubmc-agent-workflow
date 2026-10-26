@@ -189,7 +189,8 @@ function renderRemember() {
         state.targets = result.configuration;
         expertTargets = separateBmcAccounts(state.targets.config);
         render();
-        notice("连接成功，已为此 IP 记住账号。后续任务会自动使用。");
+        notice("连接成功，已为此 IP 记住账号。后续任务会自动使用。" +
+          (result.transport_verification === "disabled" ? " 本次未校验设备证书或主机密钥。" : ""));
         if (state.page_session?.wait_for_save) finishConfiguration();
       } finally {
         password.value = "";
@@ -688,7 +689,7 @@ function renderChecks() {
       : t?.remote || "知识库";
     const row = node(
       "div",
-      `${label}：${reasons[entry.code] || "检查未完成"}`,
+      `${label}：${reasons[entry.code] || "检查未完成"}${entry.transport_verification === "disabled" ? "（未校验设备证书或主机密钥）" : ""}`,
       parent,
     );
     row.className = "check-row" + (entry.verified ? " ok" : "");

@@ -2280,7 +2280,7 @@ class UpgradeMcpBackend:
             actual_size = len(artifact_bytes)
         if actual_sha != artifact.sha256:
             raise ValueError("upgrade artifact SHA-256 does not match")
-        validate_artifact_metadata(
+        artifact_metadata = validate_artifact_metadata(
             artifact_path,
             expected_sha256=artifact.sha256,
             product_version=artifact.product_version,
@@ -2413,7 +2413,10 @@ class UpgradeMcpBackend:
                 "activation fallback; the artifact was not uploaded again"
             )
         context.raise_if_stopped()
-        return result.to_public_dict()
+        public_result = result.to_public_dict()
+        if artifact_metadata.get("provenance_warnings"):
+            public_result["artifact_metadata"] = artifact_metadata
+        return public_result
 
     def upgrade_run(
         self,

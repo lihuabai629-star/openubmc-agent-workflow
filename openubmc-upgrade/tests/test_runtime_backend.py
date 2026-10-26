@@ -1258,6 +1258,38 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 list(body)
 
+    def test_matching_existing_artifact_keeps_provenance_warnings_and_does_not_reupload(self) -> None:
+        import json
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            sidecar = Path(f"{artifact}.metadata.json")
+            metadata = {"artifact": {"sha256": digest, "size": 8}, "product_version": "2.0.0",
+                        "upgrade_eligible": False, "package_binding": "unverified"}
+            sidecar.write_text(json.dumps(metadata))
+            transport = FakeRedfishTransport()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {"redfish": {"user": "fixture", "password": "local-only"}},
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                kwargs = {"task_id": "provenance-warning", "operation_id": "existing-artifact"}
+                result = service.call_tool("upgrade_run", self.arguments(artifact, digest), **kwargs)
+                self.assertEqual(result["journal"]["stage"], "verified")
+                self.assertEqual(result["artifact_metadata"]["provenance_warnings"],
+                                 ["build_upgrade_eligibility_unverified", "build_package_binding_unverified"])
+                service.call_tool("upgrade_run", self.arguments(artifact, digest), **kwargs)
+                uploads = [call for session in transport.sessions for call in session.calls
+                           if call == ("POST", "/redfish/v1/UpdateService/upload")]
+                self.assertEqual(len(uploads), 1)
+                self.assertEqual(json.loads(sidecar.read_text()), metadata)
+            finally:
+                service.close()
+
     def test_sidecar_version_mismatch_is_rejected_before_upload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

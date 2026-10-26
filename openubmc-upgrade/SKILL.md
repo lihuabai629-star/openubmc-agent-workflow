@@ -117,6 +117,14 @@ filename and, when `<hpm>.metadata.json` exists, requires its SHA-256, size, and
 symlinked sidecar is a hard preflight failure; do not delete or ignore it to
 continue an upgrade.
 
+Release-only `upgrade_eligible` and `package_binding` labels are reported as
+`provenance_warnings` for an already-built HPM; they do not block an authorized
+direct upgrade whose file identity matches. Keep the original sidecar. A Build
+Gate still requires its own acceptance evidence; these warnings do not qualify
+a failed build or claim release provenance. Discover the path/hash/version from
+the selected artifact and handoff yourself instead of asking the user to retype
+them. Do not add signature trust or certificate qualification unless requested.
+
 Validate the target and credential source without printing secrets:
 
 ~~~bash

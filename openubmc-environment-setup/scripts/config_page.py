@@ -616,6 +616,8 @@ class LocalConfigurationServer:
         receipt = {"verified": True, "code": "connected", "target": target,
                    "revision": committed["active_revision"], "checked_at": int(time.time()),
                    "remembered": True}
+        if result.get("transport_verification") in ("disabled", "strict", "accept-new"):
+            receipt["transport_verification"] = result["transport_verification"]
         self.verifications[("targets", json.dumps(target, sort_keys=True))] = receipt
         if self.page_session["kind"] == "targets":
             self.completion = self.completion_receipt("targets", verified_target=target)
@@ -716,6 +718,8 @@ class LocalConfigurationServer:
             "revision": revision,
             "checked_at": int(time.time()),
         }
+        if result.get("transport_verification") in ("disabled", "strict", "accept-new"):
+            receipt["transport_verification"] = result["transport_verification"]
         self.verifications[(kind, json.dumps(target, sort_keys=True))] = receipt
         return receipt
 
@@ -739,6 +743,10 @@ def main():
     parser.add_argument("--target", action="append", default=[])
     parser.add_argument("--purpose", choices=["bmc", "os"], default="bmc")
     parser.add_argument("--transport", choices=["ssh", "redfish"], default="ssh")
+    parser.add_argument("--strict-checks", action="store_true",
+                        help="Verify target certificates and known SSH host keys during connection checks")
+    parser.add_argument("--ssh-host-key-policy", choices=["strict", "accept-new", "insecure"], default="",
+                        help="Reuse the task's selected SSH host-key policy; strict-checks takes precedence")
     args = parser.parse_args()
     if args.home is not None:
         os.environ["HOME"] = str(args.home)
@@ -780,7 +788,8 @@ def main():
     ]
     with LocalConfigurationServer(
         config_home,
-        checker=BoundedConfigurationChecker(),
+        checker=BoundedConfigurationChecker(strict_transport=args.strict_checks,
+                                            ssh_host_key_policy=args.ssh_host_key_policy),
         sources=sources,
         authorized_targets=targets,
         kind=args.kind,

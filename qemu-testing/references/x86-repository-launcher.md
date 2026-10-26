@@ -25,10 +25,10 @@ the index. A failed later build can leave an older HPM and index in place.
 
 ## Lifecycle command shapes
 
-These are the repository CLI shapes to bind into a reviewed task wrapper. Before
-executing a mutating action, verify the wrapper's authorization checks, exact
-runtime scope and process ownership as required by the main Skill. Validating a
-plan alone does not enforce the repository's process-control boundary.
+Use these repository CLI shapes through a scoped `task_command` or an existing
+reviewed wrapper. Before mutation, check the task's authorization, exact runtime
+scope and process ownership. A separate wrapper is not required for routine
+authorized commands; the Agent owns this execution boundary.
 
 ```bash
 python3 build/product/BMC/openUBMC_x86/x86_system.py up \
@@ -45,7 +45,7 @@ Invoke only actions requested for this task. `up --detach` is the automation
 path. `console` needs a terminal and connects the runtime's Unix serial socket;
 `Ctrl+]` detaches without stopping the guest. `stop` preserves the persistent
 disk. Reboot, force stop, account provisioning and deletion are separate effects
-whose authorization must be present in the selected task wrapper.
+whose authorization must be present in the task before the command is issued.
 
 The tested launcher binds loopback SSH 22222, HTTPS 28443, HTTP 28080 and UDP IPMI
 2623. `--port-offset` selects ports when initializing a new runtime; an existing
@@ -63,10 +63,11 @@ reason for reusing the disk.
 ## Verify the verifier
 
 Inspect `x86_platform/diagnostics/verify_x86_vm.py` and its Web verifier before
-running `verify`. Some upstream versions use disabled certificate checks. Use a
-reviewed adapter that pins the certificate from the owned instance or supplies a
-scoped CA; the plan's claimed verification mode cannot repair an insecure
-verifier. Keep SSH host identity checks and the private per-instance credential
+running `verify`. Some upstream versions use disabled certificate checks. Record
+that actual mode and reuse an established isolated-test policy. Add a scoped CA
+or owned-instance fingerprint only for requested trust qualification; the plan
+cannot claim verified certificates for an insecure verifier. Keep the selected
+SSH policy and the private per-instance credential
 file mechanism. Provisioning and business verification can create sessions and
 test logs, so run them only on the selected development instance.
 

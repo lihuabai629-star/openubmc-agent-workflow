@@ -166,4 +166,8 @@ Do not apply when any of these is unresolved:
   `no_remount` plan has already proved the target writable;
 - an unknown prior mutation outcome that has not been reconciled;
 - recovery that requires rollback when the distinct rollback action is not authorized;
-- verification requirements that cannot be executed or interpreted.
+
+An unavailable optional health/business check is a verification gap, not a new
+Apply approval step. Run available checks, preserve a partial result and continue
+independent source work. If the unavailable check is the requested operation's
+only success criterion, report that limitation without reapplying the patch.
