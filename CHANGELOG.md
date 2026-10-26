@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.11 (development)
+
+- Knowledge requests recover an expired refresh token when OneID repeats the expiration message in its `error` field, then continue once with the saved account. Explicit client and scope errors retain their original failure.
+
 ## 2.2.10 (development)
 
 - Supplied task credentials use private local input without repeated entry. BMC account checks and typed property assignments reuse the selected transport policy; strict certificate/host-key qualification remains optional.

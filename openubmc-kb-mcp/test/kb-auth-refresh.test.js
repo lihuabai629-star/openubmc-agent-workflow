@@ -103,6 +103,8 @@ function fixture(options = {}) {
 
 for (const [label, status, body] of [
   ["OneID Bad Request envelope", 400, { error: "Bad Request", message: "token invalid or expired", status: 400 }],
+  ["OneID expired-token error envelope", 400, { error: "token invalid or expired", message: "token invalid or expired", status: 400 }],
+  ["OneID expired-token error with case and whitespace", 400, { error: " Token Invalid Or Expired ", message: " Token Invalid Or Expired ", status: 400 }],
   ["OneID object error envelope", 400, { error: {}, message: "token invalid or expired", status: 400 }],
   ["case and whitespace", 400, { message: " Token Invalid Or Expired " }],
   ["OAuth invalid grant", 400, { error: "invalid_grant" }],
@@ -129,6 +131,7 @@ for (const [label, status, body] of [
   ["unauthorized client", 401, { error: "invalid_client" }],
   ["explicit OAuth error takes precedence", 400, { error: "invalid_client", message: "token invalid or expired" }],
   ["explicit alternate error code takes precedence", 400, { error_code: "invalid_scope", message: "token invalid or expired" }],
+  ["explicit client code with expired-token text", 400, { error: "token invalid or expired", error_code: "invalid_client", message: "token invalid or expired" }],
   ["invalid scope", 400, { error: "invalid_scope" }],
   ["unknown bad request", 400, { message: "Missing a required parameter" }]
 ]) {

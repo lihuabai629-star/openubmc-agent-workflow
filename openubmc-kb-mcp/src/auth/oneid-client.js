@@ -61,8 +61,10 @@ async function responseJson(response, operation) {
     error.operation = operation;
     // OneID has a non-OAuth 400 envelope for an expired refresh token.
     // Match it only during refresh; configuration errors must retain their code.
+    const errorText = typeof value?.error === "string" ? value.error.trim().toLowerCase() : "";
     const expiredRefresh = operation === "OAuth token refresh" && response.status === 400
-      && (value?.error == null || typeof value.error === "object" || value.error === "Bad Request")
+      && (value?.error == null || typeof value.error === "object"
+        || ["bad request", "token invalid or expired"].includes(errorText))
       && !value?.error_code
       && typeof value?.message === "string"
       && value.message.trim().toLowerCase() === "token invalid or expired";
