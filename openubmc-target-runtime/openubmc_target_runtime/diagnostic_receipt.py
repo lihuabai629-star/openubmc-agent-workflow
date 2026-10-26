@@ -1693,6 +1693,17 @@ def _structured_results(
     telnet = _mapping(lanes.get("telnet"))
     files = _mapping(telnet.get("files"))
     results: list[dict[str, object]] = []
+    from .os_console_contract import os_console_summary
+    for selector_id, child in _mapping(runtime_result.get("os_console")).items():
+        child = _mapping(child)
+        results.append({
+            "result_id": "os-console-" + str(selector_id), "kind": "os-console",
+            "request": ", ".join(str(name) for name in child.get("requested", [])),
+            "status": "available" if child.get("complete") is True else "unavailable",
+            "value": os_console_summary(child),
+            "observed_at": child.get("completed_at") or value.get("observed_at"),
+            "evidence_ids": evidence_ids,
+        })
     from .systemd_contract import systemd_gap_details, systemd_unit_summaries
     for selector_id, child in _mapping(runtime_result.get("systemd")).items():
         child = _mapping(child)

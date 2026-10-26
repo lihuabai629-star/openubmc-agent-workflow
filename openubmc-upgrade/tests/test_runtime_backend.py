@@ -1922,6 +1922,26 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(cleanup["http_status"], 500)
         self.assertEqual(result["journal"]["stage"], "verified")
 
+    def test_webui_upload_rejection_keeps_diagnostics_without_starting_firmware(self) -> None:
+        artifact = UpgradeArtifact(path="/fixtures/component-CSR_1.54.hpm",
+            sha256=hashlib.sha256(b"firmware").hexdigest(), product_version="1.54")
+        transport = WebUiUpgradeTransport(Path(artifact.path).name)
+        session = transport.open_session(target=None, credentials=None)
+        diagnostics = {"method": "POST", "path": "/UI/Rest/FirmwareInventory",
+                       "error_code": "iBMC.FirmwareUploadError"}
+        states = []
+        started = []
+        error = WebUiHttpError(400, "upload rejected", diagnostics=diagnostics)
+        with mock.patch.object(session.webui, "upload", side_effect=error):
+            with self.assertRaises(WebUiHttpError):
+                UpgradeMcpBackend._upload_webui(session, artifact, b"firmware",
+                    upload_timeout=10, mark_effects_started=lambda: started.append(True),
+                    record_operation_state=states.append, artifact_source=None)
+        self.assertEqual(started, [True])
+        self.assertEqual(states[-1], {"upload_http_diagnostics": diagnostics})
+        self.assertFalse(states[0]["upload_accepted"])
+        self.assertEqual(transport.web_starts, 0)
+
     def test_webui_start_rejection_after_upload_remains_uncertain(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

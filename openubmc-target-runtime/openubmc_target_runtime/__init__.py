@@ -751,6 +751,7 @@ __all__ = [
 ]
 
 from .systemd_contract import UNIT as SYSTEMD_UNIT, validate_systemd_names
+from .os_console_contract import validate_os_console_names
 from .redaction import redact_text
 
 from .host_records import InstalledHostRecords

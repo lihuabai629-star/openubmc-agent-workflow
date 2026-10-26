@@ -178,6 +178,11 @@ the page verifies the selected IP and saves an active IP override only after suc
 connection or configuration conflict leaves the existing active account in place. Never copy a
 chat-pasted password into a command or tool argument; follow the credential exposure response.
 
+For an OS console account without an OS IP, focus the BMC with `--purpose bmc`.
+In the device row, enable the separate OS account and leave the associated OS IP empty.
+Save locally, then return to [Debug's SOL observation](../openubmc-debug/references/os-console.md).
+This stores an independent OS-purpose record; it does not verify OS SSH against the BMC IP.
+
 Use `--kind kb` or `--kind conan` for those services and `--focus-target <target IP>` to edit a
 device without probing it. Keep the process alive until its `configuration_saved` or
 `configuration_cancelled` event. Saving activates the requested configuration; inspect the

@@ -454,6 +454,19 @@ class ObservationSelector:
                 field=f"selectors[{index - 1}].id",
                 limit={"unit": "UTF-8 bytes", "maximum": SELECTOR_ID_MAX_BYTES},
             )
+        if kind == "os_console":
+            from .os_console_contract import validate_os_console_names
+            try:
+                if "queries" in value or not isinstance(value.get("names"), list):
+                    raise ValueError('os_console requires names and cannot contain queries')
+                validate_os_console_names(value.get("names"))
+            except (ValueError, TypeError) as error:
+                raise AgentPreflightError(
+                    str(error), reason=PreflightReason.REQUIRED_VALUE,
+                    field=f"selectors[{index - 1}].names",
+                    limit={"allowed_names": ["identity", "network"], "maximum_items": 2},
+                ) from None
+            return cls(selector_id=selector_id, kind=kind, names=tuple(value["names"]))
         if kind == "systemd":
             from .systemd_contract import validate_systemd_names
             try:
@@ -622,7 +635,7 @@ class ObservationSelector:
                         },
                     )
             return cls(selector_id=selector_id, kind=kind, queries=queries)
-        supported = ("capability", "mdb", "systemd")
+        supported = ("capability", "mdb", "systemd", "os_console")
         raise AgentPreflightError(
             f"selectors[{index - 1}].kind has unsupported selector kind "
             f"{kind or '<empty>'!r}; supported kinds: " + ", ".join(supported),
@@ -758,6 +771,12 @@ class ObservationQuery:
                 reason=PreflightReason.TOO_MANY_ITEMS, field="selectors",
                 limit={"maximum_systemd_selectors": 1},
             )
+        if sum(selector.kind == "os_console" for selector in selectors) > 1:
+            raise AgentPreflightError(
+                "combine host probes in one os_console selector per observation",
+                reason=PreflightReason.TOO_MANY_ITEMS, field="selectors",
+                limit={"maximum_os_console_selectors": 1},
+            )
         selector_ids = [selector.selector_id for selector in selectors]
         if len(set(selector_ids)) != len(selector_ids):
             duplicate_index = next(
@@ -875,7 +894,7 @@ class ObservationQuery:
             }
 
         for selector in self.selectors:
-            if selector.kind == "systemd":
+            if selector.kind in {"systemd", "os_console"}:
                 if current:
                     batches.append(current)
                     current = []

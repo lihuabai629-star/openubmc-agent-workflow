@@ -54,7 +54,9 @@ event before continuing the authorized task. Do not require the user to launch i
 completion. Diagnose invalid or conflicting sources before changing them. Network, TLS, permission
 and business errors stay in Debug. For an authorized OS task without an explicit address, consult
 the resolver example in that Skill to call `CredentialResolver.associated_os`; this read-only lookup
-does not enter setup or open a page. The association itself authorizes no connection.
+does not enter setup or open a page. If no OS address exists and the task authorizes host OS access,
+use the bounded [OS console selector](os-console.md) through BMC SSH and its native SOL command.
+The association itself authorizes no connection.
 Keep passwords, key contents, and raw resolved
 credential objects out of command arguments, model context, logs, and receipts. A successful local
 lookup establishes neither remote authentication nor authority for a target mutation.

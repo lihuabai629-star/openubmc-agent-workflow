@@ -259,6 +259,7 @@ function renderSimpleTargets(config) {
   const initialHosts = new Set([
     ...Object.keys(config.devices || {}),
     ...Object.keys(config.targets || {}).filter((ip) => config.targets[ip].bmc || !Object.keys(config.targets[ip]).length),
+    ...(state.page_session?.focus_target ? [state.page_session.focus_target] : []),
   ]);
   function optionalAccount(parent, label, title, source) {
     const toggle = input(parent, title, "", "checkbox");
@@ -278,8 +279,8 @@ function renderSimpleTargets(config) {
     const bmc = optionalAccount(row, "设备 BMC", "此 BMC 使用不同账号", originalBmc?.ssh || originalBmc?.redfish);
     const originalOs = config.devices?.[ip]?.os_ip || "";
     const osIp = input(row, "关联 OS IP", originalOs);
-    osIp.placeholder = "可选";
-    const os = optionalAccount(row, "设备 OS", "此 OS 使用不同账号", config.targets?.[originalOs]?.os?.ssh);
+    osIp.placeholder = "可选；留空时通过 BMC SOL 登录";
+    const os = optionalAccount(row, "设备 OS", "此 OS 使用不同账号", config.targets?.[originalOs || ip]?.os?.ssh);
     const entry = { address, bmc, osIp, os };
     rows.push(entry);
     const remove = node("button", "移除设备", row);
@@ -321,7 +322,7 @@ function renderSimpleTargets(config) {
     for (const host of initialHosts) {
       if (result.targets[host]) delete result.targets[host].bmc;
       if (result.targets[host] && !Object.keys(result.targets[host]).length) delete result.targets[host];
-      const oldOs = config.devices?.[host]?.os_ip;
+      const oldOs = config.devices?.[host]?.os_ip || host;
       if (result.targets[oldOs]) delete result.targets[oldOs].os;
       if (result.targets[oldOs] && !Object.keys(result.targets[oldOs]).length) delete result.targets[oldOs];
     }
@@ -340,12 +341,13 @@ function renderSimpleTargets(config) {
       }
       if (osHost) result.devices[host] = { os_ip: osHost };
       if (row.os.toggle.checked) {
-        if (!osHost || osOverrides.has(osHost)) throw new Error("关联 OS IP 不能为空，且不能重复设置账号。");
-        osOverrides.add(osHost);
+        const osScope = osHost || host;
+        if (osOverrides.has(osScope)) throw new Error("不能为同一设备重复设置 OS 账号。");
+        osOverrides.add(osScope);
         const name = reference(row.os.read, row.os.source);
-        if (!name) throw new Error("请填写关联 OS 的账号。");
-        result.targets[osHost] ||= {};
-        result.targets[osHost].os = { ssh: name };
+        if (!name) throw new Error("请填写此设备的 OS 账号。");
+        result.targets[osScope] ||= {};
+        result.targets[osScope].os = { ssh: name };
       }
     }
     const referenced = new Set([result.defaults, ...Object.values(result.targets)].flatMap((purposes) => Object.values(purposes).flatMap(Object.values)));

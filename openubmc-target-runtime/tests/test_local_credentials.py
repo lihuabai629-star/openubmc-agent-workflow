@@ -11,6 +11,112 @@ from openubmc_target_runtime import CredentialResolver
 
 
 class LocalCredentialTests(unittest.TestCase):
+    def test_console_bmc_key_account_uses_requested_ssh_port_without_changing_os_scope(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {
+                'bmc': {'user': 'admin', 'password': 'bmc-private'},
+                'bmc-key': {'user': 'operator', 'identity_file': '/fixture/identity'},
+                'os': {'user': 'console-user', 'password': 'os-private'}},
+                'defaults': {'bmc': {'ssh': 'bmc'}},
+                'target_ports': {'192.0.2.10': {'bmc': {'ssh': {'2222': 'bmc-key'}}}},
+                'targets': {'192.0.2.10': {'os': {'ssh': 'os'}}}}))
+            path.chmod(0o600)
+            resolver = CredentialResolver(config_path=path, environ={})
+            keyed = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10', ssh_port=2222)
+            self.assertNotIn('__console_gap__', keyed)
+            self.assertEqual(keyed['OPENUBMC_SSH_USER'], 'operator')
+            self.assertEqual(keyed['OPENUBMC_SSH_IDENTITY_FILE'], '/fixture/identity')
+            self.assertEqual(keyed['OPENUBMC_SSH_PASSWORD'], '')
+            self.assertEqual(keyed['OPENUBMC_OS_SSH_PASSWORD'], 'os-private')
+            default = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10')
+            self.assertEqual(default['OPENUBMC_SSH_PASSWORD'], 'bmc-private')
+            self.assertNotIn('OPENUBMC_SSH_IDENTITY_FILE', default)
+
+    def test_console_reports_missing_bmc_ssh_account_without_selecting_os_credentials(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {
+                'os': {'user': 'console-user', 'password': 'os-private'}},
+                'defaults': {'os': {'ssh': 'os'}}}))
+            path.chmod(0o600)
+            values = CredentialResolver(config_path=path, environ={}).resolve_console_values(
+                task_id='console', bmc_host='192.0.2.10')
+            self.assertEqual(values['__console_gap__'], 'bmc_ssh_credentials_missing')
+            self.assertNotIn('OPENUBMC_SSH_USER', values)
+
+    def test_console_without_os_ip_uses_independent_bmc_scoped_os_override(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {
+                'bmc': {'user': 'admin', 'password': 'bmc-private'},
+                'os-default': {'user': 'default-user', 'password': 'default-private'},
+                'os-target': {'user': 'console-user', 'password': 'target-private'}},
+                'defaults': {'bmc': {'ssh': 'bmc'}, 'os': {'ssh': 'os-default'}},
+                'targets': {'192.0.2.10': {'os': {'ssh': 'os-target'}}}}))
+            path.chmod(0o600)
+            resolver = CredentialResolver(config_path=path, environ={})
+            values = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10')
+            self.assertNotIn('OPENUBMC_OS_IP', values)
+            self.assertEqual(values['OPENUBMC_SSH_PASSWORD'], 'bmc-private')
+            self.assertEqual(values['OPENUBMC_OS_SSH_PASSWORD'], 'target-private')
+            other = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.11')
+            self.assertEqual(other['OPENUBMC_OS_SSH_PASSWORD'], 'default-private')
+            self.assertEqual(values, resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10'))
+
+    def test_console_association_selects_os_ip_account_from_activated_snapshot(self):
+        from openubmc_target_runtime.configuration import LocalConfigurationStore
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            store = LocalConfigurationStore(path, kind='targets')
+            config = {'schema_version': 1, 'credentials': {
+                'bmc': {'user': 'admin', 'password': 'bmc-private'},
+                'os': {'user': 'console-user', 'password': 'os-private'}},
+                'defaults': {'bmc': {'ssh': 'bmc'}},
+                'targets': {'192.0.2.20': {'os': {'ssh': 'os'}}},
+                'devices': {'192.0.2.10': {'os_ip': '192.0.2.20'}}}
+            saved = store.save(config, expected_revision=None)
+            store.activate(saved['revision'], expected_active_revision=None)
+            resolver = CredentialResolver(config_path=path, environ={})
+            first = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10')
+            self.assertEqual(first['OPENUBMC_OS_SSH_PASSWORD'], 'os-private')
+            config['credentials']['os']['password'] = 'new-private'
+            newer = store.save(config, expected_revision=saved['revision'])
+            store.activate(newer['revision'], expected_active_revision=saved['revision'])
+            self.assertEqual(resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10'), first)
+            resolver.refresh_local_revision('console')
+            self.assertEqual(resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10')[
+                'OPENUBMC_OS_SSH_PASSWORD'], 'new-private')
+
+    def test_console_never_substitutes_bmc_account_or_merges_incomplete_override(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            config = {'schema_version': 1, 'credentials': {
+                'bmc': {'user': 'admin', 'password': 'bmc-private'},
+                'os': {'user': 'default', 'password': 'os-private'},
+                'key': {'user': 'key-user', 'identity_file': '/fixture/key'}},
+                'defaults': {'bmc': {'ssh': 'bmc'}}}
+            for override in (None, 'key'):
+                with self.subTest(override=override):
+                    if override:
+                        config['defaults']['os'] = {'ssh': 'os'}
+                        config['targets'] = {'192.0.2.10': {'os': {'ssh': override}}}
+                    path.write_text(json.dumps(config)); path.chmod(0o600)
+                    values = CredentialResolver(config_path=path, environ={}).resolve_console_values(
+                        task_id='console', bmc_host='192.0.2.10')
+                    self.assertEqual(values['__console_gap__'], 'os_password_credentials_missing')
+                    self.assertNotIn('OPENUBMC_OS_SSH_PASSWORD', values)
+
+    def test_console_supports_selected_legacy_credentials_without_os_ip(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.env'
+            path.write_text('OPENUBMC_SSH_USER=admin\nOPENUBMC_SSH_PASSWORD=bmc-private\n'
+                            'OPENUBMC_OS_SSH_USER=operator\nOPENUBMC_OS_SSH_PASSWORD=os-private\n')
+            path.chmod(0o600)
+            resolver = CredentialResolver(config_path=path, environ={})
+            values = resolver.resolve_console_values(task_id='console', bmc_host='192.0.2.10')
+            self.assertEqual(values['OPENUBMC_OS_SSH_PASSWORD'], 'os-private')
+
     def test_port_qualified_references_validate_and_do_not_change_schema_version(self):
         from openubmc_target_runtime.configuration import LocalConfigurationStore, ConfigurationError
         with tempfile.TemporaryDirectory() as raw:

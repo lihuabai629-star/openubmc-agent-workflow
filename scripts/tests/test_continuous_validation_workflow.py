@@ -82,8 +82,8 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         self.assertEqual(
             [line.split("==", 1)[0] for line in pinned],
             [
-                "attrs", "cffi", "cryptography", "jsonschema",
-                "jsonschema-specifications", "PyYAML", "referencing",
+                "attrs", "bcrypt", "cffi", "cryptography", "jsonschema",
+                "jsonschema-specifications", "paramiko", "PyNaCl", "PyYAML", "referencing",
                 "rpds-py", "typing-extensions", "pycparser",
             ],
         )

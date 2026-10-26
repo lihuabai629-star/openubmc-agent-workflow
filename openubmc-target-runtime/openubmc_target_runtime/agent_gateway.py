@@ -396,7 +396,7 @@ def _preflight_guidance(
                 "retry observe with the corrected canonical capability name"
             ),
             PreflightReason.UNSUPPORTED_SELECTOR_KIND: (
-                "retry observe with capability, mdb or systemd selector kind"
+                "retry observe with capability, mdb, systemd or os_console selector kind"
             ),
             PreflightReason.MDB_GRAMMAR: (
                 "retry observe with the corrected read-only mdbctl grammar"
@@ -1534,6 +1534,18 @@ class ResultProjector:
         counts = {state: 0 for state in CAPABILITY_STATES}
         mdb_index = 0
         for selector in scope.selectors:
+            if selector.kind == "os_console":
+                from .os_console_contract import os_console_summary
+                child = _mapping(_mapping(result.get("os_console")).get(selector.selector_id))
+                complete = child.get("complete") is True and child.get("requested") == list(selector.names)
+                counts["available" if complete else "not_checked"] += 1
+                observations[selector.selector_id] = {
+                    "kind": "os_console", "complete": complete, **os_console_summary(child),
+                }
+                claims.append({"path": f"results.{selector.selector_id}",
+                               "status": "grounded" if complete else "partial",
+                               "selector_id": selector.selector_id})
+                continue
             if selector.kind == "systemd":
                 child = _mapping(_mapping(result.get("systemd")).get(selector.selector_id))
                 complete = child.get("complete") is True and child.get("requested") == list(selector.names)
@@ -1967,7 +1979,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "required": ["kind"],
                     "properties": {
                         "id": {"type": "string", "minLength": 1, "maxLength": 64},
-                        "kind": {"type": "string", "enum": ["capability", "mdb", "systemd"]},
+                        "kind": {"type": "string", "enum": ["capability", "mdb", "systemd", "os_console"]},
                         "names": {
                             "type": "array",
                             "maxItems": 16,
@@ -1976,6 +1988,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                                 "minLength": 1,
                                 "maxLength": 255,
                                 "description": (
+                                    "For os_console, identity and/or network via BMC SOL; one selector per query. "
                                     "For systemd, literal .service IDs or [failed]; one systemd selector per query. "
                                     "Capability names are case-insensitive; canonical names: "
                                     + ", ".join(sorted(CAPABILITY_ALIASES))

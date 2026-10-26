@@ -1260,12 +1260,16 @@ class UpgradeMcpBackend:
         if content_length <= 0:
             raise ValueError("WebUI upload body must have a positive content length")
         mark_effects_started()
-        uploaded = webui.upload(
-            body=body,
-            boundary=boundary,
-            content_length=content_length,
-            timeout=upload_timeout,
-        )
+        try:
+            uploaded = webui.upload(
+                body=body,
+                boundary=boundary,
+                content_length=content_length,
+                timeout=upload_timeout,
+            )
+        except WebUiHttpError as exc:
+            record_operation_state({"upload_http_diagnostics": exc.diagnostics})
+            raise
         if uploaded.status < 200 or uploaded.status >= 300:
             if 400 <= uploaded.status < 500:
                 raise MutationEffectsRejected(
@@ -1286,9 +1290,10 @@ class UpgradeMcpBackend:
         try:
             started = webui.start(image_uri)
         except WebUiHttpError as exc:
+            record_operation_state({"start_http_diagnostics": exc.diagnostics})
             raise WebUiStartError(
                 exc.status,
-                f"WebUI upgrade start returned HTTP {exc.status} after upload completed",
+                f"WebUI upgrade start returned HTTP {exc.status} after upload completed: {exc}",
             ) from exc
         if started.status < 200 or started.status >= 300:
             raise WebUiStartError(

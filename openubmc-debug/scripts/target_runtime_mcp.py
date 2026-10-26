@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import systemd_observation
+import os_console_observation
 
 from _comparison import (
     compact_comparison_values,
@@ -856,6 +857,38 @@ class DebugMcpBackend:
             systemd_observation.validate_names(selector.get("names"))
         credential_values = bounded.pop("_credential_values", None)
         minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
+        console_selectors = [item for item in normalized_selectors if item.get("kind") == "os_console"]
+        if console_selectors:
+            if len(normalized_selectors) != 1:
+                raise ValueError("OS console collection requires its own Runtime partition")
+            if assured:
+                # A fresh console would retry authentication and cannot assure
+                # an earlier login window. Preserve the first bounded result.
+                raise _load_runtime_module().AssuranceUnavailable("SOL sessions are not automatically replayed")
+            selector = console_selectors[0]
+            seconds = min(float(bounded.get("deadline", 60)), context.remaining())
+            child = os_console_observation.collect_os_console(
+                selector.get("names"), str(bounded["ip"]),
+                dict(credential_values) if isinstance(credential_values, Mapping) else {},
+                deadline=time.monotonic() + seconds,
+                ssh_port=bounded.get("ssh_port", 22),
+                check_cancelled=context.raise_if_stopped,
+            )
+            # OS boot identity belongs to the console facts, not BMC epochs.
+            return {
+                "schema_version": "openubmc-debug.v1", "tool": "agent_observe",
+                "ip": str(bounded["ip"]), "observed_at": child["completed_at"],
+                "ok": child["complete"], "code": "ok" if child["complete"] else "os_console_incomplete",
+                "returncode": 0 if child["complete"] else 1,
+                "observation_timing": {
+                    "started_at": child["started_at"], "completed_at": child["completed_at"],
+                    "selectors": [{"selector_id": selector["id"], "kind": "os_console",
+                        "started_at": child["started_at"], "completed_at": child["completed_at"],
+                        "status": "observed" if child["complete"] else "missing"}],
+                },
+                "result": {"os_console": {selector["id"]: child}, "capabilities": {},
+                           "lanes": {"ssh": {}}, "runtime": {"engine": self.engine_name}},
+            }
         preflight_checks: set[str] = set()
         for name in capability_names:
             if name == "ssh":

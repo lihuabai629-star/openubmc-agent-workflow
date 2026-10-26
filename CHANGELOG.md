@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.10 (development)
+
+- Authorized OS identity and network observations can use BMC SSH and native SOL when no OS IP is available. BMC and OS accounts remain separate; busy consoles are left untouched and owned logins are closed after collection.
+- The configuration page accepts an OS console account without an OS IP. Linux/WSL packages include the pinned SOL transport dependencies.
+- WebUI upgrade rejection diagnostics retain the endpoint and bounded, redacted server error codes and messages.
+
 ## 2.2.9 (development)
 
 - Offline analysis and bounded evidence reads use shared structured tools through Codex MCP and native DSH adapters on Windows, Linux and WSL. Full redacted JSON remains local while model responses retain coverage limits and failures.

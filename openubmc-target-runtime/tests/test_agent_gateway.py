@@ -4535,7 +4535,7 @@ class AgentGatewayTests(unittest.TestCase):
             (
                 [{"id": "unsafe", "kind": "shell", "queries": ["id"]}],
                 "selectors[0].kind",
-                ["capability", "mdb", "systemd"],
+                ["capability", "mdb", "systemd", "os_console"],
                 None,
             ),
             (

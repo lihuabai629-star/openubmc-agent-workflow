@@ -1249,6 +1249,15 @@ class _OrchestratedMcpTask:
 
     def credential_values(self, arguments: Mapping[str, object] | None = None, *, tool_name: str = "debug_collect") -> dict[str, str]:
         with self._lock:
+            if arguments and any(
+                isinstance(item, Mapping) and item.get("kind") == "os_console"
+                for item in arguments.get("selectors", [])
+            ):
+                values = self._credential_resolver.resolve_console_values(
+                    task_id=self.task_id, bmc_host=str(arguments["ip"]),
+                    ssh_port=arguments.get("ssh_port", 22))
+                register_secret_values(values)
+                return values
             if self._credential_values is None and arguments and arguments.get("ip") and self._credential_resolver.uses_structured_source(self.task_id):
                 transports = ("redfish",) if tool_name == "upgrade_run" else ("ssh",)
                 if tool_name == "log_bundle_collect":

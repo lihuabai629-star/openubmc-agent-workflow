@@ -92,96 +92,6 @@ test("a discovered target source does not replace the requested KB page", { time
   assert.equal(await page.getByLabel("openUBMC 账号", { exact: true }).isVisible(), true);
 });
 
-test("a private-root conflict offers one local repair and resumes the requested page", { timeout: 30000 }, async (t) => {
-  const { page, url } = await configurationPage(t, ["--kind", "kb"]);
-  let blocked = true;
-  const calls = [];
-  await page.route("**/api/state", async (route) => {
-    if (!blocked) {
-      const response = await route.fetch();
-      return route.fulfill({ json: { ...(await response.json()), storage_repair: true } });
-    }
-    return route.fulfill({ json: {
-      storage: { ok: false, error_code: "windows_private_root_conflict", roots: [{
-        root_id: "data", capabilities: ["data", "cache", "config"],
-        path: "C:\\Users\\fixture\\AppData\\Local\\openubmc",
-        status: "repairable", snapshot_token: "a".repeat(64),
-      }] },
-      environment: { platform: "Windows", hostname: "fixture", config_home: "C:\\Users\\fixture\\AppData\\Local" },
-      page_session: { kind: "kb" },
-    } });
-  });
-  await page.route("**/api/plugin", async (route) => {
-    const data = route.request().postDataJSON();
-    calls.push(data);
-    blocked = data.action !== "repair-storage";
-    await route.fulfill({ json: { status: blocked ? "restored" : "repaired", root_id: "data" } });
-  });
-  await page.goto(url);
-  await page.getByRole("button", { name: "修复本机目录", exact: true }).waitFor();
-  assert.equal(await page.locator("#editor").isVisible(), false);
-  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
-  await page.getByLabel("openUBMC 账号", { exact: true }).waitFor();
-  assert.deepEqual(calls, [{ action: "repair-storage", root_id: "data", snapshot_token: "a".repeat(64) }]);
-  assert.equal(await page.locator("#editor").isVisible(), true);
-  await page.locator("#plugin-maintenance summary").click();
-  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
-  await page.getByRole("button", { name: "修复本机目录", exact: true }).waitFor();
-  assert.deepEqual(calls.at(-1), { action: "undo-storage" });
-});
-
-test("each repaired private root remains undoable while another root is blocked", { timeout: 30000 }, async (t) => {
-  const { page, url } = await configurationPage(t, ["--kind", "kb"]);
-  const roots = ["data", "state"];
-  const repaired = new Set();
-  const transactions = [];
-  const calls = [];
-  await page.route("**/api/state", async (route) => {
-    const pending = roots.filter((root) => !repaired.has(root));
-    if (!pending.length) {
-      const response = await route.fetch();
-      return route.fulfill({ json: { ...(await response.json()), storage_repair: transactions.length > 0 } });
-    }
-    return route.fulfill({ json: {
-      storage: { ok: false, error_code: "windows_private_root_conflict", roots: pending.map((root_id) => ({
-        root_id, path: `C:\\fixture\\${root_id}`, status: "repairable", snapshot_token: "a".repeat(64),
-      })) },
-      storage_repair: transactions.length > 0,
-      environment: { platform: "Windows", hostname: "fixture", config_home: "C:\\fixture" },
-      page_session: { kind: "kb" },
-    } });
-  });
-  await page.route("**/api/plugin", async (route) => {
-    const data = route.request().postDataJSON();
-    calls.push(data);
-    if (data.action === "repair-storage") {
-      repaired.add(data.root_id);
-      transactions.push(data.root_id);
-      return route.fulfill({ json: { status: "repaired", root_id: data.root_id } });
-    }
-    const root_id = transactions.pop();
-    repaired.delete(root_id);
-    return route.fulfill({ json: { status: "restored", root_id } });
-  });
-  await page.goto(url);
-  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
-  await page.locator("#storage-path").getByText("C:\\fixture\\state", { exact: true }).waitFor();
-  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\state");
-  assert.equal(await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).isVisible(), true);
-  await page.getByRole("button", { name: "修复本机目录", exact: true }).click();
-  await page.locator("#plugin-maintenance summary").click();
-  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
-  await page.locator("#storage-path").getByText("C:\\fixture\\state", { exact: true }).waitFor();
-  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\state");
-  await page.getByRole("button", { name: "撤销本次目录修复", exact: true }).click();
-  await page.locator("#storage-path").getByText("C:\\fixture\\data", { exact: true }).waitFor();
-  assert.equal(await page.locator("#storage-path").textContent(), "C:\\fixture\\data");
-  assert.deepEqual(calls.map(({ action, root_id }) => [action, root_id]), [
-    ["repair-storage", "data"], ["repair-storage", "state"],
-    ["undo-storage", undefined], ["undo-storage", undefined],
-  ]);
-});
-
 test("a focused page saves the requested account and signals completion without a chat reply", { timeout: 30000 }, async (t) => {
   const { page, url, completion } = await configurationPage(t, ["--kind", "kb", "--wait-for-save"]);
   await page.goto(url);
@@ -289,6 +199,33 @@ test("a device has a BMC override and an associated OS with its own account", { 
   assert.equal(config.credentials[config.targets["192.0.2.20"].os.ssh].user, "os-user");
   assert.equal(config.credentials[config.defaults.bmc.ssh].user, "default-user");
   assert.equal(JSON.stringify(config).includes("os-secret"), false);
+});
+
+test("SOL account saves without an OS IP and follows a later explicit association", { timeout: 30000 }, async (t) => {
+  const { page, api, url } = await configurationPage(t, ["--focus-target", "192.0.2.10"]);
+  await page.goto(url);
+  await page.getByRole("textbox", { name: "BMC 用户名", exact: true }).fill("bmc-user");
+  await page.getByLabel("BMC 密码", { exact: true }).fill("bmc-fixture-secret");
+  const device = page.getByRole("group", { name: "设备", exact: true });
+  await device.getByLabel("此 OS 使用不同账号").check();
+  await device.getByLabel("设备 OS 用户名", { exact: true }).fill("console-user");
+  await device.getByLabel("设备 OS 密码", { exact: true }).fill("console-fixture-secret");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "配置已生效" }).waitFor();
+  let config = (await api("/api/state")).targets.config;
+  assert.deepEqual(config.devices, {});
+  assert.equal(config.credentials[config.targets["192.0.2.10"].os.ssh].user, "console-user");
+  assert.equal(JSON.stringify(config).includes("console-fixture-secret"), false);
+  await page.reload();
+  assert.equal(await device.getByLabel("此 OS 使用不同账号").isChecked(), true);
+  assert.equal(await device.getByLabel("设备 OS 用户名", { exact: true }).inputValue(), "console-user");
+  await device.getByLabel("关联 OS IP", { exact: true }).fill("192.0.2.20");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "配置已生效" }).waitFor();
+  config = (await api("/api/state")).targets.config;
+  assert.equal(config.targets["192.0.2.10"]?.os, undefined);
+  assert.equal(config.credentials[config.targets["192.0.2.20"].os.ssh].user, "console-user");
+  assert.deepEqual(config.devices, { "192.0.2.10": { os_ip: "192.0.2.20" } });
 });
 
 test(

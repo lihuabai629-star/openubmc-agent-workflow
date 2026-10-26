@@ -26,6 +26,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 
 - For current systemd service failures, use a `systemd` selector with literal `.service` names
   or `["failed"]` discovery; see the Agent semantic interface reference below.
+- For an authorized OS task with a BMC IP but no OS IP, use `os_console` through BMC SSH and native SOL
+  before declaring OS access unavailable; read [OS serial access](references/os-console.md).
 - Call `observe` for an exact read-only question using only required selectors.
   A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.
@@ -161,6 +163,7 @@ Read the relevant one-hop references:
 
 - Run, Gate and recovery: `references/agent-gateway.md`, `references/host-continuity.md`
 - Remote credentials, preflight, helpers, concurrency, and target automation: `references/remote-automation.md`
+- OS access through BMC SOL when the OS IP is missing: `references/os-console.md`
 - Evidence selection and correlation: `references/evidence-workflow.md`
 - Hypothesis-directed Drive diagnosis and fault-chain comparison: `references/diagnostic-advice.md`
 - Combined snapshot details: `references/workflow.md`

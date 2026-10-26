@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-upgrade"))
 
 from openubmc_upgrade.webui import (  # noqa: E402
+    HTTP_ERROR_LIMIT,
     WebUiHttpError,
     WebUiHttpSession,
     SameOriginRedirectHandler,
@@ -316,6 +317,53 @@ class WebUiTests(unittest.TestCase):
         self.assertIn(hashlib.sha256(body).hexdigest(), message)
         self.assertNotIn("response-secret", message)
         self.assertNotIn("request-secret", message)
+
+    def test_http_error_keeps_endpoint_and_redacted_server_reason(self) -> None:
+        body = json.dumps({"error": {
+            "code": "Base.1.0.GeneralError",
+            "message": "Upload rejected",
+            "Password": "response-secret",
+            "@Message.ExtendedInfo": [{
+                "MessageId": "iBMC.0.1.0.FirmwareUploadError",
+                "Message": "request-secret csrf-secret session-secret: invalid filename",
+                "MessageArgs": ["unprojected-secret"],
+            }],
+        }}).encode()
+        session = WebUiHttpSession(origin="https://bmc.example:443",
+            username="Administrator", password="request-secret", verify_tls=False)
+        session._csrf_token = "csrf-secret"
+        session._session_id = "session-secret"
+        session.opener = _FailingOpener(body)
+
+        with self.assertRaises(WebUiHttpError) as raised:
+            session.request_json("POST", "/UI/Rest/FirmwareInventory?token=query-secret")
+
+        error = raised.exception
+        self.assertEqual(error.diagnostics["method"], "POST")
+        self.assertEqual(error.diagnostics["path"], "/UI/Rest/FirmwareInventory")
+        self.assertEqual(error.diagnostics["error_code"], "Base.1.0.GeneralError")
+        self.assertEqual(error.diagnostics["messages"][0]["MessageId"],
+                         "iBMC.0.1.0.FirmwareUploadError")
+        self.assertIn("invalid filename", str(error))
+        for secret in ("request-secret", "response-secret", "csrf-secret", "session-secret",
+                       "unprojected-secret", "query-secret"):
+            self.assertNotIn(secret, str(error))
+
+    def test_http_error_body_is_bounded_and_labels_its_prefix_digest(self) -> None:
+        body = b"x" * (HTTP_ERROR_LIMIT * 2)
+        session = WebUiHttpSession(origin="https://bmc.example:443",
+            username="Administrator", password="request-secret", verify_tls=False)
+        session.opener = _FailingOpener(body)
+
+        with self.assertRaises(WebUiHttpError) as raised:
+            session.request_json("POST", "/UI/Rest/FirmwareInventory")
+
+        diagnostics = raised.exception.diagnostics
+        self.assertTrue(diagnostics["response_truncated"])
+        self.assertNotIn("response_sha256", diagnostics)
+        self.assertEqual(diagnostics["response_prefix_sha256"],
+                         hashlib.sha256(body[:HTTP_ERROR_LIMIT + 1]).hexdigest())
+        self.assertNotIn("x" * 10, str(raised.exception))
 
     def test_close_resets_state_and_allows_a_fresh_login(self) -> None:
         deleted = []
