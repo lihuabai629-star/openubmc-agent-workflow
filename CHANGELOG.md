@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.15 (development)
+
+- Developer chooses implementations from repository mechanisms, platform facilities and installed dependencies before adding code. Its final diff review uses actual callers and registrations to assess simplification while preserving lifecycle, generated-source, compatibility and hardware contracts.
+
 ## 2.2.14 (development)
 
 - Direct Live Patch CLI journals have an explicit reconcile-only command with the original task and operation IDs. Recovery pins the original artifact identity and refuses missing or mismatched journals without a new mutation; CLI task IDs remain separate from public Runs.

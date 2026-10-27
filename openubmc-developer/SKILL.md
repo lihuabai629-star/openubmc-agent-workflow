@@ -111,6 +111,9 @@ unknown coverage as a gap. Submit actual component checks through the current
 - Put behavior in the layer that already owns it. Keep adapters thin, preserve a
   single authoritative state writer, and reuse existing helpers, interfaces,
   lifecycle hooks, registration mechanisms, and error paths.
+- Prefer a suitable repository mechanism, then the standard library or platform,
+  then an installed dependency, before adding a new implementation. Trace real
+  callers and fix a shared rule once at its responsible layer.
 - Match nearby naming, dependency direction, logging, async/concurrency style,
   cleanup, and test conventions.
 - Make the smallest complete change: update every required layer, but avoid
@@ -154,6 +157,17 @@ confirming the workspace is no longer needed.
 Use the supplied output path and schema, with source-expression fields limited to the source expression.
 Put explanations in summary or evidence fields; check saved required fields, types, enums and expressions.
 
+Before final verification, review the completed diff against the selected
+precedent for misplaced logic, duplicate ownership, layer leakage, bypassed
+interfaces, incomplete generation, and missed consumers. Check duplicated
+implementations, forwarding wrappers, unused options, and speculative abstractions
+against real callers and registrations. A thin wrapper or single implementation
+can still own credentials, platform adaptation, lifecycle, or a test seam.
+Preserve authored/generated chains, external and MDB/MDS string registrations,
+compatibility, error handling, trust-boundary validation, and hardware behavior.
+Choose simplifications by responsibility and observable behavior, not line count;
+keep optional cleanup separate from defects in the requested change.
+
 Run the smallest sufficient repository-selected checks that prove the changed
 contract. Repository-local generation, compilation, unit-test builds, tests,
 and validators remain source verification. Prefer executing changed behavior or
@@ -162,10 +176,6 @@ inspection, product builds, and runtime validation.
 Classify official UT separately from supplementary checks. A dependency-blocked
 test never started, and supplementary success is never promoted to official UT,
 compilation, package, firmware, or hardware-validation success.
-
-Review the completed diff against the selected precedent for misplaced logic,
-duplicate ownership, layer leakage, bypassed interfaces, unnecessary public
-abstractions, incomplete generation, and missed consumers.
 
 Use [community checks](references/community-checks.md) for changed interface, concurrency, Web Backend or Redfish contracts, and [interface coverage](references/interface-coverage.md) for their documentation.
 Hand off source changes with behavior, files, focused checks, workspace state and remaining gaps.
@@ -214,3 +224,7 @@ change requires it.
   [hardware-vpd.md](references/hardware-vpd.md)
 - SR/DDS product records and effective product selection: [sr-dds-product-records.md](references/sr-dds-product-records.md)
 - ProfileSchema import/export, adapters, redaction, and compatibility: [profile-schema-import-export.md](references/profile-schema-import-export.md)
+
+Implementation-selection and simplification guidance adapts
+[Ponytail v5.3.2](https://github.com/DietrichGebert/ponytail/tree/09c434ab73ca43761c5d8b0c5d341926c2fba710)
+under its [MIT license](resources/community/ponytail/LICENSE).

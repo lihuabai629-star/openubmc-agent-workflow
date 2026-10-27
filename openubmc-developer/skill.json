@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "name": "openubmc-developer",
-  "version": "5.5.2",
+  "version": "5.5.3",
   "description": "Automatically analyze and change existing openUBMC source when source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior remain unresolved; exclude specified edits, documentation-only work, and separately owned workflows.",
   "author": "OpenUBMC Team",
   "license": "MulanPSL-2.0",
@@ -39,6 +39,7 @@
     "resources/community/concurrency/references/lua-numeric-gc.md",
     "resources/community/concurrency/references/patterns.md",
     "resources/community/concurrency/scripts/collect_candidates.py",
+    "resources/community/ponytail/LICENSE",
     "resources/community/provenance.json",
     "resources/community/redfish-diff/LICENSE",
     "resources/community/redfish-diff/references/methodology.md",
