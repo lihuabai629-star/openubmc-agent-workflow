@@ -1,106 +1,106 @@
 {
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
-  "release_version": "2.1.3",
-  "source_commit": "f28b2cdf1248cadb4c43b1371927fe7fbdd39821",
+  "release_version": "2.2.16",
+  "source_commit": "c08d3a13895587d24d98640747d186f3225e746d",
   "source_commit_policy": "lock-finalization-parent-v1",
-  "workflow_digest": "sha256:f51abd6cf79758f3c92588bb49ee591212a7fec2a9b53092d54fa89260a545a1",
+  "workflow_digest": "sha256:a9b2b9e4fd12841bd7a3a1a52ca20997caa89d19b92f686ff9c011c1071c76e0",
   "skills": [
     {
       "name": "openubmc-environment-setup",
       "path": "openubmc-environment-setup",
-      "version": "2.6.0",
+      "version": "2.6.2",
       "manifest_version": 1,
-      "digest": "sha256:1838d44402793fb015d67ac058f96e9ec60b1276a3c44f5f632118d679f2076b"
+      "digest": "sha256:03436f490cb04f12b854abd2edf23e1e58af77ecde376c6c4c998887f1694027"
     },
     {
       "name": "openubmc-debug",
       "path": "openubmc-debug",
-      "version": "1.0.0",
+      "version": "1.0.3",
       "manifest_version": 1,
-      "digest": "sha256:741ba6f58024c23ee1ad399219811d5e0acf0fdbefc8fa893c4affdbe57a43ee"
+      "digest": "sha256:7ff68906cde75a3c18a3e77a8bafb2d34f54abaa69c848e7a4b3963f3e8cde96"
     },
     {
       "name": "openubmc-log-analyzer",
       "path": "openubmc-log-analyzer",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "manifest_version": 1,
-      "digest": "sha256:331fa45906e36d0b9195c3efcc7a3fc95c40d78fb359e7eb41bcb686aa738470"
+      "digest": "sha256:e562152ca9ed834366cb7e04959e8f6189660e05f81ce64ff59f3fa0dfa49edb"
     },
     {
       "name": "openubmc-developer",
       "path": "openubmc-developer",
-      "version": "5.5.0",
+      "version": "5.5.4",
       "manifest_version": 1,
-      "digest": "sha256:337d3b9277b15030ebc4d3bcf07b4be36db0ca5a842888ae5025b6154b7ff1f0"
+      "digest": "sha256:0217e8e83dc1e7e9b6d4510fe4e6d22a6875281c0143f37922da478a7b897805"
     },
     {
       "name": "openubmc-build",
       "path": "openubmc-build",
-      "version": "1.0.0",
+      "version": "1.0.5",
       "manifest_version": 1,
-      "digest": "sha256:99ae1452eb48dbe400845e4bb628151756e0238e0c2332aa21ff780ea0838fc1"
-    },
-    {
-      "name": "openubmc-bingo-build",
-      "path": "openubmc-bingo-build",
-      "version": "1.0.0",
-      "manifest_version": 1,
-      "digest": "sha256:9a09ff91e51bd0168d65c5229f06dc3ff35a28505da7990656a994de9fa9bf92"
-    },
-    {
-      "name": "openubmc-bingo-development",
-      "path": "openubmc-bingo-development",
-      "version": "1.0.0",
-      "manifest_version": 1,
-      "digest": "sha256:49f9f9298dfc2f3cb384dac85acdd8f89d441c8220c23aafe2f6df9f5835f899"
+      "digest": "sha256:dce5c49a4c56de731f464467c3d96c312ee48e3d67f2fb13186c52d985592642"
     },
     {
       "name": "openubmc-upgrade",
       "path": "openubmc-upgrade",
       "version": "1.3.0",
       "manifest_version": 1,
-      "digest": "sha256:44253a9adec61a4097a8c16cd1956dbec55f5ae6f07fa7436e7344fcd05be96a"
+      "digest": "sha256:02e3d7e4be9f90eadd75bade16204a478f3be7ae8b9b45f646f869d19de8abb6"
     },
     {
       "name": "openubmc-live-patch",
       "path": "openubmc-live-patch",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "manifest_version": 1,
-      "digest": "sha256:f83aad967371efa2707546aaa0f31d466db3848b3f96e6f319e35bcc0130fb99"
+      "digest": "sha256:19c7c1746c076bcae4172dc3c07fa58de8fda73feb9538f1cbb1890b7d0d5e21"
     },
     {
       "name": "openubmc-dt-testing",
       "path": "testing",
       "version": "2.0.0",
       "manifest_version": 1,
-      "digest": "sha256:be3f05a5d8b18e9d3300db8414d7837f460b74c5b98eab166cd1b509cf0f55ed"
+      "digest": "sha256:51d7cc81eb2ad6ae5574b7a9e5f050fc78ad5b60c610d6e8aad3ee91a26cdad5"
     },
     {
       "name": "openubmc-publish",
       "path": "openubmc-publish",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "manifest_version": 1,
-      "digest": "sha256:db1f50829d209781fb7ff2eba7dbd2d0afb1b5430582e930a31ad14afb3d53ac"
-    },
-    {
-      "name": "openubmc-lua-component",
-      "path": "lua-component",
-      "version": "4.0.0",
-      "manifest_version": 1,
-      "digest": "sha256:c1034d806f7c66f979138da651e71712d9c0ff93f7d1ac25f20e7d0c51f483ec"
+      "digest": "sha256:429656e683f430672c55ebb7261bf4639298775ed195d4df9cb957bb82bb4ee2"
     },
     {
       "name": "openubmc-qemu-testing",
       "path": "qemu-testing",
-      "version": "2.0.0",
+      "version": "2.1.2",
       "manifest_version": 1,
-      "digest": "sha256:b18dbfea4fc710c84e6a6e1141a6230e56379866c69c945e79a261b5621d563f"
+      "digest": "sha256:1759ed6c90bdbf7e6a3446a9e70f5d1a62deb5c14d7f06ed5bb124192854b24f"
+    },
+    {
+      "name": "openubmc-doc-review",
+      "path": "openubmc-doc-review",
+      "version": "1.0.0",
+      "manifest_version": 1,
+      "digest": "sha256:99ed9ee9700bc152816c080562b09b9b432d66e2fa1824e2c44272e3a72bd881"
+    },
+    {
+      "name": "openubmc-log-bundle-analyzer",
+      "path": "openubmc-log-bundle-analyzer",
+      "version": "1.0.0",
+      "manifest_version": 1,
+      "digest": "sha256:92d90ba69782741640cbd0d9e742ca9a537dcd5962baf24a9bdc97ab78e0e6a2"
+    },
+    {
+      "name": "openubmc-code-submit",
+      "path": "openubmc-code-submit",
+      "version": "1.0.0",
+      "manifest_version": 1,
+      "digest": "sha256:14820333852ca55aa98517118e8ae72c3352aee9cb4341a82d661413dd80967b"
     }
   ],
   "runtime": {
     "api_version": "openubmc.target-runtime.v1",
-    "content_digest": "sha256:cb14cb28b1c19e796c5f8dc05e752f52af239d99b5800e171fc28bdbcd1568e9"
+    "content_digest": "sha256:e987ec45e6d9664a49ad826c18e57445c4fa590cffeb5cacd563900bb144c460"
   },
   "schemas": {
     "workflow_schema": "openubmc-agent-workflow.v1",
@@ -116,11 +116,11 @@
   "dependencies": {
     "python_validation": {
       "path": "requirements-ci.lock",
-      "digest": "sha256:7d9b8e72c729cb26a08d02762af0371cc06e36547bb147537bd96ef9313c3e8b"
+      "digest": "sha256:c1300af7292f6ecb35aa0b85a1e6ee876fcb8475fe6ae13124e50837735de301"
     },
     "knowledge_mcp": {
       "path": "openubmc-kb-mcp/package-lock.json",
-      "digest": "sha256:f964a04974a9f9d8a61158a69e91346fc5a0b41fb809f1d175e90faf63f3c770"
+      "digest": "sha256:be150211dc8f777442dbad43aa15d885f0b4a6aaccc736d1de9707486a06a723"
     }
   },
   "evaluation_harnesses": {
@@ -174,14 +174,14 @@
         "openubmc-log-analyzer",
         "openubmc-developer",
         "openubmc-build",
-        "openubmc-bingo-build",
-        "openubmc-bingo-development",
         "openubmc-upgrade",
         "openubmc-live-patch",
         "openubmc-dt-testing",
         "openubmc-publish",
-        "openubmc-lua-component",
-        "openubmc-qemu-testing"
+        "openubmc-qemu-testing",
+        "openubmc-doc-review",
+        "openubmc-log-bundle-analyzer",
+        "openubmc-code-submit"
       ],
       "target-runtime": [
         "openubmc-environment-setup",
@@ -190,7 +190,8 @@
         "openubmc-developer",
         "openubmc-build",
         "openubmc-upgrade",
-        "openubmc-live-patch"
+        "openubmc-live-patch",
+        "openubmc-log-bundle-analyzer"
       ]
     },
     "clients": {
@@ -207,9 +208,10 @@
       "openubmc-developer",
       "openubmc-build",
       "openubmc-upgrade",
-      "openubmc-live-patch"
+      "openubmc-live-patch",
+      "openubmc-log-bundle-analyzer"
     ]
   },
-  "source_tree_digest": "sha256:965a861621b74b4dd10b66b5776931404c68aefaf89fc7109a27afdfe42eeeac",
-  "lock_digest": "sha256:da1444fe62c345e85858fbab24201ba9a3685ce23fa1da6013f4896a0f5174e3"
+  "source_tree_digest": "sha256:fc5908b8a86c7a3d808065669d190d5c11f8968383778bf22bea530de8a92df2",
+  "lock_digest": "sha256:83a7e7966ba42772359196b5b7c214fad6273a3724f61da14176336ef322ea3b"
 }
