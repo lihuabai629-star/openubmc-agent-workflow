@@ -1369,10 +1369,11 @@ class PlanResolverTests(unittest.TestCase):
                     before["run_id"]
                 )
 
-                self.assertEqual(final["state"], "running")
+                self.assertEqual(final["state"], "incident")
+                self.assertEqual(final["incident"]["code"], "verification_retry_exhausted")
                 self.assertIsNone(final["outcome"])
                 self.assertFalse(projection.get("run_outcome"))
-                self.assertIn("fresh target verification", final["next"])
+                self.assertIsNotNone(final["incident"])
             finally:
                 service.close()
 

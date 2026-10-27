@@ -8,10 +8,9 @@ description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感�
 At a stage change, read [the phase handoff](<references/skill-routing.md>) and its owner; carry the Run and authorization.
 
 Resolve `<plugin-root>` from the active Skill file's parent `skills` directory.
-Use that installation's helpers; do not assume a global `~/.agents/skills` copy.
+Use helpers from that installation.
 
 ## Scope and ownership
-
 Diagnose live symptoms and verify requested deployed behavior.
 
 Route by task:
@@ -44,19 +43,14 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 - An `ObservationRef` proves reusable observation evidence; it does not by itself prove a root
   cause. Every diagnosis workflow reaches the Runtime-owned `diagnosis.acceptance` Gate before
   `developer.change`, including a complete collection receipt.
-- Answer `diagnosis.acceptance` once with the returned `run_id`, `gate_id`, `gate_version`, and
-  `schema_digest`. A completed response supplies `root_cause`, non-empty `evidence_ids` drawn only
-  from the current DiagnosticReceipt, `causal_chain`, `code_owner`, `contradictions`,
-  `remaining_gaps`, and `verification_status=verified` when accepting the diagnosis. Contradictions
-  must be empty for acceptance. The Runtime derives observation time and freshness from its
-  persisted evidence; do not restate or invent them.
-- `execute(kind=resume)` only reattaches the current Run. It does not answer or repair an
-  unanswered diagnosis Gate, so an unchanged Gate is not a reason to retry resume. Mark the Gate
-  failed or cancelled when no defensible diagnosis can be formed; that Run cannot
-  claim an accepted diagnosis. Continue independent authorized source inspection
-  and checks while preserving the diagnostic gap.
-  `response_required=true` with `progress.status=no_progress` means respond using the returned
-  binding instead of issuing another resume.
+- Answer `diagnosis.acceptance` using its returned binding and input schema.
+  Accept only a verified causal chain supported by non-empty evidence IDs from
+  the current DiagnosticReceipt, with an identified owner and no contradictions.
+  The Runtime derives observation time and freshness from persisted evidence.
+- `execute(kind=resume)` reattaches the Run; it cannot answer an unanswered Gate.
+  For `response_required=true` and `progress.status=no_progress`, submit the
+  returned Gate binding. When no defensible diagnosis exists, fail or cancel
+  that Gate and preserve the gap while continuing independent authorized work.
 - For `completed`, `failed`, or `cancelled`, deliver the Outcome and remaining gaps.
   A terminal Run stays terminal when resumed. Start a new Run for a new target or intent,
   record its link to the prior Run, and use its returned bindings. An unknown Effect instead
@@ -71,7 +65,7 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 - Do not use compatibility or operator operations from the default Agent profile.
 Windows/WSL: see `references/windows-routing.md`.
 
-For a read-only diagnosis, replace the target and purpose in this complete `execute` Action:
+For read-only diagnosis, fill the target and purpose in this `execute` Action:
 
 ```json
 {
@@ -138,7 +132,6 @@ observation. For delivery verification, account for every requested item and kee
 identity separate from local source or package evidence.
 
 ## Result contract
-
 Report concisely unless machine-readable output was requested:
 
 1. status and shortest evidence-backed conclusion;

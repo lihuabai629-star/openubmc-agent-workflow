@@ -47,13 +47,15 @@ for (const mode of ["timeout", "cancel-before-stop", "cancel-during-stop"]) {
     const client = new Client({ name: "deadline-test", version: "1.0.0" });
     t.after(() => client.close());
     await client.connect(transport);
+    const serverPid = transport.pid;
+    assert.ok(Number.isInteger(serverPid) && serverPid > 0);
     const stopped = new Promise(resolveStopped => { client.onclose = resolveStopped; });
     const controller = new AbortController();
     const pending = client.callTool({ name: "openubmc_kb_query", arguments: { query: "fan" } }, undefined, { signal: controller.signal });
     const outcome = cancelRequest ? assert.rejects(pending) : pending;
     await requestStarted;
     if (mode === "cancel-before-stop") { controller.abort(); await outcome; }
-    process.kill(transport.pid, "SIGTERM");
+    process.kill(serverPid, "SIGTERM");
     if (mode === "cancel-during-stop") {
       const until = Date.now() + 1000;
       let shuttingDown = false;

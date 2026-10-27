@@ -25,6 +25,7 @@ FILES = {
     'behavior/test_plugin_startup.py': 'scripts/tests/test_plugin_startup.py',
     'behavior/test_plugin_skill_entry.py': 'scripts/tests/test_plugin_skill_entry.py',
     'behavior/config.test.mjs': 'openubmc-kb-mcp/test/config.test.js',
+    'test-support/private-fixture.mjs': 'openubmc-kb-mcp/test-support/private-fixture.js',
 }
 
 
@@ -37,6 +38,8 @@ def main():
     inventory = {}
     for name, source in FILES.items():
         data = subprocess.check_output(['git', 'show', commit + ':' + source], cwd=ROOT)
+        if name == 'behavior/config.test.mjs':
+            data = data.replace(b'../test-support/private-fixture.js', b'../test-support/private-fixture.mjs')
         target = args.output/name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)

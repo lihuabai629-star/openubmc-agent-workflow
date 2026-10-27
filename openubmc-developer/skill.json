@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "name": "openubmc-developer",
-  "version": "5.5.3",
+  "version": "5.5.4",
   "description": "Automatically analyze and change existing openUBMC source when source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior remain unresolved; exclude specified edits, documentation-only work, and separately owned workflows.",
   "author": "OpenUBMC Team",
   "license": "MulanPSL-2.0",
@@ -19,6 +19,7 @@
     "evals/evals.json",
     "evals/trigger-evals.json",
     "references/development-guidelines.md",
+    "references/change-review.md",
     "references/downstream-handoffs.md",
     "references/lua-component.md",
     "references/mdb-mds.md",

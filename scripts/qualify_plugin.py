@@ -102,7 +102,8 @@ def wait_for_process_exit(process_id: int, *, timeout: float = 5) -> None:
 
 
 def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180,
-                      persistent: bool = False, kb_unavailable: bool = False) -> dict:
+                      persistent: bool = False, kb_unavailable: bool = False,
+                      plugin: Path) -> dict:
     machine = platform.machine().lower()
     arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
     executable = ROOT/f'plugin/host/node_modules/@openai/codex-linux-{arch}/vendor/{target}-unknown-linux-musl/bin/codex'
@@ -123,9 +124,18 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
     failure_marker = root/'kb-failure-injected'
     failing_kb = ('require("node:fs").writeFileSync('
                   + json.dumps(str(failure_marker)) + ', "exit=23");process.exit(23)')
+    # Ordinary conversations keep optional backends. This probe explicitly needs
+    # Runtime and waits for the exact installed launcher's readiness.
+    runtime_server = json.loads((plugin/'.mcp.json').read_text())['mcpServers']['openubmc-target-runtime']
+    runtime_config = dict(runtime_server, cwd=str(plugin), required=True)
+    runtime_config.pop('type', None)
+    runtime_config['args'] = [str(plugin/argument) if argument.startswith('./') else argument
+                              for argument in runtime_config['args']]
+    runtime_fields = ', '.join(key+' = '+json.dumps(value) for key, value in runtime_config.items())
     argv = [str(executable), 'exec', '--json', *([] if persistent else ['--ephemeral']), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
             '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
             '-c', 'features.plugins=true', '-c', 'model_provider="openubmc_plugin_probe"',
+            '-c', 'mcp_servers.openubmc-target-runtime={' + runtime_fields + '}',
             '-c', 'model_providers.openubmc_plugin_probe.name="OpenUBMC plugin probe"',
             '-c', f'model_providers.openubmc_plugin_probe.base_url="http://127.0.0.1:{server.server_port}/v1"',
             '-c', 'model_providers.openubmc_plugin_probe.env_key="OPENUBMC_CODEX_PROBE_API_KEY"',
@@ -273,8 +283,8 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-BASELINE_VERSION = '2.1.2'
-BASELINE_SHA256 = '9d454a5afc1eb5f7deb05e1acffc12e90945c73fd19e3d26c40c41623726d448'
+BASELINE_VERSION = '2.1.9'
+BASELINE_SHA256 = '715c0bf9eeec4a1b118f0cf70b449179cd2cbed8d8a44a4cce66d2ed283a869c'
 
 
 def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None,
@@ -288,7 +298,7 @@ def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None,
         baseline_sha256 = BASELINE_SHA256
         baseline = workspace/'baseline.tar.gz'
         url = (f'https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/download/'
-               f'v{BASELINE_VERSION}/openubmc-v{BASELINE_VERSION}-codex.tar.gz')
+               f'v{BASELINE_VERSION}/openubmc-{BASELINE_VERSION}.tar.gz')
         with urllib.request.urlopen(url, timeout=60) as response:
             baseline.write_bytes(response.read(4*1024*1024))
     if not baseline_sha256 or not re.fullmatch(r'[0-9a-f]{64}', baseline_sha256):
@@ -308,7 +318,7 @@ def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None,
     installed = command(['codex','plugin','add','openubmc@upgrade-test','--json'],env)
     old_plugin = Path(installed['installedPath'])
     command([sys.executable,'-I',str(old_plugin/'scripts/pluginctl.py'),'prepare'],env)
-    persisted = native_exec_probe(env,workspace,old_lock['source_commit'],persistent=True)
+    persisted = native_exec_probe(env,workspace,old_lock['source_commit'],persistent=True,plugin=old_plugin)
     config = codex/'config.toml'; before = config.read_bytes()
     overrides = ''
     for name, capability in [('openubmc-target-runtime','runtime'),('openubmc-kb','kb')]:
@@ -394,10 +404,10 @@ def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None,
             server = next(row for row in servers if row['name'] == name)
             if Path(server['transport']['cwd']).resolve() != plugin:
                 raise ValueError('MCP launcher does not resolve to the installed plugin')
-        native_exec = native_exec_probe(env, root, lock['source_commit'])
+        native_exec = native_exec_probe(env, root, lock['source_commit'], plugin=plugin)
         isolation_root = root/'kb-isolation'
         isolation_root.mkdir()
-        kb_isolation = native_exec_probe(env, isolation_root, lock['source_commit'], kb_unavailable=True)
+        kb_isolation = native_exec_probe(env, isolation_root, lock['source_commit'], kb_unavailable=True, plugin=plugin)
         resume = native_upgrade_probe(root, archive, baseline, baseline_sha256)
         distribution = Path(installed['source'])
         admin = [sys.executable, '-I', str(distribution/'scripts/plugin_admin.py')]

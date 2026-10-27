@@ -46,7 +46,7 @@ class MetadataReleaseTests(unittest.TestCase):
         manifest = json.loads((ROOT / "skill.json").read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["name"], "openubmc-developer")
-        self.assertEqual(manifest["version"], "5.5.2")
+        self.assertEqual(manifest["version"], "5.5.4")
         self.assertEqual(set(manifest["files"]), discover_packaged_files())
         self.assertEqual(len(manifest["files"]), len(set(manifest["files"])))
         for relative in manifest["files"]:

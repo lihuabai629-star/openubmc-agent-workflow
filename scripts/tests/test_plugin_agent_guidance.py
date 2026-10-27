@@ -40,9 +40,10 @@ assert command.run_id == 'run-qemu'
             reference = ' '.join((plugin / 'skills/openubmc-debug/references/remote-automation.md').read_text().split())
             setup = ' '.join((plugin / 'skills/openubmc-environment-setup/SKILL.md').read_text().split())
             self.assertNotIn('Internal BMC workflows authorize insecure TLS by default', reference)
-            for content in (reference, setup):
-                self.assertIn('strict-check failure remains unverified', content)
-                self.assertIn('does not qualify certificate validation', content)
+            self.assertIn('does not establish certificate trust', reference)
+            self.assertIn('block other authorized observations', reference)
+            self.assertIn('not a certificate-verification pass', setup)
+            self.assertIn('A strict-check failure affects that assurance', setup)
 
     def test_packaged_debug_start_example_is_accepted_and_read_only(self):
         with tempfile.TemporaryDirectory() as temporary:

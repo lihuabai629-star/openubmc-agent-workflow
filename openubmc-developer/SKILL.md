@@ -157,7 +157,7 @@ confirming the workspace is no longer needed.
 Use the supplied output path and schema, with source-expression fields limited to the source expression.
 Put explanations in summary or evidence fields; check saved required fields, types, enums and expressions.
 
-Before final verification, review the completed diff against the selected
+Review the completed diff before final verification against the selected
 precedent for misplaced logic, duplicate ownership, layer leakage, bypassed
 interfaces, incomplete generation, and missed consumers. Check duplicated
 implementations, forwarding wrappers, unused options, and speculative abstractions
@@ -167,6 +167,9 @@ Preserve authored/generated chains, external and MDB/MDS string registrations,
 compatibility, error handling, trust-boundary validation, and hardware behavior.
 Choose simplifications by responsibility and observable behavior, not line count;
 keep optional cleanup separate from defects in the requested change.
+For a requested source review, use [change review](references/change-review.md)
+for Standards/Spec findings and their evidence. This reference ships with the
+plugin; an external review Skill is optional.
 
 Run the smallest sufficient repository-selected checks that prove the changed
 contract. Repository-local generation, compilation, unit-test builds, tests,

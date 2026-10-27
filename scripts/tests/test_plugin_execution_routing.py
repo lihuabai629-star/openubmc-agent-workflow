@@ -94,6 +94,7 @@ for line in sys.stdin:
         self.control.write_text(json.dumps({"health": healthy, "call_log": str(call_log),
                                             "tools": (["observe", "execute"] if doctor_tools is None
                                                       else doctor_tools)}), encoding="utf-8")
+        (self.root / "home").mkdir(exist_ok=True)
         environment = dict(os.environ)
         environment.pop("OPENUBMC_EXECUTION_HOST", None)
         environment.pop("OPENUBMC_SELECTED_WSL_DISTRO", None)

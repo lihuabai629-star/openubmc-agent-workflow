@@ -42,7 +42,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(concept, SKILL)
         self.assertRegex(SKILL, r"observable\s+outcome")
 
-        self.assertLessEqual(len(SKILL.splitlines()), 210)
+        self.assertLessEqual(len(SKILL.splitlines()), 240)
         self.assertNotIn("Completion criterion:", SKILL)
 
     def test_straightforward_changes_do_not_require_a_specification_card(self) -> None:
@@ -72,8 +72,8 @@ class SkillContractTests(unittest.TestCase):
     def test_explicit_implementation_stops_only_for_a_material_decision(self) -> None:
         self.assertIn("authorize source edits", SKILL)
         self.assertRegex(SKILL, r"does not need a second approval")
-        self.assertRegex(SKILL, r"Pause only when repository evidence")
-        self.assertIn("required contract or generator", SKILL)
+        self.assertRegex(SKILL, r"Pause only for a necessary user decision")
+        self.assertIn("missing contract/generator", SKILL)
         self.assertRegex(SKILL, r"behavior-owning module or layer")
         self.assertNotIn("Wait for the user's approval", SKILL)
 
@@ -208,7 +208,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("each component root must", text)
         self.assertNotIn("Pass the exact local artifact", text)
         self.assertIn("does not authorize", SKILL)
-        self.assertIn("user explicitly asks to execute", SKILL)
+        self.assertIn("downstream stages were already authorized, continue directly", SKILL)
 
     def test_optional_workflow_state_is_not_a_developer_responsibility(self) -> None:
         for coupling in (

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.16
+
+- Source review guidance ships with Developer, including independent Standards and Spec findings, concrete failure evidence and workload-aware simplification. Installed plugins can use it without a separate global Skill.
+- Native upgrade qualification uses the published 2.1.9 plugin archive as its baseline.
+
 ## 2.2.15 (development)
 
 - Developer chooses implementations from repository mechanisms, platform facilities and installed dependencies before adding code. Its final diff review uses actual callers and registrations to assess simplification while preserving lifecycle, generated-source, compatibility and hardware contracts.
