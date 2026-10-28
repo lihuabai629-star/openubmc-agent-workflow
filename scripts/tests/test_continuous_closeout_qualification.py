@@ -390,7 +390,9 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             check=False,
         )
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.returncode, 0, completed.stderr or completed.stdout
+        )
         report = json.loads(completed.stdout)
         self.assertEqual(
             report["schema"],
