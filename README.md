@@ -126,8 +126,8 @@ In short:
 
 ## Immutable releases
 
-The development source version is 2.2.14. The last recorded public Codex plugin release is
-[2.1.6](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.1.6).
+The current public Codex plugin release is
+[2.2.16](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.2.16).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.
 
@@ -160,7 +160,9 @@ installation health fail even when the Runtime remains operational. The JSON rep
 `operational_ready`, `release_identity_verified`, and `evaluation_ready` separate so development
 usability cannot be mistaken for verified Release health.
 
-Before promotion, run the execute A/B qualification described in
+Codex plugin publication uses the marketplace's [Release Gate](https://github.com/lihuabai629-star/openubmc-codex-plugins/blob/main/docs/validation.md#codex-plugin-release-gate), which binds the archive, source lock, lifecycle evidence and both hosted CI runs. The source tag provides the same locked source; publication does not claim a new live-device, external-model or GUI qualification.
+
+For a separately selected Runtime/model qualification, run the execute A/B experiment described in
 `docs/agent-semantic-gateway.md`, then pass its digest-bound `summary.json` (with the adjacent
 `all_metrics.json`, `schedule.json`, and `run_evidence.json`) to the ordered release gate:
 
