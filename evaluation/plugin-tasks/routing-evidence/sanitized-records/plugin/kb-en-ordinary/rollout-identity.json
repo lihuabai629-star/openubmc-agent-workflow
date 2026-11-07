@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:106c70ad29d3a31ae1d973ed23a687e588d1aecdc3d53fdc4a2e49ff8d46ca8f",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f4c-d71d-7822-94ef-18580228665d",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "Search the configured openUBMC knowledge base for guidance on a missing fan sensor. Treat knowledge results only as candidate guidance. If the KB is not configured or authentication fails, report that environment failure plainly."
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:a09f675a0c7e2664e23a02658e3cab77fa67bed94d23ede46801b8ed7038d6ba"
+}

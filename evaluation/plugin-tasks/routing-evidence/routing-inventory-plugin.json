@@ -1,0 +1,319 @@
+[
+  {
+    "description": "Build and test openUBMC components or firmware: 编译组件、生成代码、运行测试、打 HPM 包、构建失败。Use for bingo/bmcgo compile, gen, test, component Conan packaging, or product HPM builds with verified local evidence. Route firmware upload and activation to openubmc-upgrade, live symptoms to openubmc-debug, and package uploads to openubmc-publish.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-build to select the mode that safely contains the command's actual effects, preserve my exact command, reuse the selected checkout, and return checked local build evidence or locally finalized artifact evidence.",
+      "displayName": "openUBMC Build",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Plan, run, and verify openUBMC builds"
+    },
+    "name": "openubmc:openubmc-build",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-build/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感器异常、告警、服务启动失败、接口报错、两台 BMC 对比。Use for live target symptoms, a supplied BMC IP, diagnostic handoff, or post-upgrade verification; correlate source, MDB/D-Bus, Redfish, logs, and optional OS evidence. Remote diagnosis is read-only; route implementation, builds, upgrades, and file replacement to their owning skills.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-debug 从源码、接口、对象、告警和日志中组合证据定位问题；需要时对比多个环境，并按 source-only、live-patch 或 build-upgrade 编排修复后的交付验证。",
+      "displayName": "openUBMC Debug",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "用多证据面定位 openUBMC 运行态问题"
+    },
+    "name": "openubmc:openubmc-debug",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-debug/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Use only for unresolved openUBMC decisions about source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior. Exclude specified edits, documentation-only work, and workflows owned by other Skills.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-developer only for unresolved openUBMC decisions about source ownership, repository extension patterns, authored/generated chains, component lifecycle, persistence, or cross-layer behavior. Exclude specified edits, documentation-only work, and workflows owned by other Skills.",
+      "displayName": "OpenUBMC Developer",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Resolve openUBMC source ownership and structure decisions"
+    },
+    "name": "openubmc:openubmc-developer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-developer/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "为 openUBMC 组件设计、编写和执行 UT/IT 测试，包括 LuaUnit、Mock、测试数据、bingo test、集成测试配置与覆盖率分析。Use when the user asks to add or run unit tests, integration tests, coverage checks, assertions, mocks, or test fixtures for an openUBMC component. Do not use for OpenBMC test frameworks or unrelated third-party runners.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-dt-testing 为当前 openUBMC 组件设计并运行 UT/IT 测试，补齐 Mock、测试数据与覆盖率验证。",
+      "displayName": "openUBMC DT Testing",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "编写并执行 openUBMC 组件 UT/IT 测试"
+    },
+    "name": "openubmc:openubmc-dt-testing",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/testing/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Configure or repair an installed openUBMC plugin on Linux/WSL: 新电脑配置、配置密钥、默认 BMC 账号密码、按 IP 覆盖、Conan 登录、KB 知识库配置、MCP 启动失败、插件检查。Use for local credentials, required tools, migration, and installation health; device diagnosis belongs to openubmc-debug.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-environment-setup to automatically install or repair the complete openUBMC workflow on this machine.",
+      "displayName": "openUBMC Environment Setup",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Automatically install the openUBMC agent workflow"
+    },
+    "name": "openubmc:openubmc-environment-setup",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-environment-setup/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Temporarily plan, apply, verify, or roll back a file replacement on a live openUBMC/BMC target during runtime debugging. Use for runtime-compatible Lua or SR/CSR replacement with explicit target mapping, checksum or backup evidence, mount restoration, bounded restart scope, and fresh verification. Do not use for permanent source delivery, component/product builds, or full firmware upgrade.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-live-patch to apply or roll back a typed temporary BMC file replacement, reuse carried TargetRun context, restore the original mount mode, and verify checksum and fresh runtime evidence.",
+      "displayName": "openUBMC Live Patch",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Plan and verify temporary BMC patches"
+    },
+    "name": "openubmc:openubmc-live-patch",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-live-patch/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Diagnose openUBMC/BMC issues from a one-click log bundle (.tar/.tar.gz), an extracted log directory, or a BMC/server entry point where the bundle should be collected first and analyzed locally. Use when the requested evidence source is a diagnostic bundle or offline logs. Do not use for direct live MDB/D-Bus/alarm comparison or multi-surface runtime diagnosis without a bundle workflow; route those tasks to openubmc-debug.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-log-analyzer 采集或读取 openUBMC 一键日志包并在本地分析问题；缺少实时证据时转交 openubmc-debug。",
+      "displayName": "OpenUBMC 日志分析",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "一键采集、解压并分析 openUBMC BMC 日志包"
+    },
+    "name": "openubmc:openubmc-log-analyzer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-log-analyzer/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Compatibility entry for users who explicitly request the former openUBMC Lua component skill. Do not select automatically. Continue the source change through openubmc-developer with its handwritten Lua reference; this entry owns no separate workflow.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $openubmc-lua-component as an explicit compatibility entry and continue the Lua source change through $openubmc-developer.",
+      "displayName": "openUBMC Lua Component",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "显式兼容入口，转入统一 Developer 工作流"
+    },
+    "name": "openubmc:openubmc-lua-component",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/lua-component/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Upload already-built openUBMC Conan component packages to an existing Conan remote and verify the exact local and remote refs. Use when the user directly requests component-package publication or continues a build task whose publish stage, artifact refs, and remote are already established. Do not use to build packages, change remotes, publish HPM firmware, or upgrade BMCs.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-publish 发布已验证的 openUBMC Conan 组件包。",
+      "displayName": "openUBMC Publish",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "将已验证的 openUBMC Conan 组件包发布到指定远端"
+    },
+    "name": "openubmc:openubmc-publish",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-publish/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Launch, observe, stop, and smoke-test an openUBMC QEMU instance using the repository-selected launcher. Use for launcher discovery, PID/process identity, serial evidence, forwarded-port checks, image identity, guest readiness, and service smoke classification. Route platform-specific ARM/KVM setup, resource tree diagnosis, component fixes, and package delivery to their owners.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-qemu-testing 发现仓库 launcher，核对实例与镜像身份，执行分层 smoke 并返回 v2 结果。",
+      "displayName": "openUBMC QEMU Testing",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "验证 QEMU launcher、进程、镜像、串口、端口与 smoke"
+    },
+    "name": "openubmc:openubmc-qemu-testing",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/qemu-testing/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Explain the packaged Runtime engine identity and recovery authority when inspecting an OpenUBMC plugin installation.",
+    "enabled": true,
+    "name": "openubmc:openubmc-runtime-support",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-target-runtime/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Use when an already-built openUBMC HPM must be uploaded, activated, and verified on one or many BMCs through Redfish or the same-origin openUBMC WebUI upgrade API, including component firmware such as CPLD, VRD, and CSR. Also assess an explicit firmware rollback request against a separately available recovery path. Requires current-task mutation authorization, target(s), and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "使用 $openubmc-upgrade 接收已验证的 HPM 或 build-upgrade handoff，为目标选择 Redfish 或同源 WebUI 升级路径；组件包以匹配任务 Completed/ErrorCode=0 验证，BMC 包以 fresh Manager 版本验证。批量升级使用受控并发和逐目标 journal。",
+      "displayName": "openUBMC Upgrade",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "通过 Redfish 或 WebUI 验证并升级 openUBMC HPM"
+    },
+    "name": "openubmc:openubmc-upgrade",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/skills/openubmc-upgrade/SKILL.md",
+    "pluginId": "openubmc@openubmc-evaluation",
+    "scope": "user"
+  },
+  {
+    "description": "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $imagegen to make or edit an image for this project.",
+      "displayName": "Image Gen",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/imagegen/assets/imagegen.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/imagegen/assets/imagegen-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Generate or edit images for websites, games, and more"
+    },
+    "name": "imagegen",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/imagegen/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, customization, automations, and self-knowledge—including 'you,' 'your,' 'this app,' or 'this coding agent' when they refer to Codex—and for OpenAI APIs/products and ChatGPT Work. Also use for model choice/migration, prompting, SDKs, Responses, Realtime, agents, evals, and Chat/Work/Codex comparisons. Do not use for generic app/software tasks that merely mention Codex.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use OpenAI Docs for official docs lookup, questions about Codex itself or Codex surfaces, model selection, model migration, and prompt-upgrade work.",
+      "displayName": "OpenAI Docs",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/openai-docs/assets/openai.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/openai-docs/assets/openai-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "OpenAI and Codex docs for models, skills, tasks, and setup"
+    },
+    "name": "openai-docs",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/openai-docs/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, and self-knowledge; OpenAI APIs and ChatGPT Work. 'You'/'this app' means Codex only."
+  },
+  {
+    "description": "Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, valid manifest defaults, and personal-marketplace entries by default. Use when Codex needs to create a new personal plugin, add optional plugin structure, generate or update marketplace entries for plugin ordering and availability metadata, or update an existing local plugin during development with the CLI-driven cachebuster and reinstall flow.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $plugin-creator to scaffold a valid plugin in the personal marketplace, then validate it before handing it back.",
+      "displayName": "Plugin Creator",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/plugin-creator/assets/plugin-creator.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/plugin-creator/assets/plugin-creator-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Scaffold plugins and marketplace entries"
+    },
+    "name": "plugin-creator",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/plugin-creator/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Perform a read-only, defect-first review of a specified code change and return every actionable finding. Use when another agent delegates review of uncommitted changes, a base-branch diff, a commit, or custom review instructions.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": "Use $review-agent to review the requested code changes and return actionable findings.",
+      "displayName": "Review Agent",
+      "iconLarge": null,
+      "iconLargeUrl": null,
+      "iconSmall": null,
+      "iconSmallUrl": null,
+      "shortDescription": "Find actionable bugs in code changes"
+    },
+    "name": "review-agent",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/review-agent/SKILL.md",
+    "pluginId": null,
+    "scope": "system"
+  },
+  {
+    "description": "Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources.",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": null,
+      "displayName": "Skill Creator",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-creator/assets/skill-creator.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-creator/assets/skill-creator-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Create or update a skill"
+    },
+    "name": "skill-creator",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-creator/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Create or update a skill"
+  },
+  {
+    "description": "Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).",
+    "enabled": true,
+    "interface": {
+      "brandColor": null,
+      "defaultPrompt": null,
+      "displayName": "Skill Installer",
+      "iconLarge": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-installer/assets/skill-installer.png",
+      "iconLargeUrl": null,
+      "iconSmall": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-installer/assets/skill-installer-small.svg",
+      "iconSmallUrl": null,
+      "shortDescription": "Install curated skills from openai/skills or other repos"
+    },
+    "name": "skill-installer",
+    "path": "/tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/skills/.system/skill-installer/SKILL.md",
+    "pluginId": null,
+    "scope": "system",
+    "shortDescription": "Install curated skills from openai/skills or other repos"
+  }
+]

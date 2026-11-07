@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:ae1a2bbac6e67ad52e1212a2fc8b07798dc46de5205f66ddf62ce274561a3989",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f5f-23dd-7a22-b15f-e053450a9e45",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "帮我看看这个问题，先告诉我还需要哪些信息。"
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:c44edc831e1e1e4d3940502ad7c80be411d75bd872be680b84a50fc09f92b06b"
+}

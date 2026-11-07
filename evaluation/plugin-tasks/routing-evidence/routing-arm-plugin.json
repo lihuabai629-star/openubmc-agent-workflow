@@ -1,0 +1,51 @@
+{
+  "arm_id": "plugin-3a898818",
+  "digest": "sha256:c2d0ac0b2102e74fa8734ac9a807c3dea887817faaf9004a937df5915c6c7adc",
+  "environment": {
+    "credentials": "not-provided",
+    "knowledge_base": "configured-without-credentials",
+    "operating_system": "Linux WSL2",
+    "profile": "isolated-routing-no-private-inputs",
+    "target": "not-provided"
+  },
+  "execution": {
+    "approval_policy": "never",
+    "codex_executable_sha256": "sha256:61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+    "codex_version": "0.153.4",
+    "effort": "xhigh",
+    "model": "gpt-5.6-sol",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "plugins": true,
+    "sandbox_policy": {
+      "type": "read-only"
+    }
+  },
+  "inventory": {
+    "content_digest": "sha256:bcf386f4502415c735e650a20e0ac86ee7895edf12e344ff2b1acb75d123dec9",
+    "enabled_count": 18,
+    "entry_count": 18,
+    "sha256": "sha256:1cd4ece599278949c963354a68ac7fa91bd11aa427d6873524fed9ad79dd3e63"
+  },
+  "kind": "plugin",
+  "plugin": {
+    "archive_sha256": "sha256:caa1a7605eab1e0dc6b58de3b0b96b9b89ec53dbb0f12f79258d0f87dba6d94d",
+    "content_digest": "2ce74f4b0aeebd6fd1f1fc268c1611c92bf57179961ec44c380e6e074c31384d",
+    "marketplace": "openubmc-evaluation",
+    "mcp_servers": [
+      "openubmc-kb",
+      "openubmc-target-runtime"
+    ],
+    "name": "openubmc",
+    "plugin_skill_count": 12,
+    "runtime_digest": "sha256:bd511c205cb754613795142d6cd91e1138802a33580c636a9e74e363a4d4d692",
+    "subject_digest": "sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde",
+    "version": "2.0.12"
+  },
+  "schema": "openubmc.skill-routing-arm.v1",
+  "source": {
+    "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+    "repository": "lihuabai629-star/openubmc-agent-workflow",
+    "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
+  }
+}

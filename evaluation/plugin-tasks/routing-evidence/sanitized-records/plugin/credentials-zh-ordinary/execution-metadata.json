@@ -1,0 +1,41 @@
+{
+  "digest": "sha256:ebef70fa7e4839f2e817b3c8cfd8b46dab1ad9317162866ab1d7f71f57c0d084",
+  "execution": {
+    "case_id": "credentials-zh-ordinary",
+    "identity": {
+      "codex_version": "0.153.4",
+      "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+      "model_provider": "cliproxy",
+      "originator": "codex_exec",
+      "rollout_sha256": "sha256:9b34678df249fe57c748fe3cf6518ff6e313958747e4564d01d708b4f72aab16",
+      "status": "verified",
+      "thread_id": "01a08f4b-c21c-7510-9ccb-2ee0b7f2058d",
+      "turn_contexts": [
+        {
+          "approval_policy": "never",
+          "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+          "effort": "xhigh",
+          "model": "gpt-5.6-sol",
+          "sandbox_policy": {
+            "type": "read-only"
+          }
+        }
+      ]
+    },
+    "raw_files": [
+      {
+        "path": "raw/credentials-zh-ordinary/turn-1.jsonl",
+        "sha256": "sha256:df6e508f1cb8029035af64bb9610847b6c70b627096b642512f6657f806650f8",
+        "stderr_path": "raw/credentials-zh-ordinary/turn-1.stderr",
+        "stderr_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2"
+      }
+    ],
+    "returncodes": [
+      0
+    ],
+    "timed_out": false,
+    "wall_seconds": 70.87882
+  },
+  "schema": "openubmc.skill-routing-execution-projection.v1",
+  "source_sample_sha256": "sha256:431c9c1c2d6280bb878bc7922ed37843ca74fe2d086d7c5d6b71b9ece29e349b"
+}

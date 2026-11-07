@@ -1,0 +1,1736 @@
+{
+  "digest": "sha256:82305fb4230891357ab0beafa7450dc5c986a49709b1fde87de066dfcc61c923",
+  "files": [
+    {
+      "path": "openubmc-aspeed-kernel-driver-dev/SKILL.md",
+      "sha256": "sha256:117762684208d695b979e1c8434afd1c4d0c7731f712deb445758123e9bbb16a",
+      "size_bytes": 9292
+    },
+    {
+      "path": "openubmc-aspeed-kernel-driver-dev/skill.json",
+      "sha256": "sha256:9f08d16262ea8fee11b2048486655bf181c9cec249dcf489439e843d5b3c435f",
+      "size_bytes": 1291
+    },
+    {
+      "path": "openubmc-bingo-build/SKILL.md",
+      "sha256": "sha256:a50fbce4168a22c27809a11505955c84ea5ec9607711c0439ff63d6bbd9aa6c6",
+      "size_bytes": 10610
+    },
+    {
+      "path": "openubmc-bingo-build/references/bingo-command-cheatsheet.md",
+      "sha256": "sha256:1ae1326e9ca46a9a065c0faea776315bc1cf57b4124a35dd268a6afe57983ab6",
+      "size_bytes": 1524
+    },
+    {
+      "path": "openubmc-bingo-build/references/bingo-source-map.md",
+      "sha256": "sha256:efcf80ab22a4987e27652f194af51f72f8ccd2d90e4b71cd172d8a9aff4c9e58",
+      "size_bytes": 3451
+    },
+    {
+      "path": "openubmc-bingo-build/skill.json",
+      "sha256": "sha256:edd7aaf2630758deb75ce49562899dc0b937a5d53ff7e3eb4d587b835d4a0daa",
+      "size_bytes": 1666
+    },
+    {
+      "path": "openubmc-bingo-development/SKILL.md",
+      "sha256": "sha256:a8e225b3f069c3567099a53c5903bd9fc1c913eec2520e6816b52252a27a06d8",
+      "size_bytes": 8003
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-architecture-map.md",
+      "sha256": "sha256:c68b6fbb6f893147137a2fe40683f021de5b1bb841cb2a6355da27d95f6241d2",
+      "size_bytes": 5090
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-command-extension-guide.md",
+      "sha256": "sha256:1c0c691a8f4321a395a909a94fc1d45d43d4bdb2a93e897a0252243e86097212",
+      "size_bytes": 3409
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-component-codegen-test-map.md",
+      "sha256": "sha256:1244883f2ffbe316a28bac37a3f0da442b1d0fbda5cbcdcd35ec38e4e695bd15",
+      "size_bytes": 3671
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-local-debug-test-guide.md",
+      "sha256": "sha256:f2ec4fa4d79825062a46dc65927554890fecbc725f248a03e78b3dea752a86d8",
+      "size_bytes": 2598
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-package-signing-special-flows.md",
+      "sha256": "sha256:c47e4904e45fb432ec2cd9ac080c3a52178a062ad15329c94586e14e5527ff12",
+      "size_bytes": 4449
+    },
+    {
+      "path": "openubmc-bingo-development/references/bingo-product-build-task-map.md",
+      "sha256": "sha256:de152be67122bce0f1efa777750904194378f6ca4cbbb4224fad158b2489eba2",
+      "size_bytes": 3170
+    },
+    {
+      "path": "openubmc-bingo-development/skill.json",
+      "sha256": "sha256:6c746ecb36c52ad08f7ec85e42c6ed911ea91baf8ab1b00a269c9873cd5472af",
+      "size_bytes": 1675
+    },
+    {
+      "path": "openubmc-build/SKILL.md",
+      "sha256": "sha256:c23741590ed3c4613bd217a937d627616a8f978d9fc436a848246d8afa20043e",
+      "size_bytes": 10390
+    },
+    {
+      "path": "openubmc-build/agents/openai.yaml",
+      "sha256": "sha256:9fa2ad6d3de4a79b2bac163765bb0d7a4cc0ae956b35c6b0dc9158cc2bb7f17e",
+      "size_bytes": 351
+    },
+    {
+      "path": "openubmc-build/references/2630-wsl-profile.md",
+      "sha256": "sha256:d3b42b489be843334eecc0ff50c3ee925980b780cd87f74d166673a58557520c",
+      "size_bytes": 3059
+    },
+    {
+      "path": "openubmc-build/references/artifact-verification.md",
+      "sha256": "sha256:776e0957933d0ba8a1043ca49991e5325e183240f73c744bf7090ccf6c9eb3f3",
+      "size_bytes": 3917
+    },
+    {
+      "path": "openubmc-build/references/build-plan.md",
+      "sha256": "sha256:1196dfae367e0c8caa853c1f46c2e3f100dbd22dfbe012766bdac184299083f6",
+      "size_bytes": 6818
+    },
+    {
+      "path": "openubmc-build/references/conan-auth.md",
+      "sha256": "sha256:6879a1b65d0804e6bf66a975289ddfc52f7abeefe116a927e044d133622f9f4d",
+      "size_bytes": 2638
+    },
+    {
+      "path": "openubmc-build/references/handoff-contract.md",
+      "sha256": "sha256:088d32064cfb2c24cb27dc8d08874da1cbe81e63688b82036c8d241ca2f0aeb5",
+      "size_bytes": 3195
+    },
+    {
+      "path": "openubmc-build/references/modes/component-package.md",
+      "sha256": "sha256:f66fee6fd5e6d56c8780e4613bd5e008634bbe0444043efabb6e7083d1ed999c",
+      "size_bytes": 1175
+    },
+    {
+      "path": "openubmc-build/references/modes/diagnose.md",
+      "sha256": "sha256:9cee2e5daa8885f5c9378acb6e5edda3c1ea2f321c54c7064445b158594d9e07",
+      "size_bytes": 960
+    },
+    {
+      "path": "openubmc-build/references/modes/product-artifact.md",
+      "sha256": "sha256:f6f8fd4e2dafd1b0633d0177ca0bee962eb98437a79c7a852ebe4caee19865a9",
+      "size_bytes": 1904
+    },
+    {
+      "path": "openubmc-build/references/modes/publish.md",
+      "sha256": "sha256:5e830c25953d2ae9c92f07c354ed30c4692719186189660679dde4ac91f5ddea",
+      "size_bytes": 657
+    },
+    {
+      "path": "openubmc-build/references/modes/validate.md",
+      "sha256": "sha256:e447d40bc19b9f19312d387499bbd8f0bbca3e267615df07906789a86ee268a7",
+      "size_bytes": 1453
+    },
+    {
+      "path": "openubmc-build/references/product-build-pitfalls.md",
+      "sha256": "sha256:fc7c960448bc6e008db49ee77e3ecc3e81b54f62cec87ae89e2d154deb56dfc2",
+      "size_bytes": 3762
+    },
+    {
+      "path": "openubmc-build/references/redfish-upgrade.md",
+      "sha256": "sha256:7677bdeeae87a060a7496687d027ef30b3ff379c4cc07cf148b0e4ecebe04b24",
+      "size_bytes": 1863
+    },
+    {
+      "path": "openubmc-build/scripts/check_dependency_delta.py",
+      "sha256": "sha256:a290493df4971596df628d4ef44905427a9facd867527937f5bd8b70d05d047b",
+      "size_bytes": 7739
+    },
+    {
+      "path": "openubmc-build/scripts/check_rootfs_access.py",
+      "sha256": "sha256:4e15209e8e7f98321132896f94a8ecc51ce7e75cd2d9e10228395840a13a7e72",
+      "size_bytes": 11259
+    },
+    {
+      "path": "openubmc-build/scripts/create_build_plan.py",
+      "sha256": "sha256:790cf26d3bbc8bcd8bf23dd967100b237eea599d5fd9d23afb0010aebe3de689",
+      "size_bytes": 32504
+    },
+    {
+      "path": "openubmc-build/scripts/detect_changed_components.py",
+      "sha256": "sha256:e7d320f1c8582ceff5e96c2d947f17dc2b892c905d29163b1f4ccfd615ba7aa1",
+      "size_bytes": 5566
+    },
+    {
+      "path": "openubmc-build/scripts/ensure_planned_version.py",
+      "sha256": "sha256:9abe082b0d087ccef42b53d4717cf6437491ba3c0adfec10c14f07be673afb92",
+      "size_bytes": 8046
+    },
+    {
+      "path": "openubmc-build/scripts/finalize_product_attempt.py",
+      "sha256": "sha256:78d5a5ad4ea8767bc33559ffec17ad48beba82a2824a6404044e58b1a204d5ba",
+      "size_bytes": 19963
+    },
+    {
+      "path": "openubmc-build/scripts/preflight_build_env.sh",
+      "sha256": "sha256:c0e8c43d604de36919a98f10dba5ea093f47ef5b1680816444d2f6cce76e8d6c",
+      "size_bytes": 10791
+    },
+    {
+      "path": "openubmc-build/scripts/run_bmcgo_checked.py",
+      "sha256": "sha256:e926f70989d93396ae2565a20e6e460306a7a0abc5e7ed11bd1f3285ab025dd0",
+      "size_bytes": 4020
+    },
+    {
+      "path": "openubmc-build/scripts/run_build_attempt.py",
+      "sha256": "sha256:bc03fbc4184fa7add1b5af9bcd0c9bbf23b993684d38e26779e9a0fb8156ccf5",
+      "size_bytes": 46401
+    },
+    {
+      "path": "openubmc-build/scripts/update_manifest_conan_ref.py",
+      "sha256": "sha256:3067585ff788d29fe24cd1310cd5f243dd9df433dd277028e68126dae01aaebc",
+      "size_bytes": 7644
+    },
+    {
+      "path": "openubmc-build/scripts/verify_product_artifact.py",
+      "sha256": "sha256:9578400f0d0c953524146a01c9683e6c49c05ce69d112a5ac4d8a15bf017e156",
+      "size_bytes": 12394
+    },
+    {
+      "path": "openubmc-build/scripts/write_artifact_metadata.py",
+      "sha256": "sha256:ff8e64170a078dba10afe035ef7881853480dfcdac8f16fc6851af62b7321a00",
+      "size_bytes": 10719
+    },
+    {
+      "path": "openubmc-build/tests/support.py",
+      "sha256": "sha256:2fb2d0d0b4b4e88fe8d7ec7e6bf1868924797937db3e248e8673e3873997ab19",
+      "size_bytes": 7925
+    },
+    {
+      "path": "openubmc-build/tests/test_guardian_protocol.py",
+      "sha256": "sha256:9e10844abad4b9d101c1785d96e87fe133d0930e5273539c7ac90a70361d9128",
+      "size_bytes": 36268
+    },
+    {
+      "path": "openubmc-build/tests/test_product_finalization.py",
+      "sha256": "sha256:395bad85b10e9b0ea54d7273e72275f09479c836a0b28cf668fc4b1225d311e3",
+      "size_bytes": 41834
+    },
+    {
+      "path": "openubmc-build/tests/test_v2_behavior.py",
+      "sha256": "sha256:abd694b79f3bc0b3a8a6f7631b4a61c4705bba728753a096d41c530c588a3a15",
+      "size_bytes": 78530
+    },
+    {
+      "path": "openubmc-build/tests/test_workflow_contract.py",
+      "sha256": "sha256:1b13c5f2de438b023bf02963d101d559752f0af30c27f9f31dc393dec0293561",
+      "size_bytes": 17684
+    },
+    {
+      "path": "openubmc-community-contribution/SKILL.md",
+      "sha256": "sha256:07134200c35c90113de6d1449e9b86febe105be3a2fe8d3851b2921d4617d0c8",
+      "size_bytes": 7782
+    },
+    {
+      "path": "openubmc-community-contribution/skill.json",
+      "sha256": "sha256:fb7a8a0fd8f5350c5e892f1b2a1d24dc02b2788f1b2017f4624728816fe4e2ae",
+      "size_bytes": 1430
+    },
+    {
+      "path": "openubmc-component-creator/SKILL.md",
+      "sha256": "sha256:19581882f64694f638c31cdfbfd167f951476cd11560d8461b6270eb2e54c008",
+      "size_bytes": 5296
+    },
+    {
+      "path": "openubmc-component-creator/skill.json",
+      "sha256": "sha256:109d0b3f5b41134c65084b6ce76af7688ab99a3b041b089bedeba8af02aed840",
+      "size_bytes": 984
+    },
+    {
+      "path": "openubmc-compute-new-ability-dev/SKILL.md",
+      "sha256": "sha256:7a9f67b0a7b1c9cfad079cfffcc87ad079e93ca8a3db3c7a738d1ba1b89fc234",
+      "size_bytes": 20848
+    },
+    {
+      "path": "openubmc-compute-new-ability-dev/skill.json",
+      "sha256": "sha256:3f66e4fd831e0251dbb3ee0c0574ab260ccab866af6ce781ff3edcb28ff66f34",
+      "size_bytes": 1111
+    },
+    {
+      "path": "openubmc-debug/SKILL.md",
+      "sha256": "sha256:c7692480b7863593bf448fbc76c8ef3aef5d44c0f737716554d6bdbdd626b1c9",
+      "size_bytes": 21523
+    },
+    {
+      "path": "openubmc-debug/agents/openai.yaml",
+      "sha256": "sha256:ad7d59367eb9abfd743d205d89066d0e96c88fb426978a2a29999407d7f81c34",
+      "size_bytes": 346
+    },
+    {
+      "path": "openubmc-debug/references/alarm-access.md",
+      "sha256": "sha256:5f1f4c56d095054d736531ba7353b76970d894154e13e0afc652caa6bc493648",
+      "size_bytes": 7674
+    },
+    {
+      "path": "openubmc-debug/references/busctl-access.md",
+      "sha256": "sha256:58c51a9a15d7e00e48b815f5ae788540216646e0f20af4ddfbb2f4bf244f841f",
+      "size_bytes": 4539
+    },
+    {
+      "path": "openubmc-debug/references/components.md",
+      "sha256": "sha256:013327abb03a501bbc1678e912e482297cf26a9069323067d80590d8debd2457",
+      "size_bytes": 1398
+    },
+    {
+      "path": "openubmc-debug/references/diagnostic-contract.md",
+      "sha256": "sha256:84b54f86259347ec1487b8bf548282e2cd437f85bf89a0d768845233d472c296",
+      "size_bytes": 3457
+    },
+    {
+      "path": "openubmc-debug/references/evidence-workflow.md",
+      "sha256": "sha256:748192a49d2a5ec0d81438e9ebe3b6d2e072be48d3f829a34fa7b6c1d376ebdf",
+      "size_bytes": 10693
+    },
+    {
+      "path": "openubmc-debug/references/file-access.md",
+      "sha256": "sha256:8cda48fcfb3cc080d34a6abc0f943b0e9f312c60d935fc1145c8d45bfcf528ca",
+      "size_bytes": 3014
+    },
+    {
+      "path": "openubmc-debug/references/knowledge-routing.md",
+      "sha256": "sha256:a49898fd45fd2f77c7fc8b776426d942c6c9ec597d97a3a8278ed403ffbaf935",
+      "size_bytes": 2517
+    },
+    {
+      "path": "openubmc-debug/references/logs.md",
+      "sha256": "sha256:8bf2bcfde8e30791e03a7ec4e1584a2b25f5911765c986914a7b9b30fb4f97f5",
+      "size_bytes": 4708
+    },
+    {
+      "path": "openubmc-debug/references/mdbctl-access.md",
+      "sha256": "sha256:41025f09596a177bed668b86e43547322119a2a5fc7d0ff480b3efe94da22981",
+      "size_bytes": 6860
+    },
+    {
+      "path": "openubmc-debug/references/mechanism-debugging.md",
+      "sha256": "sha256:07759dcf4fc4529682d91355b01a562767f53d65ab0f9f011def5c02f8b20d66",
+      "size_bytes": 2297
+    },
+    {
+      "path": "openubmc-debug/references/object-access.md",
+      "sha256": "sha256:f36111cfae6bacc86bb3e31618549b9b4fd52d0cc51298322cd29419055a093a",
+      "size_bytes": 1191
+    },
+    {
+      "path": "openubmc-debug/references/openubmc-debug-compare-v1.schema.json",
+      "sha256": "sha256:4312dc23c506e4b426cbab1445f9cab317cfd8e04f5f3bc5a5d75b2a1e8d72e9",
+      "size_bytes": 8338
+    },
+    {
+      "path": "openubmc-debug/references/optional-integrations.md",
+      "sha256": "sha256:930cacbc80ecfd138279dfa7a296cdeea90c53ddf6f04701e8757714bdd42182",
+      "size_bytes": 1289
+    },
+    {
+      "path": "openubmc-debug/references/remote-automation.md",
+      "sha256": "sha256:04fb4b1e5110097475c0455280cb32e59a5889cc72d520c9098f787cda2463ad",
+      "size_bytes": 28249
+    },
+    {
+      "path": "openubmc-debug/references/workflow.md",
+      "sha256": "sha256:49febd3ef9712352255b7916173a3efa71e1666ccb5b062c8d2fac6a45af355e",
+      "size_bytes": 11203
+    },
+    {
+      "path": "openubmc-debug/scripts/_cli_common.py",
+      "sha256": "sha256:d3454be17b73e0b167f2d112f1f82e0e67d941a4fdc6e435128525e0310d5661",
+      "size_bytes": 13521
+    },
+    {
+      "path": "openubmc-debug/scripts/_comparison.py",
+      "sha256": "sha256:5247533f42e2a82a4308bb6683439b633409a280c2f09d1460caed6d9fcbda95",
+      "size_bytes": 42404
+    },
+    {
+      "path": "openubmc-debug/scripts/_debug_dump.py",
+      "sha256": "sha256:d62f7d5d5a4b7bed479f9d8aef92448fa918a8efbc0f330a932b1d5d1a13457e",
+      "size_bytes": 4580
+    },
+    {
+      "path": "openubmc-debug/scripts/_json_common.py",
+      "sha256": "sha256:25270e20f31c8f3f8d5762d08194299f7af52afdc15eb3a72331b3fbc0510b9a",
+      "size_bytes": 1080
+    },
+    {
+      "path": "openubmc-debug/scripts/_minimal_telnet.py",
+      "sha256": "sha256:3134df03634b8f8c600b00da7085c8291032864d2aceffab1fd63142b42dae98",
+      "size_bytes": 1457
+    },
+    {
+      "path": "openubmc-debug/scripts/_preflight_checks.py",
+      "sha256": "sha256:ca7124ab8fccf6d97d798480af4200005f77c9bbc734e3e1b265ca2e3f226505",
+      "size_bytes": 12196
+    },
+    {
+      "path": "openubmc-debug/scripts/_preflight_recommendations.py",
+      "sha256": "sha256:a55311f94ae8bac99a69189e95f6520336102355700d35666cc831cc2079a97f",
+      "size_bytes": 9748
+    },
+    {
+      "path": "openubmc-debug/scripts/_remote_common.py",
+      "sha256": "sha256:b0e6f43ba4e3baae2c1259ccb35c2f9efcd423f84254b99055954d36ae631fd0",
+      "size_bytes": 46812
+    },
+    {
+      "path": "openubmc-debug/scripts/_runtime_distribution.py",
+      "sha256": "sha256:e826e27173cfb40f8177fc280a0cfe9a36442e69018428761da37f374b6cd17b",
+      "size_bytes": 3152
+    },
+    {
+      "path": "openubmc-debug/scripts/_source_root.py",
+      "sha256": "sha256:cebc7277650c3676d0b263fee6a885c9d94ba7be18fec40cd2550190fa35648a",
+      "size_bytes": 2950
+    },
+    {
+      "path": "openubmc-debug/scripts/_target_runtime_adapter.py",
+      "sha256": "sha256:64fe67f5db50418c38a1c54f4aa408a9d81b7718dd96347e1dd927e78e507be3",
+      "size_bytes": 35281
+    },
+    {
+      "path": "openubmc-debug/scripts/_telnet_common.py",
+      "sha256": "sha256:4c4613c070f7e31c7c52cc7016fc2c7ce024110ef1685390532137ed3cfcf0c9",
+      "size_bytes": 415
+    },
+    {
+      "path": "openubmc-debug/scripts/_workflow_contracts.py",
+      "sha256": "sha256:824bc12a457c2aca846ea194f2ef864d542b701e5bf4fb04eaf547f101eedab6",
+      "size_bytes": 7819
+    },
+    {
+      "path": "openubmc-debug/scripts/_workflow_correlation.py",
+      "sha256": "sha256:7b84ea4e9c50f1501bb5c00ce1d0b5aad06ae96f5180b7f73eadcc4851c7e48e",
+      "size_bytes": 22369
+    },
+    {
+      "path": "openubmc-debug/scripts/_workflow_freshness.py",
+      "sha256": "sha256:41db861161a670b779cc6adab437c189940cec9d2b7f31b6ad72ccd015336b75",
+      "size_bytes": 17915
+    },
+    {
+      "path": "openubmc-debug/scripts/_workflow_runtime.py",
+      "sha256": "sha256:698b05e16dd868827c6714e4559ac08b3e169461b6d77356fa697e1490fcd379",
+      "size_bytes": 32032
+    },
+    {
+      "path": "openubmc-debug/scripts/_workflow_source.py",
+      "sha256": "sha256:2f57732c6aab1a0b608cb8efd1a57978894567fa942ae2405828bea47c69ff3a",
+      "size_bytes": 17719
+    },
+    {
+      "path": "openubmc-debug/scripts/active_alarms.py",
+      "sha256": "sha256:d932042aca3c3255a3e88552f5d24a6f4311fc9bcbcb6e80adfb2557ecc2990b",
+      "size_bytes": 41691
+    },
+    {
+      "path": "openubmc-debug/scripts/busctl_remote.py",
+      "sha256": "sha256:da211ffd68a0ddf7fd5c6b8e33a0b7c0414673f4bd2add6b24f24bc7db0d8982",
+      "size_bytes": 18801
+    },
+    {
+      "path": "openubmc-debug/scripts/collect_logs.py",
+      "sha256": "sha256:eaca4df922bb8d742f715e8d27f3c17c39f55c90792ea33d699f3db4cf4e44bc",
+      "size_bytes": 40555
+    },
+    {
+      "path": "openubmc-debug/scripts/compare_remote.py",
+      "sha256": "sha256:3064419cff2e252923eeb6c52affcec84373704685cad30ad86237ea0f97a807",
+      "size_bytes": 7218
+    },
+    {
+      "path": "openubmc-debug/scripts/doctor.py",
+      "sha256": "sha256:e640617b084d093636bddde9c48def86d7477637259bf554ecc768a9331577bf",
+      "size_bytes": 13873
+    },
+    {
+      "path": "openubmc-debug/scripts/mdbctl_remote.py",
+      "sha256": "sha256:515981d5d248c32b7b38616b26e871688a7e431597cb8573233b366a60e8b438",
+      "size_bytes": 17801
+    },
+    {
+      "path": "openubmc-debug/scripts/package_skill.py",
+      "sha256": "sha256:5b2c0d21361f54bd20b1381015da7871fa97eea867a4cd4f19feffb2445fd871",
+      "size_bytes": 56454
+    },
+    {
+      "path": "openubmc-debug/scripts/preflight_checks.py",
+      "sha256": "sha256:ddc1e2f3d43e7e03d1db23c7e4b26940047dfb3fdcf72080db8a35698c83c965",
+      "size_bytes": 1940
+    },
+    {
+      "path": "openubmc-debug/scripts/preflight_recommendations.py",
+      "sha256": "sha256:3395957dd05ea792229e83ce5a58138a6044e334c1759b30f2a7bc952cc5c0a0",
+      "size_bytes": 1948
+    },
+    {
+      "path": "openubmc-debug/scripts/preflight_remote.py",
+      "sha256": "sha256:5a583544363a4396f2ed81f8a2ee9a1b48a2f1151b44769df10339d3948e763e",
+      "size_bytes": 19774
+    },
+    {
+      "path": "openubmc-debug/scripts/read_remote_file.py",
+      "sha256": "sha256:6093b8490536ba1e411b7a5e5267ba5a079ec78e1f367993eebdba3020db0a11",
+      "size_bytes": 20915
+    },
+    {
+      "path": "openubmc-debug/scripts/target_runtime_cli.py",
+      "sha256": "sha256:557b54136e329545df68e0c02d3acfdc268f18b82085bbf20c1fc4e11a4ab761",
+      "size_bytes": 7702
+    },
+    {
+      "path": "openubmc-debug/scripts/target_runtime_mcp.py",
+      "sha256": "sha256:231a9f0873dabc199be1d0fc675eb44c6b4d89d4688fcaf9463846303bdf5c3c",
+      "size_bytes": 26675
+    },
+    {
+      "path": "openubmc-debug/scripts/workflow_remote.py",
+      "sha256": "sha256:7f1e9f41172f8af7fc84a188157caa05ccb5bbc9305f83ba5d14f1e1f1c0984f",
+      "size_bytes": 65740
+    },
+    {
+      "path": "openubmc-debug/skill.json",
+      "sha256": "sha256:6229fd8a6b63fd4ef93a7ec7eb0c63016af57e6b1ae3498cf2e649c6d92a74da",
+      "size_bytes": 2936
+    },
+    {
+      "path": "openubmc-debug/tests/test_debug_credential_bundle.py",
+      "sha256": "sha256:93e16e918b7940a503555d0f8e72539ef8df2120a1cc107a53bd265cf5095055",
+      "size_bytes": 2495
+    },
+    {
+      "path": "openubmc-debug/tests/test_dual_target_comparison.py",
+      "sha256": "sha256:ace28a93b816d3ec3bc84e44c1b1a2e4bae497f52f1d5667a219b4fc8f4d28a0",
+      "size_bytes": 26493
+    },
+    {
+      "path": "openubmc-debug/tests/test_internal_development_mode.py",
+      "sha256": "sha256:070c00b583025bf6b084fb30716d9ae181ab17438bdfdf489a17637831755757",
+      "size_bytes": 5280
+    },
+    {
+      "path": "openubmc-debug/tests/test_multi_target_comparison.py",
+      "sha256": "sha256:d5888fdd0ba01a663db1aa8503344c682f2fc16573964d53fa17b529376bbe09",
+      "size_bytes": 7809
+    },
+    {
+      "path": "openubmc-debug/tests/test_object_alarm_lane_contract.py",
+      "sha256": "sha256:8ff5a61d3212bf9d294b219cf61b5206780e45936361d55df8de3c1777db652c",
+      "size_bytes": 4384
+    },
+    {
+      "path": "openubmc-debug/tests/test_object_alarm_runtime_adapter.py",
+      "sha256": "sha256:c01a7a7d51cf6f6688819e8419c5b4ed796560d47e20a173e9af58eee429fc4f",
+      "size_bytes": 17461
+    },
+    {
+      "path": "openubmc-debug/tests/test_preflight_compatibility.py",
+      "sha256": "sha256:a8dc056228fc5a2319e1dec20cbb5a4aa7cd1f382eb75db435bd97c68e832a94",
+      "size_bytes": 13400
+    },
+    {
+      "path": "openubmc-debug/tests/test_runtime_mcp_backend.py",
+      "sha256": "sha256:1d766f0242006037d49f8e17b928279941da4b22318ab0f73a50d3efa2bcce35",
+      "size_bytes": 32068
+    },
+    {
+      "path": "openubmc-debug/tests/test_runtime_vendoring.py",
+      "sha256": "sha256:338e75ba1bd7ae66b734ae7fe00c348c5c71b31fc76a36c449c7e9c8567c3bce",
+      "size_bytes": 7574
+    },
+    {
+      "path": "openubmc-debug/tests/test_ssh_control_master.py",
+      "sha256": "sha256:b979b33c31477c7c5d41f1d21c6ef1cb13c93a6eb2fdfe2d4f65061142697ae2",
+      "size_bytes": 16862
+    },
+    {
+      "path": "openubmc-debug/tests/test_target_runtime_cli.py",
+      "sha256": "sha256:d506b4d8df41f21f831a9a44936a948001473017e659c2a2a03df0acc179f0bf",
+      "size_bytes": 6838
+    },
+    {
+      "path": "openubmc-debug/tests/test_telnet_runtime_adapter.py",
+      "sha256": "sha256:24254230aa9c6f9dd204e54f5bab6400624902fca2eb676791f72d94e4278312",
+      "size_bytes": 8749
+    },
+    {
+      "path": "openubmc-debug/tests/test_typed_debug_run.py",
+      "sha256": "sha256:85b00c7ce139ea8eb5010ee5acabe404fa84a1b169ca0dab71a158e5018106e2",
+      "size_bytes": 55955
+    },
+    {
+      "path": "openubmc-debugging/SKILL.md",
+      "sha256": "sha256:752c1e6146da975192b3d60789d4726a37c6daa682341feb924af5b415dc027b",
+      "size_bytes": 6039
+    },
+    {
+      "path": "openubmc-debugging/skill.json",
+      "sha256": "sha256:922022e24720b39bc0e190613c701a1c44205a01e1307a07aa20d80c88876aae",
+      "size_bytes": 1109
+    },
+    {
+      "path": "openubmc-developer/SKILL.md",
+      "sha256": "sha256:6c9929f78aa8e7b0fa4de4880c613e9dc6f69041de67d87d24132ede11465a69",
+      "size_bytes": 12060
+    },
+    {
+      "path": "openubmc-developer/agents/openai.yaml",
+      "sha256": "sha256:1af2345d5b7be4d6d9c22f0501c86c4ad377e1217e5279cfac2f0478f0b825ba",
+      "size_bytes": 483
+    },
+    {
+      "path": "openubmc-developer/evals/evals.json",
+      "sha256": "sha256:ddaef44ab0aed6a2fe72025edc187db049f475168929c9e275e0a4aa0d5b505a",
+      "size_bytes": 63933
+    },
+    {
+      "path": "openubmc-developer/evals/trigger-evals.json",
+      "sha256": "sha256:437f8b7e18640f4ec03402ef84bd24440d27262aa9b6bd8e049d242b4c0a9336",
+      "size_bytes": 28396
+    },
+    {
+      "path": "openubmc-developer/references/development-guidelines.md",
+      "sha256": "sha256:14f0bc7ef4c6d805e76c359cda6ddc084871034eb9ffae292545aa4022a916cc",
+      "size_bytes": 3230
+    },
+    {
+      "path": "openubmc-developer/references/downstream-handoffs.md",
+      "sha256": "sha256:c3978948e01201acbee961efe5e4771a85c9438f3d7a2775804bbbb377d0d896",
+      "size_bytes": 2088
+    },
+    {
+      "path": "openubmc-developer/references/hardware-vpd.md",
+      "sha256": "sha256:76f15601c7d2495dbe22ffb464d0ad4e1fd91533c0e0692547da359f843c8362",
+      "size_bytes": 3336
+    },
+    {
+      "path": "openubmc-developer/references/interface-mapping.md",
+      "sha256": "sha256:715e56261e75013a6a57d5486ef06fe83259fe31416c3c620fbc2193ecd5d092",
+      "size_bytes": 2523
+    },
+    {
+      "path": "openubmc-developer/references/lua-component.md",
+      "sha256": "sha256:6cb1e40d332d5dbf71a75a8f668b5cb05c4c79082ea14cf180cf6de89924a5c8",
+      "size_bytes": 3343
+    },
+    {
+      "path": "openubmc-developer/references/mdb-mds.md",
+      "sha256": "sha256:12d9c8909bb0b8b95d1ad4d68c0a6a83e5ed26044097e61cb454e171fb79781d",
+      "size_bytes": 2871
+    },
+    {
+      "path": "openubmc-developer/references/native-user-space-and-driver-abi.md",
+      "sha256": "sha256:79268d4824b23d74a742e0148a64cb32262d57f779b72218fc78e59d1626385a",
+      "size_bytes": 2880
+    },
+    {
+      "path": "openubmc-developer/references/persistence-compatibility.md",
+      "sha256": "sha256:93c910bc9d46c1d73365dfdc0056ceae8d490fba34cf077776ed3aa379354bb2",
+      "size_bytes": 4889
+    },
+    {
+      "path": "openubmc-developer/references/profile-schema-import-export.md",
+      "sha256": "sha256:ce61783c3ad06f4cdb8bffd010830680874d3de30e7b12c78f5201ad118d301c",
+      "size_bytes": 2879
+    },
+    {
+      "path": "openubmc-developer/references/sr-dds-product-records.md",
+      "sha256": "sha256:6b518bead2a98c01b8a5a4634e6b8d82525ecb06564d1fd6bf2c589077e86eef",
+      "size_bytes": 2828
+    },
+    {
+      "path": "openubmc-developer/references/startup-product-assembly.md",
+      "sha256": "sha256:4abc2d1e20043d7c09df35f6b21e597f3b122297dc36886584f1c3c88224ec88",
+      "size_bytes": 3043
+    },
+    {
+      "path": "openubmc-developer/skill.json",
+      "sha256": "sha256:6fb49b2396fba98c610a62287be0c8c98864c36a2e2c6dfcff8beed765a4c294",
+      "size_bytes": 1966
+    },
+    {
+      "path": "openubmc-developer/tests/behavior_eval_runner.py",
+      "sha256": "sha256:ff8c7b32879f81d1283e406cb39515ca09309c8ae27fdebcd1d72d7a0eb8acb5",
+      "size_bytes": 78856
+    },
+    {
+      "path": "openubmc-developer/tests/test_behavior_eval_runner.py",
+      "sha256": "sha256:6fa2bde924cbc6ede5e1af57cc6b1de9a98195c129a2e26122dd0874fb375633",
+      "size_bytes": 76666
+    },
+    {
+      "path": "openubmc-developer/tests/test_behavior_scenarios.py",
+      "sha256": "sha256:68d02c62d9eb5a04cfc015cea3f9f08c4237f72521c5bde6dccec43a29f8c468",
+      "size_bytes": 13160
+    },
+    {
+      "path": "openubmc-developer/tests/test_metadata_release.py",
+      "sha256": "sha256:7d067d7e937d2621d447dc1530c73fc0bef517ba418fc5b63175c98272e06789",
+      "size_bytes": 4394
+    },
+    {
+      "path": "openubmc-developer/tests/test_security_scan.py",
+      "sha256": "sha256:73c68f021fabc1a078566787a4fdf443c1fe9c363eca6242bf51440e40f57bea",
+      "size_bytes": 1150
+    },
+    {
+      "path": "openubmc-developer/tests/test_skill_contract.py",
+      "sha256": "sha256:20323ad5b74d35f229719bad87bf41eca07623c50b3a3db9cd0f45a78b108999",
+      "size_bytes": 11431
+    },
+    {
+      "path": "openubmc-developer/tests/test_trigger_scenarios.py",
+      "sha256": "sha256:70212331a83e4919b67a2d45055907049db95ba5a206e95abd24e5d2459fc8ca",
+      "size_bytes": 10473
+    },
+    {
+      "path": "openubmc-dt-testing/SKILL.md",
+      "sha256": "sha256:4e9123d80605638a2655c031db62bd84b6a79718d2570e3c519d9d7f7b72ea9b",
+      "size_bytes": 13382
+    },
+    {
+      "path": "openubmc-dt-testing/evals/evals.json",
+      "sha256": "sha256:4acbbf08e1057639c1fae8061e30da258a17ea9d7f036f6e4a0deaba89087690",
+      "size_bytes": 6281
+    },
+    {
+      "path": "openubmc-dt-testing/skill.json",
+      "sha256": "sha256:431d9a2c9d66bf2e235481e13b7f109cf2d1fc5a3a898ecfba701b33e1fbf60d",
+      "size_bytes": 1184
+    },
+    {
+      "path": "openubmc-environment-setup/SKILL.md",
+      "sha256": "sha256:ff44e5e7db5b9bdea55f3e266b8b6f500fd69da8d6d7b3bbde856533916e78e4",
+      "size_bytes": 14705
+    },
+    {
+      "path": "openubmc-environment-setup/skill.json",
+      "sha256": "sha256:35c31cbbe2966d1d11fa11ac9a7d31cc50c03d9a520d4bf362f14711eea3f100",
+      "size_bytes": 1678
+    },
+    {
+      "path": "openubmc-gitcode-create-issue/SKILL.md",
+      "sha256": "sha256:04e20e2a33dc016fb8b7896b0270c6ad049e21174dad0071e6b7dad1a724ffa4",
+      "size_bytes": 8484
+    },
+    {
+      "path": "openubmc-gitcode-create-issue/skill.json",
+      "sha256": "sha256:23d6ce71cc7f20b9b4fa95281af58d3578b9aa23e4f96a4e4622d43a68e1a5f2",
+      "size_bytes": 1354
+    },
+    {
+      "path": "openubmc-gitcode-create-issue/templates/bug.md",
+      "sha256": "sha256:88b00b09a8e7943eae28b621e462341c72d311e4118f201a0bb31cdbd5cec9e8",
+      "size_bytes": 1353
+    },
+    {
+      "path": "openubmc-gitcode-create-issue/templates/feature.md",
+      "sha256": "sha256:c860788f6e0a8552caa594be3c7f64331fb724113cbde7ae34262268d2db6de2",
+      "size_bytes": 2044
+    },
+    {
+      "path": "openubmc-gitcode-create-issue/templates/task.md",
+      "sha256": "sha256:68cc83ec0e3c3989a3c8b6fc5bbcf0ec0681f7738d5c2b4157a3fda847016089",
+      "size_bytes": 538
+    },
+    {
+      "path": "openubmc-gitcode-create-pr/SKILL.md",
+      "sha256": "sha256:b603030c7b2638b16bb4cb15fe2d0a7523c7b4ae0b97dc033d601000dc841ae1",
+      "size_bytes": 5181
+    },
+    {
+      "path": "openubmc-gitcode-create-pr/skill.json",
+      "sha256": "sha256:342822f8743f7f60c6385bdb3315afa642fb0352760994c0179b9ce91cb40fd0",
+      "size_bytes": 1143
+    },
+    {
+      "path": "openubmc-gitcode-create-pr/templates/pr_description.md",
+      "sha256": "sha256:290010c7e84aebc95c30ae0db7449ce1bf5b3297212b1d82884f535266c731c3",
+      "size_bytes": 1395
+    },
+    {
+      "path": "openubmc-interface-mapping/SKILL.md",
+      "sha256": "sha256:b5087c803169fc58b3ebc4ee7a7819588cd30ccdb191d1eefbb8d981be33b0e4",
+      "size_bytes": 17095
+    },
+    {
+      "path": "openubmc-interface-mapping/skill.json",
+      "sha256": "sha256:433b97f1bfe595a8ecb814c9ee0666519f597a16bdfe56d3e79442e24512f6d4",
+      "size_bytes": 1420
+    },
+    {
+      "path": "openubmc-kptest-openframework/SKILL.md",
+      "sha256": "sha256:9a3a5816088851034c25b23d6e84f4cc423b55bc4439899a7361904e78ca88cf",
+      "size_bytes": 11745
+    },
+    {
+      "path": "openubmc-kptest-openframework/evals/evals.json",
+      "sha256": "sha256:98ba950fea4268037d0368f9d8b94580a87e53c99b03a1d3e952e395afe0ed7d",
+      "size_bytes": 10884
+    },
+    {
+      "path": "openubmc-kptest-openframework/references/kptest-bx-8disk-patterns.md",
+      "sha256": "sha256:211908ef411cd29d51135e4e6443743bbdbac517aab9b430842091d9525419d0",
+      "size_bytes": 5542
+    },
+    {
+      "path": "openubmc-kptest-openframework/references/kptest-itestsmart-packaging.md",
+      "sha256": "sha256:144a8618e2352e1cfc0e54cf7afc206940232e21727dc1f1ac9909e9eb2cf977",
+      "size_bytes": 3038
+    },
+    {
+      "path": "openubmc-kptest-openframework/references/kptest-public-source-map.md",
+      "sha256": "sha256:84b787f2c3d645667c90595619216a18b2e2e1718f8891ba2cc0af96e04d2b9a",
+      "size_bytes": 9646
+    },
+    {
+      "path": "openubmc-kptest-openframework/skill.json",
+      "sha256": "sha256:91f9bd000d9c25ffea376b75c00395c3d358efeb66a1c04e60405fa1996727d7",
+      "size_bytes": 2167
+    },
+    {
+      "path": "openubmc-live-patch/SKILL.md",
+      "sha256": "sha256:0b205516345eaf352967d15ad50d914fa331b52845693e385ae0a182a800346e",
+      "size_bytes": 10803
+    },
+    {
+      "path": "openubmc-live-patch/agents/openai.yaml",
+      "sha256": "sha256:317511e53041a4923be5d55211eb43aa7456362fa7f1d3aa77923fa03fa94115",
+      "size_bytes": 331
+    },
+    {
+      "path": "openubmc-live-patch/openubmc_live_patch/__init__.py",
+      "sha256": "sha256:c1ef77736d82b012eecdfc46d1533394195673b7054f494babe6c4df7ad1581f",
+      "size_bytes": 150
+    },
+    {
+      "path": "openubmc-live-patch/openubmc_live_patch/runtime_backend.py",
+      "sha256": "sha256:9646d68e455e2f70d1bf2b3672f91fe12bb2961adda4e4ba91e8c1c41880a298",
+      "size_bytes": 53192
+    },
+    {
+      "path": "openubmc-live-patch/references/live-patch-contract.md",
+      "sha256": "sha256:760ebd419ec0819e38d3fc5cc5a885d9e8c522b62da53f7ba9d97c7792b60f3b",
+      "size_bytes": 6440
+    },
+    {
+      "path": "openubmc-live-patch/references/remote-file-patterns.md",
+      "sha256": "sha256:a48e85281218db9751be058cc7d4e37034e53742b4998bf7011a3c787b612853",
+      "size_bytes": 3358
+    },
+    {
+      "path": "openubmc-live-patch/scripts/deploy_current_patch.py",
+      "sha256": "sha256:1b89ea616b33ae3d9ef8d547e66a75033fd419bc6c7a6974e517c373f34ba3da",
+      "size_bytes": 8718
+    },
+    {
+      "path": "openubmc-live-patch/scripts/deploy_live_file.py",
+      "sha256": "sha256:d24ce4ba62689c605691e4f74e7ae6aba45176a14e91defd770df9536effe465",
+      "size_bytes": 31464
+    },
+    {
+      "path": "openubmc-live-patch/scripts/infer_live_patch.py",
+      "sha256": "sha256:2a4117dfcc759f5290575da46a5ed56ed8c99e88d05e142f77d10bf87446063b",
+      "size_bytes": 3682
+    },
+    {
+      "path": "openubmc-live-patch/scripts/rollback_live_file.py",
+      "sha256": "sha256:f5e4ec5a3ba859657d370cd2a79c059c8aae9284a4e6a106b97a256554187d0a",
+      "size_bytes": 11692
+    },
+    {
+      "path": "openubmc-live-patch/scripts/runtime_cli.py",
+      "sha256": "sha256:af972e8121ac4bb13f9668a1b9d219661a866c535199b3b18a00acb6696004c3",
+      "size_bytes": 6656
+    },
+    {
+      "path": "openubmc-live-patch/scripts/target_runtime_adapter.py",
+      "sha256": "sha256:68898fc128fb1556aef36af9527cdacee8bb4cb4e2daaf3c4f46400ceac7d3ad",
+      "size_bytes": 10592
+    },
+    {
+      "path": "openubmc-live-patch/skill.json",
+      "sha256": "sha256:24dca39cf1b150bf2097a8c3438b46c5cb7200dc6646fa2a64cb0eceb1ae9468",
+      "size_bytes": 1030
+    },
+    {
+      "path": "openubmc-live-patch/tests/test_live_patch_cli.py",
+      "sha256": "sha256:61d87b9479338426d6a00b8c5f961899aea67860d3640e017d348b748630646a",
+      "size_bytes": 48932
+    },
+    {
+      "path": "openubmc-live-patch/tests/test_runtime_backend.py",
+      "sha256": "sha256:3fa50f6054b6a100a00a3d6ee138854ff82d6d03fda6049d93a3bf91817ca0b8",
+      "size_bytes": 27009
+    },
+    {
+      "path": "openubmc-live-patch/tests/test_runtime_cli.py",
+      "sha256": "sha256:2bf05e7b413ae0fe916db59eaeb81866172fc2a284fea4a43e146b16d2c46182",
+      "size_bytes": 17043
+    },
+    {
+      "path": "openubmc-live-patch/tests/test_runtime_transaction.py",
+      "sha256": "sha256:261e2cd901ff5ad5cbbcc0cc60e95521e2c0b78eb5f950f6199035b039edb0e0",
+      "size_bytes": 8260
+    },
+    {
+      "path": "openubmc-log-analyzer/SKILL.md",
+      "sha256": "sha256:6c63988e17301fb73ce3df2a9647c3ac76a68273d1a19a7d881387fe7a8a3717",
+      "size_bytes": 8685
+    },
+    {
+      "path": "openubmc-log-analyzer/agents/openai.yaml",
+      "sha256": "sha256:148f36bcb651b4b984e22008f6bdeb51b373b8ec9f71912a01485f57f4a5f636",
+      "size_bytes": 291
+    },
+    {
+      "path": "openubmc-log-analyzer/openubmc_log_analyzer/__init__.py",
+      "sha256": "sha256:3e77b0dbf992fce0b89d6d9ea6febeaa32e6364ac2580796305bdce8e93ab5e0",
+      "size_bytes": 163
+    },
+    {
+      "path": "openubmc-log-analyzer/openubmc_log_analyzer/runtime_backend.py",
+      "sha256": "sha256:0f38c05d5f15bca3ac9eb122c0cd9ab8a06e950aca4ef5bf6d07aaf9d855ef64",
+      "size_bytes": 29758
+    },
+    {
+      "path": "openubmc-log-analyzer/references/analysis.md",
+      "sha256": "sha256:e69aed8f451a8180063fd70ebf2a2db7a793e26b286e2354e7aee9a458730259",
+      "size_bytes": 5166
+    },
+    {
+      "path": "openubmc-log-analyzer/references/logs.json",
+      "sha256": "sha256:b75ea07c52dc5a16f47201d7f8fef3b80126c9f3902fbb84ce46404ca9cd26c7",
+      "size_bytes": 27800
+    },
+    {
+      "path": "openubmc-log-analyzer/references/logs.md",
+      "sha256": "sha256:c9dc652ffed5cc17a6b9364b8f49767bd5748cb7d4632cd19754fdf715111c47",
+      "size_bytes": 9200
+    },
+    {
+      "path": "openubmc-log-analyzer/references/remote-collection.md",
+      "sha256": "sha256:ece24e60cd52e29f58b3ff0a2761144a3eba61281a043281f4a949673759e19a",
+      "size_bytes": 9689
+    },
+    {
+      "path": "openubmc-log-analyzer/scripts/_runtime_distribution.py",
+      "sha256": "sha256:17e07a13cb2d40730888191f6c6f7d9ba12b81b682195fe9b7f4aff29466207e",
+      "size_bytes": 2584
+    },
+    {
+      "path": "openubmc-log-analyzer/scripts/package_skill.py",
+      "sha256": "sha256:e3b167e9906c8131bba13d23c30839331aecad016f7c27e91c406cee4c06d600",
+      "size_bytes": 6229
+    },
+    {
+      "path": "openubmc-log-analyzer/scripts/pull_bundle.py",
+      "sha256": "sha256:cf31b70969ec8e558f22f5a44f96cab9242d171a4dc0fd8cd5af13bb2e877cbf",
+      "size_bytes": 64073
+    },
+    {
+      "path": "openubmc-log-analyzer/scripts/target_runtime_adapter.py",
+      "sha256": "sha256:f697e2f685cecd99d108e37dd1e358244ba414d9a736c14b9e79bc11fa2f7219",
+      "size_bytes": 719
+    },
+    {
+      "path": "openubmc-log-analyzer/skill.json",
+      "sha256": "sha256:a1374a2de39288eaaac5361705b87efee977367b7b63bc9655ee11fad8bbd3b9",
+      "size_bytes": 1051
+    },
+    {
+      "path": "openubmc-log-analyzer/tests/test_pull_bundle.py",
+      "sha256": "sha256:1a19a284aa1f0e682a81b6161e049458cc31cac96b8f5761f44d8ab1c750efe9",
+      "size_bytes": 46870
+    },
+    {
+      "path": "openubmc-log-analyzer/tests/test_runtime_packaging.py",
+      "sha256": "sha256:6afd619f9a5be8ae3a8d8c8192cc12ebab2cd8b489d7ee50a2c49046efca4b0c",
+      "size_bytes": 3024
+    },
+    {
+      "path": "openubmc-log-analyzer/tests/test_target_runtime_adapter.py",
+      "sha256": "sha256:96010bb038bc5f36e4b82f0db614a33a0d0d2e489d5b0f592d4a232ab11b9192",
+      "size_bytes": 15946
+    },
+    {
+      "path": "openubmc-lua-component/SKILL.md",
+      "sha256": "sha256:bebf86968e1da2e8d36c4d7a23fe4e0c55fa7bd2f1b9c92f41506e2208c34048",
+      "size_bytes": 14175
+    },
+    {
+      "path": "openubmc-lua-component/evals/evals.json",
+      "sha256": "sha256:b8c66a088f1a63de7fc52621de4bb8387665cc3798622157b1bcb31982fb503a",
+      "size_bytes": 6435
+    },
+    {
+      "path": "openubmc-lua-component/skill.json",
+      "sha256": "sha256:868eb52c5c613ff8c256171b1502a1e5fe35bb9e21c42d329cd44d07cf09e612",
+      "size_bytes": 1353
+    },
+    {
+      "path": "openubmc-mdb-interface-dev/SKILL.md",
+      "sha256": "sha256:324d9240beff15ec5fdca7cca35949da7b74e961cb74f74afb01532f791093ec",
+      "size_bytes": 15298
+    },
+    {
+      "path": "openubmc-mdb-interface-dev/references/persistence-mechanisms.md",
+      "sha256": "sha256:f596eb3ab0ba1f5e7aa76c23ebb73a0f66646d36350e32febf3e4a268d794ba8",
+      "size_bytes": 6939
+    },
+    {
+      "path": "openubmc-mdb-interface-dev/skill.json",
+      "sha256": "sha256:48c8823578b79919608b6946979c4cf6ce075edb8291cb414cb4ba2075dde76e",
+      "size_bytes": 1269
+    },
+    {
+      "path": "openubmc-pr-monitor/SKILL.md",
+      "sha256": "sha256:80c80d875177bac279c60924fd3b6adc0792ebbe79dc9793621a9208bac83ddd",
+      "size_bytes": 12022
+    },
+    {
+      "path": "openubmc-pr-monitor/skill.json",
+      "sha256": "sha256:f37a26feb7708542e02203d1cfdb25941db9556245ebfa84ccb63b64aeb9ebdb",
+      "size_bytes": 378
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/SKILL.md",
+      "sha256": "sha256:f717b46ab4f27d2d314800984b65d64c7dae78565379350bddbd66ef18d761b0",
+      "size_bytes": 10766
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/evals/evals.json",
+      "sha256": "sha256:2ef9348924620720716aafcd18f3fdb8117a9c4fea79ec4b9da72251586e979f",
+      "size_bytes": 2544
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/references/validated-arm-kvm-runbook.md",
+      "sha256": "sha256:82d434f51d5868bdb80184a68f748d70818a29545fa11628b9093a7d19018e7d",
+      "size_bytes": 5065
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/scripts/probe-openubmc-qemu.py",
+      "sha256": "sha256:300f8d2ea56aa3b1b3b401b512e05be61a2aabf1be0efe19ee969bbe1d185fd4",
+      "size_bytes": 4964
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/scripts/start-hi1711-kvm.sh",
+      "sha256": "sha256:5cc1ae70604b47147e9bfb12171fe9e49f0b563e02b67f6e4a641fa346bf13c8",
+      "size_bytes": 4393
+    },
+    {
+      "path": "openubmc-qemu-arm-kvm/skill.json",
+      "sha256": "sha256:bf9fdb1170f2988a30b27a72b9481a7864f57a9dbe2048d27f58a2839cb9f798",
+      "size_bytes": 4364
+    },
+    {
+      "path": "openubmc-qemu-resource-tree-debug/SKILL.md",
+      "sha256": "sha256:2fd5fc2f28c8693744a97235299a662379e74645d9019157c7d9b4228e1675e8",
+      "size_bytes": 9840
+    },
+    {
+      "path": "openubmc-qemu-resource-tree-debug/skill.json",
+      "sha256": "sha256:6f186b5f5f5bbecc0d9c29abdeab4ce7f178c8e31ef11333470a0cbbe1030d5c",
+      "size_bytes": 2068
+    },
+    {
+      "path": "openubmc-qemu-testing/SKILL.md",
+      "sha256": "sha256:92f246d1cd1982737450423eedb0d34702cd1ee27e49a96ca7338b3ce90a2deb",
+      "size_bytes": 5092
+    },
+    {
+      "path": "openubmc-qemu-testing/skill.json",
+      "sha256": "sha256:8f7286133520100fa6dcc2c3c674960e328c11a862fee2bfb0281cbc3d8432ea",
+      "size_bytes": 871
+    },
+    {
+      "path": "openubmc-redfish-interface-diff/SKILL.md",
+      "sha256": "sha256:3781a7b871d0f2291a3ba27d6c707e69b0779738b9f5d02f093570a04998ea7d",
+      "size_bytes": 6194
+    },
+    {
+      "path": "openubmc-redfish-interface-diff/references/methodology.md",
+      "sha256": "sha256:08485854462ae558382457109aae849bc135ff5b0326ad4e14bf2b719f4a9179",
+      "size_bytes": 5054
+    },
+    {
+      "path": "openubmc-redfish-interface-diff/scripts/analyze_redfish_diff.py",
+      "sha256": "sha256:01e1ff6d5f7438dd1f9c00606700466dbb4124475a240661622fd33027ffbd41",
+      "size_bytes": 95236
+    },
+    {
+      "path": "openubmc-redfish-interface-diff/scripts/tests/test_semantic_diff.py",
+      "sha256": "sha256:459ee07c518f02c663e3325dc9d0151373985b2215dabeac726d76b01af91ecf",
+      "size_bytes": 8856
+    },
+    {
+      "path": "openubmc-redfish-interface-diff/skill.json",
+      "sha256": "sha256:595aa2b4458ff509463b2c242f2fccd3f02050276efcb2a04b75899ef2fa5cfa",
+      "size_bytes": 892
+    },
+    {
+      "path": "openubmc-redfish-testing/SKILL.md",
+      "sha256": "sha256:b4efa0a48eb9c69a6e25e621170e3e8856e2ef4d314df6aebf5a7038305b656f",
+      "size_bytes": 9011
+    },
+    {
+      "path": "openubmc-redfish-testing/agents/openai.yaml",
+      "sha256": "sha256:a9a2f196fa483925f1a5bedf13ac7ca0a8610639ab5935652b4d2e23bbfc6231",
+      "size_bytes": 331
+    },
+    {
+      "path": "openubmc-redfish-testing/evals/evals.json",
+      "sha256": "sha256:366dcbaab5d5e70766ae27daa888a5794eaa05f77e2366cd3ce5074e86425002",
+      "size_bytes": 4589
+    },
+    {
+      "path": "openubmc-redfish-testing/pyproject.toml",
+      "sha256": "sha256:95c5883b8ca16bb41084743f7d6ba738ab4c3a2205baa6658467c7155bb7e013",
+      "size_bytes": 1633
+    },
+    {
+      "path": "openubmc-redfish-testing/qualification/required-tests.v1.json",
+      "sha256": "sha256:375d7571e3bd5a6b880db3401fdc76df565f559b1c02769e3909126b1f8fb0c9",
+      "size_bytes": 41723
+    },
+    {
+      "path": "openubmc-redfish-testing/references/dmtf-diagnostic-adapter.md",
+      "sha256": "sha256:997e57dfe4ede722445e4a0eb28364f846f70fe4ca807beeb8a5e1b7dbb648b1",
+      "size_bytes": 1497
+    },
+    {
+      "path": "openubmc-redfish-testing/references/evidence-and-classification.md",
+      "sha256": "sha256:8625b2949aa671c09f350f1bec538096b8dab8142759aab14a36df33aab063f5",
+      "size_bytes": 7967
+    },
+    {
+      "path": "openubmc-redfish-testing/references/execution-adapters.md",
+      "sha256": "sha256:e9332dadea71f06cdae1519f16812f0e331d8803447d53761716b55c4bd25c68",
+      "size_bytes": 4850
+    },
+    {
+      "path": "openubmc-redfish-testing/references/fixtures/read-only-manifest.json",
+      "sha256": "sha256:4a2446318118ea4873bd24167e88a724732c0f888141c6f5963265c1cfd81965",
+      "size_bytes": 1667
+    },
+    {
+      "path": "openubmc-redfish-testing/references/mutation-kernel-safety.md",
+      "sha256": "sha256:f34fd93c720f06ba9392be45c7f4e264a5c47dcb273424c97c60f616b7009475",
+      "size_bytes": 1827
+    },
+    {
+      "path": "openubmc-redfish-testing/references/profile-compiler.md",
+      "sha256": "sha256:f34ef3693e1867d4d7a22ac6c51e7e68a7b1ad1d127b07de56d63fb95195617f",
+      "size_bytes": 6515
+    },
+    {
+      "path": "openubmc-redfish-testing/references/safety-policy.md",
+      "sha256": "sha256:f7f89091344604f96490a12b6664da45505a882f6d1af739f8d7bad543e90bcb",
+      "size_bytes": 6021
+    },
+    {
+      "path": "openubmc-redfish-testing/references/standard-readonly-pack.md",
+      "sha256": "sha256:8156c0c3bd5b7988a878fd80602d0963ed969aa10e74c07dd678d4b4cdcde0e2",
+      "size_bytes": 2797
+    },
+    {
+      "path": "openubmc-redfish-testing/references/test-manifest.md",
+      "sha256": "sha256:94c51e7bc134b5ba1b6b208ab9820a319ec0038d0abac1109a0774e1e246dd11",
+      "size_bytes": 8936
+    },
+    {
+      "path": "openubmc-redfish-testing/references/workflow.md",
+      "sha256": "sha256:53b8d2a7aa973431ed4c51fcbcb9517a2913e012060c7d1f43bf92afcc4d082a",
+      "size_bytes": 13783
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/build_release_qualification.py",
+      "sha256": "sha256:4e7dc03af11eb52e972c5f0103ec63369a52bad9ff295407af54c981c4784895",
+      "size_bytes": 11495
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/compare_run_results.py",
+      "sha256": "sha256:9af474b18b53c2e3dec6b2d35e48f5e2d96c328a4fe3e63e01d547016533f827",
+      "size_bytes": 3484
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/dmtf_diagnostic_adapter.py",
+      "sha256": "sha256:e4aa06980b5ac50a7bea0137426b500f58b7902e1524ebf5629d13dc5910ca43",
+      "size_bytes": 9633
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/generate_junit_report.py",
+      "sha256": "sha256:c4c7e02264faa27f3dba2dec111fb77ce07569fd8c2d284fbd0ac0b973507ade",
+      "size_bytes": 8092
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/generate_pilot_report.py",
+      "sha256": "sha256:db71ba6247fe5daa58bc79de606d8556178a3cc02a83ebbbe04ec152c3c4c72e",
+      "size_bytes": 33131
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/generate_plan_manifest.py",
+      "sha256": "sha256:3b643e6fffff34ec6547940beb55c02bd4e71f73b51ac68d7fa35accfd2c2efe",
+      "size_bytes": 1175
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__init__.py",
+      "sha256": "sha256:f42d793c823efca47e5dd83ea053ca58a3a4205a8626ad12eb343af13e5d6401",
+      "size_bytes": 1237
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__main__.py",
+      "sha256": "sha256:94f948948ccf45fdd8f90002ff743950bbedd6622ada93fade84866e121cc11c",
+      "size_bytes": 157
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/_qualification/release-attestation.v2.json",
+      "sha256": "sha256:e201d160454f79bceafaa310b4e8ccef069667333da9e6ad55469701506492e0",
+      "size_bytes": 7641
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/cli.py",
+      "sha256": "sha256:9f050bfc4f703310ce29b434ee6beb00ecf0335f991ed8852e2fe4b24cae7723",
+      "size_bytes": 10616
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/compiler.py",
+      "sha256": "sha256:410f52bb4ee576b912be48a416c22a2ad6fee31a8d072750645195f6193ecbb5",
+      "size_bytes": 370
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/contracts.py",
+      "sha256": "sha256:30288a358453b3eeaf16f0dce595b1e27fa968af8cb7e057fef0158ba290700f",
+      "size_bytes": 416
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/execution.py",
+      "sha256": "sha256:a07c4b1cfec73f07b3f4e074431220beb26f0f40f4b59d2129ea56793677af9a",
+      "size_bytes": 245
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/lease.py",
+      "sha256": "sha256:8a45e0ab92abb2ace19a657f571d62dbda8f83de8db107593bd719f28b4962a0",
+      "size_bytes": 361
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/planning.py",
+      "sha256": "sha256:ec32f5350ef9b0b0fcb8dbf416ab894f65b3d8b52a79262cac1f620d9d158ff7",
+      "size_bytes": 148
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/qualification.py",
+      "sha256": "sha256:9d95243480932f1d19b34d2c15d33e45dd4accbac3ae10dc7b2017185d7adf4c",
+      "size_bytes": 21977
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/results.py",
+      "sha256": "sha256:00e106a23de82fe60311560bb226967c5dee1fe4a45f768863b94857c5579839",
+      "size_bytes": 454
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/qualification_test_runner.py",
+      "sha256": "sha256:095e96f8161330c0f6b76e8ceed4599b912bba315733aac9bd3b5efe17e00eeb",
+      "size_bytes": 3789
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_artifact_scan.py",
+      "sha256": "sha256:3ce3d9d8151c55c942dd5b41e485b7079076d0b97010896c085479e14734ebf4",
+      "size_bytes": 7305
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_contracts.py",
+      "sha256": "sha256:d755d66f4defeaaeaf9a6b87c3d7d14f4b2b3d3ce2c54e0f589398a3e7ab24de",
+      "size_bytes": 73493
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_diagnostics.py",
+      "sha256": "sha256:6a5f2ce55b67c5e68a01be5b30f907f0d83e194565de443e65d1752db940f928",
+      "size_bytes": 12762
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_discovery.py",
+      "sha256": "sha256:4d859f29558794250f792204791669d0690ae76e6ccb08aef80cb49f8b32ef20",
+      "size_bytes": 23295
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_evidence.py",
+      "sha256": "sha256:067b885d4fc3362ea8dfffae6f73f852ae61cc79c930605ae36956db30746574",
+      "size_bytes": 8195
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_identity.py",
+      "sha256": "sha256:b7ebf2fb3cf7ebebfd5f805338c957509074db09c5e2fdee69ef64099fe255ca",
+      "size_bytes": 1545
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_lease.py",
+      "sha256": "sha256:da2ce9fe73ead1929b536b463c5a59213b1c74898834e557fd7460ec8b41dafa",
+      "size_bytes": 34523
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_mcp.py",
+      "sha256": "sha256:a245d4b7f6e350b6f0e4eb308570ef93b8b7e857dbd19e5659fd3be459a4eced",
+      "size_bytes": 21340
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_mutation_fixtures.py",
+      "sha256": "sha256:6e02ffce93348ce2d63126bb8ae47f2400983836a3644f2834183ae7bd32a9c1",
+      "size_bytes": 11548
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_platform.py",
+      "sha256": "sha256:6f58a690be0d10ee23bdc7032a995e587b55c9bf20c8738401d860f9cb5fbfd5",
+      "size_bytes": 31967
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_profile_compiler.py",
+      "sha256": "sha256:efe9f9a69c0b239208f26a18557de39a240ebd5b47d72ac2c0fa7f9aadad3041",
+      "size_bytes": 60721
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_publication.py",
+      "sha256": "sha256:abc2e86acd0732c600aa8cc276a8df39c3345f13c39a54c4d6c58118fbd459a9",
+      "size_bytes": 34766
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_repeatability.py",
+      "sha256": "sha256:25ce9ff3b13e759d65b430c68c8cb5fb6113759bb933b3237901b2347a479928",
+      "size_bytes": 12965
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_runner.py",
+      "sha256": "sha256:e6ba660e0074abda7f60de78bd501ca468a47536dde288689f7b5929599eb99f",
+      "size_bytes": 65479
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/redfish_task_fixtures.py",
+      "sha256": "sha256:0bda598bd77c481cbdc36bc2aa1f2f6fd1a761b99dc7166f402d81267b1f8b95",
+      "size_bytes": 8088
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/run_offline_qualification.py",
+      "sha256": "sha256:d49dab51ae61b7b09f2881f19b26697d6d9ff47baa72b8ba00308f6b64db097b",
+      "size_bytes": 12886
+    },
+    {
+      "path": "openubmc-redfish-testing/scripts/validate_test_manifest.py",
+      "sha256": "sha256:e619ce4e3e88fd2291fd7020ad01c542427c2ed852f56a1380f9fecd443c3f64",
+      "size_bytes": 1130
+    },
+    {
+      "path": "openubmc-redfish-testing/skill.json",
+      "sha256": "sha256:69ef464e672c48ae9bfa6a84ebf7b232bea68a74c592bbe64eb4bc4c04177cac",
+      "size_bytes": 6767
+    },
+    {
+      "path": "openubmc-redfish-testing/standard_profiles/dmtf-standard-readonly-pack.v1.json",
+      "sha256": "sha256:43306d13e9636702ff5772364dad66f2c17453bb1fad6c6f787572b7537f5222",
+      "size_bytes": 10128
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/__init__.py",
+      "sha256": "sha256:7a105427a23c060a1d5d47aaab9bea29a07158432367480199caf8d9ababf992",
+      "size_bytes": 63
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/generic-readonly-graph-a.json",
+      "sha256": "sha256:0618cca16495cf6b823621925822da34e32efe6921cd400dee405ee7fad1b5d3",
+      "size_bytes": 6849
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/generic-readonly-graph-b.json",
+      "sha256": "sha256:8e11f36f68e10e0621a8c4e969771eb1c0da97aed02ed052eed479c9a4d961ee",
+      "size_bytes": 7518
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/npu-export-task/malformed.json",
+      "sha256": "sha256:9ebfcf187ecaaf362dacdaa0b33c913c8900b781cb15cbd30488bf784f569e70",
+      "size_bytes": 657
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/npu-export-task/success.json",
+      "sha256": "sha256:0aa22f125fe9b099a3aa8c4fc3f9c5060379aac10e118f8fec382baf19c0db79",
+      "size_bytes": 836
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/npu-export-task/terminal-failure.json",
+      "sha256": "sha256:a9556ce1b89c14cd8d5abfbfd1f375b74ae95ce50970596e3eca3964b99adf94",
+      "size_bytes": 694
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/npu-export-task/timeout.json",
+      "sha256": "sha256:c45ac14f54168e04c18f25bacd23213cf1e84b2940c260a220d76438c33c68e5",
+      "size_bytes": 834
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/s920x20-generic-readonly-product-profile.json",
+      "sha256": "sha256:bcd367d7a37aff53ae3959b57c1a5bffa234d1fed587fc5459adfc3ab786bcc8",
+      "size_bytes": 6455
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/fixtures/s920x20-product-profile.json",
+      "sha256": "sha256:20bde74d881ca255e20fe4a14a8a040593e4e739be8a32d6427a40b2166e8c37",
+      "size_bytes": 4714
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/redfish_runner_test_adapter.py",
+      "sha256": "sha256:ba88b14c0aeb167801ac478d60661e4ffdfeaf5aad8cb83013497fd7a6472952",
+      "size_bytes": 2480
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_artifact_scan_secret_boundary.py",
+      "sha256": "sha256:48cfb2a11b1ea2d3ec0b17e3fe02193bda3dfecee839dc86f62b3f44977c6eb1",
+      "size_bytes": 1692
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_diagnostic_evidence.py",
+      "sha256": "sha256:4164925964e345ea32f5c8fb70653f8891a24072125869d3949cbf5d3e27918a",
+      "size_bytes": 10168
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_dmtf_diagnostic_adapter.py",
+      "sha256": "sha256:3faff7387a7a7bd54b7f0f5f032240bbb1ae8b1eb118bc8a0eb36e192d8bf0ca",
+      "size_bytes": 9440
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_generate_junit_report.py",
+      "sha256": "sha256:0a1ee5588ebba2bebd19d045c813955e94d5f6e16055dfd65b0040015cc17e55",
+      "size_bytes": 8411
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_generate_pilot_report.py",
+      "sha256": "sha256:5bc4fcb6ffc3cd2d50437d605bc576715c73f148bad9861d002232a52a765b1b",
+      "size_bytes": 17073
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_generic_production_https.py",
+      "sha256": "sha256:c3cd2ebb0350a12cdab24a2b3ff7e136d1cdc67a32fed59d232d6250814c5d4c",
+      "size_bytes": 28219
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_generic_readonly_profile.py",
+      "sha256": "sha256:9ee1e45c27366fed8859a7e6035808734a2f5f4d5dfa9860ca0864ee200f3fde",
+      "size_bytes": 12498
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_installable_distribution.py",
+      "sha256": "sha256:b0412bd3f17ce3d5202c972c4c9206a32a7421fd5a5d65661d9779a32fa34709",
+      "size_bytes": 17695
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_kernel_internal_seams.py",
+      "sha256": "sha256:d8b6ed42206dffe440f2a08e14f24c03f1cbbe7d1a9c29dfd1ba9b595e98161a",
+      "size_bytes": 2752
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_manifest_contract.py",
+      "sha256": "sha256:2b8663ede8ac9ee5b7a5513f0f58b1a860a9a2487c66af349693aaacd320f1ed",
+      "size_bytes": 5570
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_mcp_facade.py",
+      "sha256": "sha256:81e3cd6fa8ce0edd2f4d39f199bcaecadfa80522375d39af62cca0aa88fef6aa",
+      "size_bytes": 21981
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_mutation_fixture_safety.py",
+      "sha256": "sha256:7b61ec2bc39212b16214a167ca482a153a75cff357f61c1d9a75617eaf6824a3",
+      "size_bytes": 5126
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_npu_readonly_contract.py",
+      "sha256": "sha256:9eae54dab902c04699d4eca32500a0ba7bb658bfd5d6fa010d8cd22b3daa6fff",
+      "size_bytes": 10182
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_npu_task_fixture.py",
+      "sha256": "sha256:a5e5a8ecbfa419b05fa014a4484a23fb1eeac542c49dbf617bd7449b4cc2a8a8",
+      "size_bytes": 6004
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_offline_qualification.py",
+      "sha256": "sha256:9e203136d467c60b28ead4d4f04c078f26de5f54dca06cd06f7ff1459742cb27",
+      "size_bytes": 14803
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_plan_contract.py",
+      "sha256": "sha256:caca9d7c3b4df192e2d7e39a7e2378665e2cd9f97681ab54bcd9d50ef9c4e837",
+      "size_bytes": 21533
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_platform_adapter.py",
+      "sha256": "sha256:27be33af773a47295989d0ecb555a3b204ae599e95e1f8c60bb7bc9331acf2dd",
+      "size_bytes": 18095
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_profile_compiler.py",
+      "sha256": "sha256:efbe4413c3265397c4fdb78f57262fdd8289e6335d6032fd7ea41ce29c4ba68c",
+      "size_bytes": 27610
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_profile_compiler_cli.py",
+      "sha256": "sha256:c045bbbd7cbdb02768bf5cb58bbbff4de117033f4cddadbb8c4b7f31d79a288e",
+      "size_bytes": 12112
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_r0_lease_contract.py",
+      "sha256": "sha256:d70009b4060827dac09a80d0e3235b934f5ca49b4521a60bde82628eeb418fb5",
+      "size_bytes": 4213
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_r0_lease_execution.py",
+      "sha256": "sha256:f9f054f651c6a62217974a5c307a503e01c0ffde1aa08fe96418fa58144d9126",
+      "size_bytes": 80477
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_r0_lease_ledger.py",
+      "sha256": "sha256:cf25c74b13e61afcc722c968e9fe4b6a64477e855722f38af7c10db69473aeb3",
+      "size_bytes": 25818
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_readonly_pilot_safety_edges.py",
+      "sha256": "sha256:ee673d7e3668b88d5c4e9871f0da4db7e1353cec04cc8e5eefa0965be89da9e8",
+      "size_bytes": 16033
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_redfish_discovery.py",
+      "sha256": "sha256:cdbedac22f69764cb57908e6ec0617ff0b79e75f9697694045f1e6d68425e48d",
+      "size_bytes": 34621
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_redfish_identity.py",
+      "sha256": "sha256:e7b4e6ad798a30740ef28d735d50099a2e2bba0916d9e4635c060acab5493920",
+      "size_bytes": 1493
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_repeatable_pilot.py",
+      "sha256": "sha256:6b18681a76c6de7320db796e212d7a25d868330a5b326fc9edaba1a4be100736",
+      "size_bytes": 13720
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_resolved_manifest_binding.py",
+      "sha256": "sha256:59ffc07802f2cf194117a90396e995d086b598168337630a875acbe54d072245",
+      "size_bytes": 5879
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_runner_bounds_and_evidence.py",
+      "sha256": "sha256:38f25990c7c1d5cef24719bda2429db41c071a95a6eb23716198ea6f4f9d873c",
+      "size_bytes": 18654
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_runner_cli_authorization.py",
+      "sha256": "sha256:0295b578e2f12a278c6441aff0327419a00e05c1baaba4c6220a6860e374825c",
+      "size_bytes": 2628
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_runner_preflight.py",
+      "sha256": "sha256:a074ada9eaa2061c4f431ff181f8afd91b9e955f0309f4b224b41466a428c297",
+      "size_bytes": 30280
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_single_production_execution_seam.py",
+      "sha256": "sha256:2c053c171ee4f3bdf89accdebcb5e0f9d8bbad24b836304e94417bbff3baee0a",
+      "size_bytes": 16421
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_skill_package.py",
+      "sha256": "sha256:136a7f5abb7cdd797f77c5e56f259fbbb95e8185c2a35e7b1a7be57c0d5583b7",
+      "size_bytes": 7349
+    },
+    {
+      "path": "openubmc-redfish-testing/tests/test_unified_cli.py",
+      "sha256": "sha256:cd2e05ee0092fd715db98aeb055a54cade130c5c95973259a47f5bf0e87af3a5",
+      "size_bytes": 19354
+    },
+    {
+      "path": "openubmc-sfmea/README.md",
+      "sha256": "sha256:ec831d63c6001a42dd52c7905ce71490b468618e08e83fae4580dad0cedc253d",
+      "size_bytes": 5120
+    },
+    {
+      "path": "openubmc-sfmea/SKILL.md",
+      "sha256": "sha256:1d3b3c81b5336129c12c91a364ec4f8eb30d47ff209fbb82946cd2a2f04f1997",
+      "size_bytes": 9683
+    },
+    {
+      "path": "openubmc-sfmea/skill.json",
+      "sha256": "sha256:3af4c1e4c33cfcdbc85c32be0e01b777dcc589b32adb2085d4142ed90dfaa4aa",
+      "size_bytes": 1239
+    },
+    {
+      "path": "openubmc-sfmea/templates/failure-modes.md",
+      "sha256": "sha256:813f3bfaa2d3a62080b9dee57de9c3cb33570082b899548758585862ce5e1740",
+      "size_bytes": 10652
+    },
+    {
+      "path": "openubmc-sfmea/templates/sfmea-table.md",
+      "sha256": "sha256:6f8ac69643ef32fcaa2a2c1d714da2bae9cabbdea0d9d38ab51ec1100124a2a6",
+      "size_bytes": 2760
+    },
+    {
+      "path": "openubmc-skill-feedback/SKILL.md",
+      "sha256": "sha256:df80d126f710b8d25c0b0cdc652946c5bfc74d10d38fae2ab5363176e51fc609",
+      "size_bytes": 4468
+    },
+    {
+      "path": "openubmc-skill-feedback/commands/skill-report.md",
+      "sha256": "sha256:1ca4e1aba20ae970957479bb8700ee3d19b3a945c4a9f45483326df9ade66263",
+      "size_bytes": 3601
+    },
+    {
+      "path": "openubmc-skill-feedback/create-issue.mjs",
+      "sha256": "sha256:c3d72fe582391a42465f28b26b895b1d0703a21747f1f6642fd53b73caba131f",
+      "size_bytes": 4287
+    },
+    {
+      "path": "openubmc-skill-feedback/skill-report.mjs",
+      "sha256": "sha256:5cc7f86792b59166b63573a49440968e84ccc46019b6e26d4b1fbc78b6eb9861",
+      "size_bytes": 11958
+    },
+    {
+      "path": "openubmc-skill-feedback/skill-report.sh",
+      "sha256": "sha256:7aaa0014c07b2c22e810e8fee003ce5405a113ea66aa582cebdfae7ebc4b82b7",
+      "size_bytes": 145
+    },
+    {
+      "path": "openubmc-skill-feedback/skill-report.test.mjs",
+      "sha256": "sha256:d6e95a5cf80f0480c71c17a0ebcff7b0d4cca0e2a1f8a1d90be38a4b2d431824",
+      "size_bytes": 6455
+    },
+    {
+      "path": "openubmc-skill-feedback/skill.json",
+      "sha256": "sha256:9946ee249942031888ecb5185198669b4c5db11b8a3e40c597e6f40eceace133",
+      "size_bytes": 981
+    },
+    {
+      "path": "openubmc-upgrade/SKILL.md",
+      "sha256": "sha256:1ddc865207c28180d1e45ffbff9c6fe3671cdef5add16c66bd9345f8097c5869",
+      "size_bytes": 16717
+    },
+    {
+      "path": "openubmc-upgrade/agents/openai.yaml",
+      "sha256": "sha256:53cb74381a5d432b62ad00678a867b08763bc3056a0122a8a8c1909c046083cd",
+      "size_bytes": 424
+    },
+    {
+      "path": "openubmc-upgrade/openubmc_upgrade/__init__.py",
+      "sha256": "sha256:d1205b7fbb71e1da441fb53d6aeaf9a6ee260bc4decde837dbd48488b231d474",
+      "size_bytes": 413
+    },
+    {
+      "path": "openubmc-upgrade/openubmc_upgrade/operation_state.py",
+      "sha256": "sha256:ee7749862f212dc8816bd3a404e957c551787e7882662945f7047b18469de971",
+      "size_bytes": 5247
+    },
+    {
+      "path": "openubmc-upgrade/openubmc_upgrade/runtime_backend.py",
+      "sha256": "sha256:8c1d61b5f38f2019ef7bceff1ba0ac49f579f70689dbcd58c4d0acde5b214f1a",
+      "size_bytes": 142422
+    },
+    {
+      "path": "openubmc-upgrade/openubmc_upgrade/webui.py",
+      "sha256": "sha256:b15602181689f9882d13ded099659347cffd4399852f691eca45916ba62a0756",
+      "size_bytes": 20233
+    },
+    {
+      "path": "openubmc-upgrade/references/redfish-upgrade.md",
+      "sha256": "sha256:57ccfc7b46b30afbf59614e5c092be33738c3875f1d7a33a53be93821216beb6",
+      "size_bytes": 8716
+    },
+    {
+      "path": "openubmc-upgrade/references/webui-upgrade.md",
+      "sha256": "sha256:46c78f0cf4e26341ce89022dd25dfcb462bccd762d1d09ddce6cdf041978a951",
+      "size_bytes": 4162
+    },
+    {
+      "path": "openubmc-upgrade/scripts/artifact_identity.py",
+      "sha256": "sha256:11473c52f58e1d716e6a6e93ba87cd6ff35d2c275a20f6a3495709093a20466c",
+      "size_bytes": 7555
+    },
+    {
+      "path": "openubmc-upgrade/scripts/preflight_upgrade.py",
+      "sha256": "sha256:1324947539a32967febb0cd3d335c57c343dda7a65a28ef82ac4c46f13f2134d",
+      "size_bytes": 11009
+    },
+    {
+      "path": "openubmc-upgrade/scripts/redfish_credentials.py",
+      "sha256": "sha256:5464a7a246faad7a63361d7046845f9aae3bb803721f93ffcf5179402a483e3e",
+      "size_bytes": 3601
+    },
+    {
+      "path": "openubmc-upgrade/scripts/target_runtime_adapter.py",
+      "sha256": "sha256:654cdff277ab5d285981fd8ea133498c166026239da4a7427b289cbdd8aac42d",
+      "size_bytes": 14411
+    },
+    {
+      "path": "openubmc-upgrade/skill.json",
+      "sha256": "sha256:0bd047e0a8dc9d0298e2c3c347a9dfc35687069d50124c3302e99b9a3522e11d",
+      "size_bytes": 1026
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_operation_state.py",
+      "sha256": "sha256:92fe8d8a9720052a029b64feccf9e513e98689ac26e4281ee69d7304d8ee2b8f",
+      "size_bytes": 1947
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_preflight_upgrade.py",
+      "sha256": "sha256:0aa2506f560ea07e045f9b2a83f0b9066319868c2265febe6023903a7aa47679",
+      "size_bytes": 4160
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_runtime_backend.py",
+      "sha256": "sha256:0488bc54768aea21f8032db9b069cfc0cd59235d3b1b23f78fd05970d6ddaef5",
+      "size_bytes": 126281
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_runtime_upgrade.py",
+      "sha256": "sha256:4bdda8c02d38b6e4665a4482de4aca0cd1ce8039286598483ae1e7cec834713b",
+      "size_bytes": 7365
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_upgrade_helpers.py",
+      "sha256": "sha256:7e2b9045a3c7607fa52387dcc8279b2996b3cfb686226fe1e1cc0b89e843c30c",
+      "size_bytes": 7725
+    },
+    {
+      "path": "openubmc-upgrade/tests/test_webui.py",
+      "sha256": "sha256:95ffdd0750f4e118f68711e70833f6485caec3a52554ec030a2c4d86e3bdedfc",
+      "size_bytes": 12344
+    },
+    {
+      "path": "openubmc-webui-dev/SKILL.md",
+      "sha256": "sha256:d148f61590846e86a4a718623d0a336b6b48b9be9037cc8ace433f6be25f6cec",
+      "size_bytes": 9957
+    },
+    {
+      "path": "openubmc-webui-dev/references/change-patterns.md",
+      "sha256": "sha256:5b7114b8f5f0b5f212a2dd08e51eae076c9cbb108137d281d1c2280e752d1783",
+      "size_bytes": 4938
+    },
+    {
+      "path": "openubmc-webui-dev/references/debug-workflow.md",
+      "sha256": "sha256:f07f6e3cd805c2276934b4c83f88d423ce90013fbbb49fabb9657a51a09cc272",
+      "size_bytes": 6437
+    },
+    {
+      "path": "openubmc-webui-dev/references/repo-map.md",
+      "sha256": "sha256:2e2b26d876f17ad7c815b8698a6529eee08937757e3247682945ad0ba24b363f",
+      "size_bytes": 4098
+    },
+    {
+      "path": "openubmc-webui-dev/skill.json",
+      "sha256": "sha256:7f1edb1d662ee906e463bc22b6fd984a2288ea78bc41d850c77759e76a3bbd91",
+      "size_bytes": 1289
+    }
+  ],
+  "schema": "openubmc.skill-routing-file-inventory.v1"
+}
