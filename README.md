@@ -127,7 +127,7 @@ In short:
 ## Immutable releases
 
 The current public Codex plugin release is
-[2.2.16](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.2.16).
+[2.2.17](https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/tag/v2.2.17).
 Use the archive and checksum attached to that release for installation. Development
 versions become releases only after immutable source qualification and publication.
 
