@@ -185,7 +185,7 @@ class CredentialMemoryTests(unittest.TestCase):
                                              transport="ssh").credentials.password, "fixture-secret")
         projected = after.resolve_local_values(task_id="after", host="192.0.2.11",
                                                arguments={},
-                                               transports=("ssh",))
+                                               transports=("ssh",), include_os=True)
         self.assertEqual(projected["OPENUBMC_TELNET_PASSWORD"], "telnet-secret")
         self.assertEqual(projected["OPENUBMC_OS_SSH_PORT"], "2200")
         self.assertEqual(projected["OPENUBMC_OS_SSH_PASSWORD"], "os-secret")
@@ -202,7 +202,7 @@ class CredentialMemoryTests(unittest.TestCase):
             explicit_values = after.resolve_local_values(task_id="explicit-task",
                                                          host="192.0.2.11",
                                                          arguments={"ssh_user": "explicit-user"},
-                                                         transports=("ssh",))
+                                                         transports=("ssh",), include_os=True)
             self.assertEqual(_cli_common.resolve_debug_credentials(explicit_args),
                              _cli_common.resolve_debug_credentials(
                                  explicit_args, credentials=explicit_values))

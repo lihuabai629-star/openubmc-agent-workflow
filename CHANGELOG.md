@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.17
+
+- `observe` retains `lsclass`, `lsmc` and `lsobj` MDB discovery output up to 16 KiB and 512 lines across both projection passes, recording byte/line counts and `projection_complete` metadata without cutting identifiers mid-token.
+- `observe` schema and preflight guidance keep `capability` selectors strictly separate from `mdb` query selectors, splitting misplaced `queries` into a companion `kind: "mdb"` selector in `next_action`.
+- BMC-scoped Runtime and standalone log-bundle projections default `include_os=False` so retained or incomplete OS account settings do not block BMC-only operations.
+
 ## 2.2.16
 
 - Source review guidance ships with Developer, including independent Standards and Spec findings, concrete failure evidence and workload-aware simplification. Installed plugins can use it without a separate global Skill.

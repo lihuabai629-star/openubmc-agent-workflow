@@ -136,6 +136,27 @@ class ScriptedSshTransport:
 
 
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
+    def test_standalone_ssh_bundle_ignores_unrelated_incomplete_os_account(self) -> None:
+        runtime = target_runtime_adapter._load_runtime_module()
+        from importlib import import_module
+        memory_type = import_module(runtime.__name__ + '.credential_memory').VerifiedCredentialMemory
+        transport = ScriptedSshTransport([subprocess.CompletedProcess(['ssh'], 0, 'fixture-bmc', '')])
+        with tempfile.TemporaryDirectory() as raw:
+            config = Path(raw) / 'credentials.env'
+            config.write_text('OPENUBMC_SSH_USER=fixture\nOPENUBMC_SSH_PASSWORD=bmc-fixture\n'
+                              'OPENUBMC_OS_IP=192.0.2.20\nOPENUBMC_OS_SSH_USER=os-fixture\n')
+            config.chmod(0o600)
+            saved = memory_type(config_path=config, environ={}).remember(
+                host='192.0.2.10', purpose='bmc', transport='ssh',
+                credentials=runtime.ResolvedSshCredentials(user='fixture', password='bmc-fixture'))
+            self.assertTrue(saved['remembered'])
+            parsed = pull_bundle.parse_args(['--ip', '192.0.2.10', '--transport', 'ssh', '--json'])
+            with mock.patch.dict(os.environ, {'OPENUBMC_CREDENTIALS_FILE': str(config)}, clear=True):
+                with target_runtime_adapter.open_log_bundle_runtime_lease(args=parsed, ssh_transport=transport) as lease:
+                    reply = lease._ssh_lane().run_channel('printf fixture-bmc', replay_safe=True, timeout=1)
+                    self.assertEqual(reply.stdout, 'fixture-bmc')
+            self.assertEqual(transport.opens, 1)
+
     def test_standalone_bundle_resolves_the_selected_local_target_account(self) -> None:
         redfish = CallbackRedfishTransport()
         with tempfile.TemporaryDirectory() as raw:

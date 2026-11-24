@@ -2670,11 +2670,16 @@ class AgentGatewayTests(unittest.TestCase):
         observe_selector = definitions[0]["inputSchema"]["properties"]["selectors"][
             "items"
         ]
-        capability_item = observe_selector["properties"]["names"]["items"]
+        selector_kinds = {branch["properties"]["kind"]["enum"][0]: branch
+                          for branch in observe_selector["anyOf"]}
+        self.assertEqual(set(selector_kinds), {"capability", "mdb", "systemd", "os_console"})
+        capability_item = selector_kinds["capability"]["properties"]["names"]["items"]
+        self.assertNotIn("queries", selector_kinds["capability"]["properties"])
+        self.assertNotIn("names", selector_kinds["mdb"]["properties"])
         self.assertNotIn("enum", capability_item)
         self.assertIn(
             "mdbctl",
-            capability_item["description"],
+            selector_kinds["capability"]["properties"]["names"]["description"],
         )
 
         self.assertIn("response_required", definitions[1]["description"])
